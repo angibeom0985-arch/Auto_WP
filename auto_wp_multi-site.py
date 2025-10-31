@@ -2939,7 +2939,7 @@ class ContentGenerator:
                 # 본문 끝부분에 외부링크 추가
                 additional_link_text = f"{keyword} 더 알아보기"
                 additional_link_url = self.select_contextual_url("", keyword, content, trusted_urls)
-                additional_link = f'<p><a href="{additional_link_url}" target="_blank">{additional_link_text}</a></p>'
+                additional_link = f'<p><a href="{additional_link_url}" target="_self">{additional_link_text}</a></p>'
                 
                 content = content.rstrip() + "\n\n" + additional_link
                 self.log(f"🔗 외부링크 추가: {additional_link_text} → {additional_link_url}")
@@ -3089,6 +3089,25 @@ class ContentGenerator:
             if '&amp;' in content:
                 content = content.replace('&amp;', '&')
                 self.log("✅ HTML 엔티티 정리")
+            
+            # 5-1. 외부링크 target 속성 검증 (무조건 target="_self" 사용)
+            # target="_blank" 또는 기타 값을 target="_self"로 수정
+            target_fixed = False
+            if 'target=' in content:
+                # target="_blank" → target="_self"
+                if 'target="_blank"' in content:
+                    content = content.replace('target="_blank"', 'target="_self"')
+                    target_fixed = True
+                # target=_blank (따옴표 없음) → target="_self"
+                if 'target=_blank' in content:
+                    content = re.sub(r'target=_blank(?=\s|>)', 'target="_self"', content)
+                    target_fixed = True
+                # target="_top", "_parent" 등도 모두 _self로 변경
+                content = re.sub(r'target="_(top|parent|blank)"', 'target="_self"', content)
+                target_fixed = True
+                
+            if target_fixed:
+                self.log("✅ 외부링크 target 속성을 target=\"_self\"로 통일")
             
             # 6. 다운로드 버튼 복원 (수정된 버전으로)
             for i, fixed_button in enumerate(fixed_buttons):
