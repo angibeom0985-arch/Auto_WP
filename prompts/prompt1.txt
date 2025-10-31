@@ -9,28 +9,67 @@
 -후킹 요소: 혜택 강조, 고통 해결, 구체적 수치 활용 (N배, N가지, N초, N분, 2025년 등)
 -후킹 문구 중 숫자에서 연도는 무조건 '2025년'으로 통일
 -제목 예시:
-"인덕션 청소 | 10분만에 완벽하게 끝내는 3가지 방법"
+"근로장려금 신청 | 2025년 가장 최신 버전"
 "스마트폰 배터리 | 2배 오래 쓰는 5가지 비밀 설정"
 "냉장고 정리 | 30분으로 1주일이 편해지는 수납법"
 
 '서론 지침'
--문장은 '~해요'체로 작성하며, 전문 용어 쓸 때는 초등학생도 이해할 수 있도록 쉽게 풀어서 설명할 것.
+-문장은 '~해요'체로 작성하며, 전문 용어 쓸 때는 초등학생도 이해할 수 있도록 쉽게 풀어서 설명해.
 -서론의 핵심 역할은 독자로 하여금, 글 끝까지 읽게 만드는 거야. '안녕하세요'와 같은 형식적인 인사 금지.
--독자가 해당 키워드로 검색한 의도를 파악해서, 서론에 반영할 것.
--서론 안에 {keyword}를 적절하게 포함시킬 것.
+-독자가 해당 키워드로 검색한 의도를 파악해서, 서론에 반영해.
+-서론 첫 문장에 {keyword}를 적절하게 포함해서 작성해.
 -독자의 흥미를 이끌 첫 문장과 내 글을 읽으면 문제를 해결할 수 있는 느낌을 담아서 작성해.
 -검색 엔진(구글 로봇, 네이버 로봇 등)이 주제를 쉽게 이해할 수 있도록 해.
 -중요한 내용은 <strong> 또는 <u>코드를 사용해.
 
 '링크버튼 작성 지침'
--{keyword}로 검색한 사용자에게 실제로 도움이 되는 사이트 연결
--중요: class="blink" 속성 필수!
--링크버튼 텍스트 예시
-"운전면허증 발급<br>바로가기" (안전운전 통합민원 사이트로 연결)
-"안전운전 통합민원<br>바로가기" (운전면허증 발급 관련)
-"홈택스<br>바로가기" (세금 관련 키워드일 때)
-"한국토지주택공사<br>바로가기" (주택청약 관련 키워드일 때)
+-{keyword}를 분석해서 '앱', '설치', '다운로드', '어플', '애플리케이션' 등 다운로드 관련 키워드가 포함되어 있는지 확인해!
+-다운로드 관련 키워드가 있으면 → 다운로드 버튼 4개 출력 (아래 형식2 사용)
+-다운로드 관련 키워드가 없으면 → 일반 링크 버튼 1개 출력 (아래 형식1 사용)
 
-<p>서론 200자</p>
-<p style="text-align: center;" data-ke-size="size16"><b>🎁 아래 <span style="color: #ee2323;">버튼</span>을 통해, 지금 바로 해보세요!</b></p>
-<div><center><a class="blink" href="url">앵커 텍스트<br>바로가기</a></center></div>
+링크버튼 예시 (다운로드 관련 아닌 경우):
+  운전면허 관련 → "안전운전 통합민원<br>바로가기" (https://www.safedriving.or.kr)
+  세금 관련 → "홈택스<br>바로가기" (https://www.hometax.go.kr)
+  주택청약 관련 → "한국토지주택공사<br>바로가기" (https://www.lh.or.kr)
+  
+'출력 형식'
+반드시 아래 3가지만 출력해
+1. 제목 (순수 텍스트, 특수문자 없이)
+2. 서론 (<p> 태그로 감싼 내용)
+3. 링크 버튼 (형식1 또는 형식2 중 하나만 작성)
+
+'출력 예시'
+<p>서론 내용 (~해요체로 200자 이상)</p>
+
+【형식1】다운로드 관련 키워드가 아닌 경우:
+<p style="text-align:center;" data-ke-size="size16"><b>🎁 아래 <span style="color:#ee2323;">버튼</span>을 통해, 지금 바로 해보세요!</b></p>
+<div><center><a class="blink" href="실제 유용한 URL">구체적인 앵커 텍스트<br>바로가기</a></center></div>
+
+【형식2】'앱', '설치', '다운로드' 등 다운로드 관련 키워드인 경우:
+<p style="text-align:center;" data-ke-size="size16"><b>🎁 지금 바로 <span style="color:#ee2323;">다운로드</span>해서, 사용해보세요!</b></p>
+<div class="button-container">
+    <p>
+        <a href="https://www.apple.com/kr/search/{keyword}?src=globalnav" class="custom-download-btn appstore-button" target="_self">
+            <img src="https://developer.apple.com/assets/elements/icons/app-store/app-store-128x128_2x.png" class="btn-logo" alt="App Store">
+            <span>App Store에서 바로 다운로드</span>
+        </a>
+    </p>
+    <p>
+        <a href="https://play.google.com/store/search?q={keyword}&amp;c=apps" class="custom-download-btn playstore-button" target="_self">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/7/78/Google_Play_Store_badge_EN.svg" class="btn-logo" alt="Google Play">
+            <span>Google Play에서 바로 다운로드</span>
+        </a>
+    </p>
+    <p>
+        <a href="https://apps.microsoft.com/search?query={keyword}&hl=ko-KR&gl=KR" class="custom-download-btn window-button" target="_self">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/4/44/Microsoft_logo.svg" class="btn-logo" alt="Microsoft Store">
+            <span>Windows에서 바로 다운로드</span>
+        </a>
+    </p>
+    <p>
+        <a href="https://www.apple.com/kr/search/{keyword}?src=globalnav" class="custom-download-btn macbook-button" target="_self">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/f/fa/Apple_logo_black.svg" class="btn-logo" alt="Mac App Store">
+            <span>MacBook에서 바로 다운로드</span>
+        </a>
+    </p>
+</div>

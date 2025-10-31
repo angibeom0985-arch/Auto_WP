@@ -32,6 +32,7 @@ class PostingWorker(QThread):
     status_update = pyqtSignal(str)
     posting_complete = pyqtSignal()
     single_posting_complete = pyqtSignal()  # 개별 포스팅 완료 신호 추가
+    keyword_used = pyqtSignal()  # 키워드 사용 완료 신호 추가
     error_occurred = pyqtSignal(str)
     
     def __init__(self, config_manager, sites_data, start_site_id="all"):
@@ -63,6 +64,10 @@ class PostingWorker(QThread):
         except Exception as e:
             print(f"[ERROR] 신호 발송 실패: {e}")
             sys.stdout.flush()
+    
+    def log(self, message):
+        """로그 메시지 출력 - safe_emit_status의 별칭"""
+        self.safe_emit_status(message)
         
     def run(self):
         """포스팅 작업 실행 - 모든 키워드가 소진될 때까지 반복"""
@@ -333,6 +338,7 @@ class PostingWorker(QThread):
                 return
                 
             if title and content:
+                self.log(f"✅ 콘텐츠 생성 성공, 워드프레스 업로드 시작")
                 # 워드프레스에 포스팅
                 result = content_generator.post_to_wordpress(site, title, content, thumbnail_path)
                 
@@ -358,11 +364,15 @@ class PostingWorker(QThread):
                     # 🔒 포스팅 실패 시 진행 중 상태 유지 (재시작 시 같은 사이트에서 재시작)
                     self.config_manager.save_posting_state(site_id, site_url, in_progress=True)
             else:
+                self.log(f"❌ 콘텐츠 생성 실패 - 제목: '{title}', 본문 길이: {len(content) if content else 0}")
                 self.status_update.emit(f"❌ {site_name}: 콘텐츠 생성 실패 - 키워드 보존")
                 # 🔒 콘텐츠 생성 실패 시 진행 중 상태 유지
                 self.config_manager.save_posting_state(site_id, site_url, in_progress=True)
             
         except Exception as e:
+            self.log(f"❌ {site_name} 예외 발생: {str(e)}")
+            import traceback
+            self.log(f"🔍 상세 오류:\n{traceback.format_exc()}")
             self.status_update.emit(f"❌ {site_name} 예외 발생 - 키워드 보존됨")
             # 🔒 예외 발생 시 진행 중 상태 유지 (재시작 시 같은 사이트에서 재시작)
             self.config_manager.save_posting_state(site_id, site_url, in_progress=True)
@@ -419,6 +429,11 @@ class PostingWorker(QThread):
                         os.remove(backup_path)
                     
                     print(f"✅ 키워드 '{keyword}' 이동 완료: {keyword_file} -> {used_filename}")
+                    
+                    # UI 업데이트 신호 발생
+                    if hasattr(self, 'keyword_used'):
+                        self.keyword_used.emit()
+                    
                     return True
                     
                 except Exception as file_error:
@@ -426,7 +441,7 @@ class PostingWorker(QThread):
                     if os.path.exists(backup_path):
                         shutil.copy2(backup_path, keywords_path)
                         os.remove(backup_path)
-                        print(f"� 키워드 파일 복원 완료")
+                        print(f"👏 키워드 파일 복원 완료")
                     
                     print(f"❌ 파일 쓰기 오류로 키워드 이동 실패: {file_error}")
                     return False
@@ -905,6 +920,9 @@ class ContentGenerator:
         # 포스팅 상태 관리
         self.is_posting = False
         self.worker_thread = None  # Worker Thread 참조
+        
+        # 인증 캐시 (성공한 인증 방법 저장)
+        self.auth_cache = {}  # {site_url: (headers, method_name)}
 
         # config_manager 속성 추가
         if self.auto_wp and hasattr(self.auto_wp, 'config_manager'):
@@ -991,7 +1009,7 @@ class ContentGenerator:
 
     def initialize_apis(self):
         """사용 가능한 모든 API 초기화"""
-
+        
         # API 상태 초기화
         self.api_status = {'openai': False, 'gemini': False}
 
@@ -1000,7 +1018,7 @@ class ContentGenerator:
             openai_api_key = self.config_manager.data.get("api_keys", {}).get("openai", "")
         else:
             openai_api_key = self.config_data.get('openai_api_key', '')
-
+        
         if openai_api_key and openai_api_key not in ["your_openai_api_key", ""]:
             try:
                 self.openai_client = OpenAI(api_key=openai_api_key)
@@ -1022,7 +1040,6 @@ class ContentGenerator:
             try:
                 # API 키 설정
                 genai.configure(api_key=gemini_api_key)
-
                 # 안전 설정 구성 - 콘텐츠 차단 최소화
                 safety_settings = [
                     {
@@ -1043,12 +1060,22 @@ class ContentGenerator:
                     }
                 ]
 
-                # 모델 초기화 시 사용 가능한 모델 확인 (최신 모델부터 시도)
-                model_priority = ['gemini-2.5-flash-lite', 'gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro']
+                # 모델 초기화 시 사용 가능한 모델 확인 (2025년 최신 모델부터 시도)
+                model_priority = [
+                    'gemini-2.0-flash-exp',      # 2025년 최신 실험 모델
+                    'gemini-2.5-flash-lite',     # 2.5 lite 모델
+                    'gemini-1.5-flash-latest',   # 최신 Flash
+                    'gemini-1.5-flash',
+                    'gemini-1.5-pro-latest',     # 최신 Pro
+                    'gemini-1.5-pro',
+                    'gemini-pro'                 # Fallback
+                ]
                 model_initialized = False
+                last_error = None
                 
                 for model_name in model_priority:
                     try:
+                        self.log(f"🔍 Gemini 모델 시도: {model_name}")
                         self.gemini_model = genai.GenerativeModel(
                             model_name,
                             safety_settings=safety_settings
@@ -1056,40 +1083,36 @@ class ContentGenerator:
                         
                         # 간단한 테스트 호출로 API 작동 확인
                         test_response = self.gemini_model.generate_content(
-                            "테스트",
+                            "안녕",
                             generation_config=genai.types.GenerationConfig(
                                 max_output_tokens=10,
-                                temperature=0.1
-                            )
+                                temperature=0.7
+                            ),
+                            request_options={'timeout': 10}
                         )
                         
                         if hasattr(test_response, 'text') and test_response.text:
                             model_initialized = True
+                            self.log(f"✅ Gemini 모델 초기화 성공: {model_name}")
                             break
                         else:
+                            last_error = "응답에 텍스트가 없음"
                             continue
                         
                     except Exception as model_error:
-                        self.log(f"❌ {model_name} 실패: {str(model_error)[:100]}")
+                        last_error = str(model_error)
+                        self.log(f"❌ {model_name} 실패: {last_error}")
                         continue
                 
                 if not model_initialized:
-                    self.log("❌ 모든 Gemini 모델 초기화 실패")
-                    raise Exception("사용 가능한 Gemini 모델이 없습니다.")
+                    error_msg = f"모든 Gemini 모델 초기화 실패. 마지막 오류: {last_error}"
+                    self.log(f"❌ {error_msg}")
+                    raise Exception(error_msg)
 
                 self.api_status['gemini'] = True
                 
             except Exception as e:
-                self.log(f"🔥 Gemini 클라이언트 초기화 실패: {e}")
-                self.log(f"📋 상세 오류: {str(e)}")
-                if "API_KEY_INVALID" in str(e):
-                    self.log("❌ Gemini API 키가 유효하지 않습니다. 설정에서 올바른 키를 입력해주세요.")
-                elif "PERMISSION_DENIED" in str(e):
-                    self.log("❌ API 권한이 없습니다. Google AI Studio에서 API 키 권한을 확인해주세요.")
-                elif "QUOTA_EXCEEDED" in str(e):
-                    self.log("❌ API 할당량을 초과했습니다. 잠시 후 다시 시도하거나 결제 정보를 확인해주세요.")
-                else:
-                    self.log("❌ 네트워크 연결이나 API 서버 문제일 수 있습니다.")
+                self.log(f"❌ Gemini 초기화 실패: {e}")
                 self.gemini_model = None
                 self.api_status['gemini'] = False
         elif not GEMINI_AVAILABLE:
@@ -1114,27 +1137,30 @@ class ContentGenerator:
         """통합 AI API 호출"""
         # 중지 체크
         if hasattr(self, 'auto_wp') and hasattr(self.auto_wp, 'posting_worker') and not self.auto_wp.posting_worker.is_running:
-            self.log(f"⏹️ {step_name} AI API 호출 전 중지됨")
             return None
         
         ai_provider = self.current_ai_provider
         
-        # Gemini API 사용 시 더 상세한 검증
+        # Gemini API 사용 시 검증
         if ai_provider == 'gemini':
             # API 키 확인
             gemini_key = self.config_manager.data.get("api_keys", {}).get("gemini", "").strip()
             if not gemini_key:
-                self.log("❌ Gemini API 키가 설정되지 않았습니다. 설정 탭에서 API 키를 입력해주세요.")
+                self.log("❌ Gemini API 키가 설정되지 않았습니다.")
                 return None
             
             # 모델 상태 확인
             if not self.api_status.get('gemini'):
-                self.log("❌ Gemini API가 초기화되지 않았습니다. API 키와 네트워크 상태를 확인해주세요.")
-                return None
+                self.log("❌ Gemini API가 초기화되지 않았습니다.")
+                self.initialize_apis()  # 재초기화 시도
+                if not self.api_status.get('gemini'):
+                    return None
                 
             if not self.gemini_model:
-                self.log("❌ Gemini 모델이 로드되지 않았습니다. API 키를 확인하고 프로그램을 재시작해주세요.")
-                return None
+                self.log("❌ Gemini 모델이 로드되지 않았습니다.")
+                self.initialize_apis()  # 재초기화 시도
+                if not self.gemini_model:
+                    return None
             
             return self.call_gemini_api(prompt, step_name, max_tokens, temperature, system_content)
             
@@ -1346,22 +1372,31 @@ class ContentGenerator:
 - 글자수: 50~60자, 숫자 필수 포함
 - 후킹 요소: 혜택 강조, 고통 해결, 구체적 수치 활용
 - 중요: 반드시 '{keyword} |' 로 시작해야 함!
+- 중요: 큰따옴표, #, *, 백틱 같은 특수문자는 절대 사용하지 마!
 
 제목 예시:
-"인덕션 청소 | 10분만에 완벽하게 끝내는 3가지 방법"
-"스마트폰 배터리 | 2배 오래 쓰는 5가지 비밀 설정"
-"냉장고 정리 | 30분으로 1주일이 편해지는 수납법"
+인덕션 청소 | 10분만에 완벽하게 끝내는 3가지 방법
+스마트폰 배터리 | 2배 오래 쓰는 5가지 비밀 설정
+냉장고 정리 | 30분으로 1주일이 편해지는 수납법
 
 키워드: {keyword}
 
-위 지침에 맞는 제목 1개만 출력해. 설명이나 다른 내용은 일체 포함하지 마."""
+위 지침에 맞는 제목 1개만 출력해. 설명이나 다른 내용은 일체 포함하지 마. 특수문자 없이 순수한 텍스트만 출력해."""
 
-            system_prompt = "너는 SEO 제목 전문가야. 주어진 지침에 따라 정확한 제목만 생성해."
+            system_prompt = "너는 SEO 제목 전문가야. 주어진 지침에 따라 정확한 제목만 생성해. 큰따옴표나 특수문자 없이 순수한 텍스트로만 출력해."
             
             result = self.call_ai_api(title_prompt, "제목 생성", max_tokens=100, temperature=0.7, system_content=system_prompt)
             
             if result and result.strip():
                 generated_title = result.strip()
+                
+                # 제목에서 불필요한 문자 강제 제거
+                generated_title = generated_title.replace('"', '').replace("'", '').replace('`', '')
+                generated_title = generated_title.replace('#', '').replace('*', '').replace('**', '')
+                generated_title = re.sub(r'^[\s\-_=]+', '', generated_title)
+                generated_title = re.sub(r'[\s\-_=]+$', '', generated_title)
+                generated_title = generated_title.strip()
+                
                 # 제목 형식 검증
                 if generated_title.startswith(f"{keyword} |") and any(char.isdigit() for char in generated_title):
                     self.log(f"🎯 AI 생성 제목: {generated_title}")
@@ -1471,32 +1506,16 @@ class ContentGenerator:
             return content
 
     def clean_step5_content(self, content):
-        """5단계 콘텐츠 정리 - 표와 FAQ 구조 확인 및 강제"""
+        """5단계 콘텐츠 정리 - 마무리 구조 확인"""
         try:
             import re
             
-            # 표가 있는지 확인
-            has_table = '<table' in content and '</table>' in content
-            
-            # FAQ가 있는지 확인 (Q1~Q5)
-            faq_pattern = r'<h3><strong>Q[1-5]\..*?</strong></h3>'
-            faq_matches = re.findall(faq_pattern, content, flags=re.IGNORECASE)
-            has_complete_faq = len(faq_matches) >= 5
-            
-            # "자주 묻는 질문" 헤더가 있는지 확인
-            has_faq_header = '<h2><strong>자주 묻는 질문</strong></h2>' in content
+            # 기본적인 HTML 구조 확인
+            has_basic_structure = '<h2>' in content or '<h3>' in content or '<p>' in content
             
             # 로그 출력
-            if not has_table:
-                self.log("🚨 5단계: 표가 누락됨 - prompt5.txt 구조 위반!")
-            if not has_complete_faq:
-                self.log(f"🚨 5단계: FAQ 부족 (발견: {len(faq_matches)}개/필요: 5개) - prompt5.txt 구조 위반!")
-            if not has_faq_header:
-                self.log("🚨 5단계: FAQ 헤더 누락 - <h2><strong>자주 묻는 질문</strong></h2> 필요!")
-                
-            # 구조 위반 시 경고
-            if not (has_table and has_complete_faq and has_faq_header):
-                self.log("⚠️ prompt5.txt HTML 구조가 제대로 지켜지지 않았습니다!")
+            if not has_basic_structure:
+                self.log("🚨 5단계: 기본 HTML 구조 누락 - 제목이나 내용이 없습니다!")
                 
             return content
             
@@ -1641,10 +1660,579 @@ class ContentGenerator:
             self.log(f"메타 용어 제거 중 오류: {e}")
             return content
 
-    def generate_approval_content(self, keyword):
-        """승인용 콘텐츠 생성 - AI 제공자에 관계없이 통합"""
+    def remove_approval_meta_terms(self, content):
+        """승인용 콘텐츠의 메타 용어 제거 - <h2>, <p> 태그는 보존"""
         try:
-            # 승인용 프롬프트 파일 로드
+            import re
+            # 제거할 메타 용어들 (승인용 글에서는 HTML 태그 보존)
+            meta_terms = [
+                r'행동\s*유도\s*문구\s*텍스트',
+                r'문구\s*텍스트',
+                r'메타\s*텍스트',
+                r'프롬프트\s*지시사항',
+                r'시스템\s*프롬프트',
+                r'AI\s*지침',
+                r'콘텐츠\s*생성\s*지침',
+                r'작성\s*가이드라인',
+                r'HTML\s*태그\s*가이드',
+                r'서론\s*\d+자',
+                r'본문\s*\d+자',
+                r'제목\s*\d+자',
+                r'\d+자\s*내외',
+                r'\d+자\s*분량',
+                r'총\s*\d+-?\d*자',
+                r'😊.*?:',
+                r'👍.*?:',
+                r'✅.*?:',
+                r'💡.*?:',
+                r'📌.*?:',
+                r'🔍.*?:',
+                r'구체적이고\s*설명적인',
+                r'단계별\s*목표',
+                r'핵심\s*키워드',
+                r'타겟\s*독자',
+                r'```[a-z]*',
+                r'```',
+                r'\*\*[^*]*\*\*:',
+                r'#+\s*[^#]*:',
+                r'AI\s*역할\s*언급',
+                r'\d+년\s*경력의?\s*전문가로서',
+                r'SEO\s*전문가로서',
+                r'콘텐츠\s*작가로서',
+                r'마크다운\s*문법\s*절대\s*사용\s*금지',
+                r'HTML\s*태그만\s*사용',
+                r'코드\s*블록\s*사용\s*금지'
+            ]
+
+            # HTML 관련 마크업 문구 제거 (승인용에서는 실제 HTML 태그는 보존)
+            html_markup_patterns = [
+                r'```html.*?```',
+                r'```html',
+                r'`html.*?`',
+                r'`html',
+                r'"html',
+                r'<!DOCTYPE[^>]*>',
+                r'<html[^>]*>',
+                r'</html>',
+                r'<head[^>]*>.*?</head>',
+                r'<body[^>]*>',
+                r'</body>',
+                r'<meta[^>]*>',
+                r'<title[^>]*>.*?</title>',
+            ]
+
+            # 각 메타 용어 제거
+            for term in meta_terms:
+                content = re.sub(term, '', content, flags=re.IGNORECASE | re.MULTILINE | re.DOTALL)
+
+            # HTML 관련 마크업 문구 제거
+            for pattern in html_markup_patterns:
+                content = re.sub(pattern, '', content, flags=re.IGNORECASE | re.MULTILINE | re.DOTALL)
+
+            # 마크다운을 HTML로 강제 변환 (승인용 글 전용)
+            content = self.convert_approval_markdown_to_html(content)
+
+            # <h1> 태그만 제거 (승인용에서는 사용하지 않음)
+            content = re.sub(r'<h1[^>]*>.*?</h1>', '', content, flags=re.IGNORECASE | re.DOTALL)
+            content = re.sub(r'<h1[^>]*>', '', content, flags=re.IGNORECASE)
+            content = re.sub(r'</h1>', '', content, flags=re.IGNORECASE)
+
+            # 승인용에서는 <h2>, <p> 태그는 보존 (제거하지 않음)
+
+            # 특정 패턴들 추가 제거
+            content = re.sub(r'서론\s*\d+자', '', content, flags=re.IGNORECASE)
+            content = re.sub(r'본문\s*\d+자', '', content, flags=re.IGNORECASE)
+            content = re.sub(r'제목\s*\d+자', '', content, flags=re.IGNORECASE)
+
+            # 단독으로 나오는 숫자+점 패턴 제거
+            content = re.sub(r'^\s*\d+\.\s*$', '', content, flags=re.MULTILINE)
+            content = re.sub(r'<p>\s*\d+\.\s*</p>', '', content, flags=re.IGNORECASE)
+
+            # 빈 태그나 의미없는 구문 정리
+            content = re.sub(r'<p>\s*</p>', '', content)
+            content = re.sub(r'<div>\s*</div>', '', content)
+            content = re.sub(r'\n\s*\n\s*\n', '\n\n', content)
+
+            return content.strip()
+
+        except Exception as e:
+            self.log(f"승인용 메타 용어 제거 중 오류: {e}")
+            return content
+
+    def convert_approval_markdown_to_html(self, content):
+        """승인용 글의 마크다운을 HTML로 변환 - <h2>, <p> 태그 강제 적용"""
+        try:
+            import re
+            
+            # 마크다운 헤더를 HTML로 변환
+            content = re.sub(r'^### (.*?)$', r'<h3><strong>\1</strong></h3>', content, flags=re.MULTILINE)
+            content = re.sub(r'^## (.*?)$', r'<h2><strong>\1</strong></h2>', content, flags=re.MULTILINE)
+            content = re.sub(r'^# (.*?)$', '', content, flags=re.MULTILINE)  # h1은 제거
+            
+            # 마크다운 볼드를 HTML로 변환
+            content = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', content)
+            content = re.sub(r'__(.*?)__', r'<strong>\1</strong>', content)
+            
+            # 마크다운 이탤릭을 HTML로 변환
+            content = re.sub(r'\*(.*?)\*', r'<em>\1</em>', content)
+            content = re.sub(r'_(.*?)_', r'<em>\1</em>', content)
+            
+            # 줄바꿈을 <p> 태그로 변환 (빈 줄로 구분된 단락들)
+            paragraphs = re.split(r'\n\s*\n', content.strip())
+            html_paragraphs = []
+            
+            for paragraph in paragraphs:
+                paragraph = paragraph.strip()
+                if paragraph:
+                    # 이미 HTML 태그로 감싸져 있는지 확인
+                    if paragraph.startswith('<h') or paragraph.startswith('<div') or paragraph.startswith('<table'):
+                        html_paragraphs.append(paragraph)
+                    elif paragraph.startswith('<p>') and paragraph.endswith('</p>'):
+                        html_paragraphs.append(paragraph)
+                    else:
+                        # 단순 텍스트는 <p> 태그로 감싸기
+                        html_paragraphs.append(f'<p>{paragraph}</p>')
+            
+            content = '\n\n'.join(html_paragraphs)
+            
+            # 중복 <p> 태그 제거
+            content = re.sub(r'<p>\s*<p>(.*?)</p>\s*</p>', r'<p>\1</p>', content, flags=re.DOTALL)
+            
+            return content.strip()
+            
+        except Exception as e:
+            self.log(f"승인용 마크다운 변환 중 오류: {e}")
+            return content
+
+    def final_approval_validation(self, content, keyword):
+        """승인용 글 최종 검증 및 강제 HTML 변환"""
+        try:
+            import re
+            
+            self.log("🔍 승인용 글 최종 검증 시작...")
+            
+            # 마크다운 문법 검사
+            markdown_found = False
+            markdown_patterns = [
+                (r'##\s+', '## 헤딩'),
+                (r'\*\*.*?\*\*', '**볼드**'),
+                (r'\*.*?\*(?!\*)', '*이탤릭*'),
+                (r'```', '코드 블록'),
+                (r'---', '구분선'),
+                (r'`.*?`', '인라인 코드')
+            ]
+            
+            for pattern, name in markdown_patterns:
+                if re.search(pattern, content):
+                    self.log(f"⚠️ 마크다운 발견: {name}")
+                    markdown_found = True
+            
+            if markdown_found:
+                self.log("🔧 마크다운을 HTML로 강제 변환 중...")
+                content = self.convert_approval_markdown_to_html(content)
+                
+                # 변환 후 재검사
+                for pattern, name in markdown_patterns:
+                    if re.search(pattern, content):
+                        self.log(f"⚠️ 변환 후에도 마크다운 남음: {name}")
+                        # 더 강력한 변환 수행
+                        content = re.sub(r'##\s+(.*?)(?=\n|$)', r'<h2><strong>\1</strong></h2>', content)
+                        content = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', content)
+                        content = re.sub(r'\*(.*?)\*', r'<em>\1</em>', content)
+                        content = re.sub(r'```.*?```', '', content, flags=re.DOTALL)
+                        content = re.sub(r'`(.*?)`', r'\1', content)
+                        content = re.sub(r'---+', '', content)
+            
+            # HTML 구조 검증
+            h2_count = len(re.findall(r'<h2[^>]*>.*?</h2>', content, re.IGNORECASE | re.DOTALL))
+            p_count = len(re.findall(r'<p[^>]*>.*?</p>', content, re.IGNORECASE | re.DOTALL))
+            
+            self.log(f"📊 HTML 구조 검증: <h2> {h2_count}개, <p> {p_count}개")
+            
+            if h2_count == 0:
+                self.log("⚠️ <h2> 태그가 없음 - 소제목 강제 생성")
+                # 간단한 소제목 추가
+                subtitles = ["활용법", "주요 특징", "실무 팁"]
+                for i, subtitle in enumerate(subtitles):
+                    if f"<h2>" not in content:
+                        content = f"<h2><strong>{keyword} {subtitle}</strong></h2>\n" + content
+                        break
+            
+            if p_count == 0:
+                self.log("⚠️ <p> 태그가 없음 - 텍스트를 <p>로 감싸기")
+                # 텍스트를 <p> 태그로 감싸기
+                lines = content.split('\n')
+                processed_lines = []
+                for line in lines:
+                    line = line.strip()
+                    if line and not line.startswith('<'):
+                        processed_lines.append(f"<p>{line}</p>")
+                    elif line:
+                        processed_lines.append(line)
+                content = '\n'.join(processed_lines)
+            
+            self.log("✅ 승인용 글 최종 검증 완료")
+            return content
+            
+        except Exception as e:
+            self.log(f"승인용 글 최종 검증 중 오류: {e}")
+            return content
+
+    def extract_approval_title(self, raw_content, keyword):
+        """승인용 글에서 제목만 추출 (원본 AI 응답에서)"""
+        try:
+            import re
+            
+            self.log("🔍 원본 응답에서 제목 추출 시작...")
+            
+            lines = raw_content.split('\n')
+            for i, line in enumerate(lines[:5]):  # 처음 5줄만 확인
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # HTML 태그 완전 제거
+                clean_line = re.sub(r'<[^>]+>', '', line).strip()
+                
+                # 불필요한 문자 제거 (큰따옴표, #, *, 백틱 등)
+                clean_line = clean_line.replace('"', '').replace("'", '').replace('`', '')
+                clean_line = clean_line.replace('#', '').replace('*', '').replace('**', '')
+                clean_line = re.sub(r'^[\s\-_=]+', '', clean_line)
+                clean_line = re.sub(r'[\s\-_=]+$', '', clean_line)
+                clean_line = clean_line.strip()
+                
+                # 제목 패턴 확인: 콜론이 있고, 적절한 길이이고, HTML 태그로 시작하지 않음
+                if ':' in clean_line and 15 <= len(clean_line) <= 70 and not line.startswith('<'):
+                    # 추가 검증: 콜론 뒤에 콤마가 있어야 함 (승인용 제목 형식)
+                    parts = clean_line.split(':', 1)
+                    if len(parts) == 2 and ',' in parts[1]:
+                        self.log(f"📌 제목 추출 성공: {clean_line}")
+                        return clean_line
+            
+            # 제목을 찾지 못한 경우 키워드 기반 생성
+            fallback_title = f"{keyword}: 활용법, 주요 특징, 실무 팁"
+            self.log(f"⚠️ 제목 추출 실패, 자동 생성: {fallback_title}")
+            return fallback_title
+            
+        except Exception as e:
+            self.log(f"제목 추출 중 오류: {e}")
+            return f"{keyword}: 활용법, 주요 특징, 실무 팁"
+
+    def process_approval_step_content(self, raw_content, step_number, keyword):
+        """승인용 글 단계별 정밀 처리 - 제목 분리, HTML 구조 강제 적용"""
+        try:
+            import re
+            
+            self.log(f"🔧 승인용 {step_number}단계 정밀 처리 시작...")
+            
+            # 1단계: 기본 메타 용어 제거
+            content = self.remove_approval_meta_terms(raw_content)
+            
+            # 2단계: 단계별 맞춤 처리
+            if step_number == 1:
+                # 1단계: 제목 + 서론 + 첫 번째 소제목 + 본문
+                content = self.process_approval_step1(content, keyword)
+            elif step_number == 2:
+                # 2단계: 두 번째 소제목 + 본문
+                content = self.process_approval_step2(content, keyword)
+            elif step_number == 3:
+                # 3단계: 세 번째 소제목 + 본문
+                content = self.process_approval_step3(content, keyword)
+            
+            self.log(f"✅ 승인용 {step_number}단계 처리 완료")
+            return content
+            
+        except Exception as e:
+            self.log(f"승인용 {step_number}단계 처리 중 오류: {e}")
+            return self.remove_approval_meta_terms(raw_content)
+
+    def process_approval_step1(self, content, keyword):
+        """승인용 1단계 처리: 제목은 완전히 제외하고 서론+소제목1+본문1만 반환"""
+        try:
+            import re
+            
+            self.log("🔧 1단계: 제목 완전 제외, 서론+소제목1+본문1 처리")
+            
+            lines = content.split('\n')
+            processed_lines = []
+            title_lines_removed = 0
+            intro_content = []
+            subtitle_content = []
+            body_content = []
+            current_section = 'intro'
+            
+            # 먼저 제목으로 보이는 모든 라인을 식별하고 제거
+            filtered_lines = []
+            for i, line in enumerate(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # HTML 태그 제거한 순수 텍스트
+                clean_line = re.sub(r'<[^>]+>', '', line).strip()
+                
+                # 제목 패턴 감지 및 완전 제거
+                is_title = False
+                
+                # 패턴 1: 콜론이 있고 콤마가 있는 제목 형식
+                if ':' in clean_line and ',' in clean_line and 15 <= len(clean_line) <= 70:
+                    parts = clean_line.split(':', 1)
+                    if len(parts) == 2 and len(parts[1].split(',')) >= 2:
+                        is_title = True
+                        self.log(f"📌 제목 패턴1 감지하여 제거: {clean_line[:40]}...")
+                
+                # 패턴 2: 키워드가 포함되고 콜론이 있는 경우
+                if keyword in clean_line and ':' in clean_line and len(clean_line) <= 60:
+                    is_title = True
+                    self.log(f"📌 제목 패턴2 감지하여 제거: {clean_line[:40]}...")
+                
+                # 패턴 3: 첫 5줄 중에서 콜론만 있는 경우도 제목으로 간주
+                if i < 5 and ':' in clean_line and not line.startswith('<') and len(clean_line) >= 10:
+                    is_title = True
+                    self.log(f"📌 제목 패턴3 감지하여 제거: {clean_line[:40]}...")
+                
+                if is_title:
+                    title_lines_removed += 1
+                    continue  # 제목 라인은 완전히 스킵
+                
+                filtered_lines.append(line)
+            
+            self.log(f"📊 제목 라인 {title_lines_removed}개 제거됨")
+            
+            # 필터링된 라인들을 다시 처리
+            for line in filtered_lines:
+                # 마크다운 헤더를 HTML로 강제 변환
+                if re.match(r'^##\s+', line):
+                    subtitle_text = re.sub(r'^##\s+', '', line).strip()
+                    subtitle_text = re.sub(r'\*\*(.*?)\*\*', r'\1', subtitle_text)  # ** 제거
+                    subtitle_content.append(f"<h2><strong>{subtitle_text}</strong></h2>")
+                    current_section = 'body'
+                    self.log(f"📌 마크다운 소제목 변환: {subtitle_text}")
+                    continue
+                
+                # HTML h2 태그가 이미 있는 경우
+                if re.match(r'<h2[^>]*>', line, re.IGNORECASE):
+                    current_section = 'body'
+                    # <strong> 태그가 없으면 추가
+                    if '<strong>' not in line.lower():
+                        line = re.sub(r'<h2[^>]*>(.*?)</h2>', r'<h2><strong>\1</strong></h2>', line, flags=re.IGNORECASE)
+                    subtitle_content.append(line)
+                    self.log(f"📌 HTML 소제목 발견: {line}")
+                    continue
+                
+                # 볼드 마크다운 제거
+                line = re.sub(r'\*\*(.*?)\*\*', r'\1', line)
+                
+                # 본문 내용 처리
+                if current_section == 'intro':
+                    intro_content.append(line)
+                elif current_section == 'body':
+                    body_content.append(line)
+                else:
+                    intro_content.append(line)
+            
+            # 서론을 <p> 태그로 강제 처리 (h태그 사용하지 않음)
+            if intro_content:
+                intro_text = ' '.join(intro_content).strip()
+                # HTML 태그 제거 후 순수 텍스트만 추출
+                intro_text = re.sub(r'<[^>]+>', '', intro_text)
+                
+                # 서론에서도 제목 패턴이 남아있는지 한번 더 확인
+                if ':' in intro_text and ',' in intro_text:
+                    # 콜론 이후 부분만 사용 (제목 앞부분 제거)
+                    parts = intro_text.split(':', 1)
+                    if len(parts) == 2:
+                        intro_text = parts[1].strip()
+                        # 첫 번째 콤마 이후 부분부터 사용
+                        comma_parts = intro_text.split(',', 1)
+                        if len(comma_parts) == 2:
+                            intro_text = comma_parts[1].strip()
+                        self.log("📌 서론에서 제목 잔여 부분 제거")
+                
+                if intro_text and len(intro_text) > 10:  # 의미있는 서론이 있을 때만
+                    processed_lines.append(f"<p>{intro_text}</p>")
+                    self.log(f"📌 서론 생성 (p태그): {intro_text[:50]}...")
+            
+            # 소제목이 없으면 강제 생성
+            if not subtitle_content:
+                processed_lines.append(f"<h2><strong>{keyword} 기본 활용법</strong></h2>")
+                self.log(f"📌 소제목 강제 생성: {keyword} 기본 활용법")
+            else:
+                processed_lines.extend(subtitle_content)
+            
+            # 본문을 <p> 태그로 강제 처리
+            if body_content:
+                body_text = ' '.join(body_content).strip()
+                # HTML 태그 제거 후 순수 텍스트만 추출
+                body_text = re.sub(r'<[^>]+>', '', body_text)
+                if body_text and len(body_text) > 10:  # 의미있는 본문이 있을 때만
+                    processed_lines.append(f"<p>{body_text}</p>")
+                    self.log(f"📌 본문 생성: {body_text[:50]}...")
+            
+            result = '\n\n'.join(processed_lines)
+            self.log("✅ 1단계 제목 완전 제거 및 HTML 구조 강제 적용 완료")
+            return result
+            
+        except Exception as e:
+            self.log(f"1단계 처리 중 오류: {e}")
+            return content
+
+    def process_approval_step2(self, content, keyword):
+        """승인용 2단계 처리: 소제목2 + 본문2"""
+        try:
+            import re
+            
+            self.log("🔧 2단계: 소제목2+본문2 처리")
+            
+            lines = content.split('\n')
+            processed_lines = []
+            subtitle_content = []
+            body_content = []
+            current_section = 'subtitle'
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # 마크다운 헤더를 HTML로 강제 변환
+                if re.match(r'^##\s+', line):
+                    subtitle_text = re.sub(r'^##\s+', '', line).strip()
+                    subtitle_text = re.sub(r'\*\*(.*?)\*\*', r'\1', subtitle_text)  # ** 제거
+                    subtitle_content.append(f"<h2><strong>{subtitle_text}</strong></h2>")
+                    current_section = 'body'
+                    self.log(f"📌 2단계 마크다운 소제목 변환: {subtitle_text}")
+                    continue
+                
+                # HTML h2 태그가 이미 있는 경우
+                if re.match(r'<h2[^>]*>', line, re.IGNORECASE):
+                    current_section = 'body'
+                    # <strong> 태그가 없으면 추가
+                    if '<strong>' not in line.lower():
+                        line = re.sub(r'<h2[^>]*>(.*?)</h2>', r'<h2><strong>\1</strong></h2>', line, flags=re.IGNORECASE)
+                    subtitle_content.append(line)
+                    self.log(f"📌 2단계 HTML 소제목 발견: {line}")
+                    continue
+                
+                # 볼드 마크다운 제거
+                line = re.sub(r'\*\*(.*?)\*\*', r'\1', line)
+                
+                # 본문 내용 수집
+                if current_section == 'body':
+                    body_content.append(line)
+                else:
+                    # 소제목이 없으면 이 내용으로 소제목 생성
+                    if not subtitle_content and current_section == 'subtitle':
+                        first_words = ' '.join(line.split()[:3])
+                        subtitle_content.append(f"<h2><strong>{keyword} {first_words} 특징</strong></h2>")
+                        current_section = 'body'
+                        self.log(f"📌 2단계 소제목 자동 생성: {keyword} {first_words} 특징")
+                    body_content.append(line)
+            
+            # 소제목이 없으면 강제 생성
+            if not subtitle_content:
+                processed_lines.append(f"<h2><strong>{keyword} 주요 특징</strong></h2>")
+                self.log(f"📌 2단계 소제목 강제 생성: {keyword} 주요 특징")
+            else:
+                processed_lines.extend(subtitle_content)
+            
+            # 본문을 <p> 태그로 강제 처리
+            if body_content:
+                body_text = ' '.join(body_content).strip()
+                # HTML 태그 제거 후 순수 텍스트만 추출
+                body_text = re.sub(r'<[^>]+>', '', body_text)
+                if body_text:
+                    processed_lines.append(f"<p>{body_text}</p>")
+                    self.log(f"📌 2단계 본문 생성: {body_text[:50]}...")
+            
+            result = '\n\n'.join(processed_lines)
+            self.log("✅ 2단계 HTML 구조 강제 적용 완료")
+            return result
+            
+        except Exception as e:
+            self.log(f"2단계 처리 중 오류: {e}")
+            return content
+
+    def process_approval_step3(self, content, keyword):
+        """승인용 3단계 처리: 소제목3 + 본문3"""
+        try:
+            import re
+            
+            self.log("🔧 3단계: 소제목3+본문3 처리")
+            
+            lines = content.split('\n')
+            processed_lines = []
+            subtitle_content = []
+            body_content = []
+            current_section = 'subtitle'
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # 마크다운 헤더를 HTML로 강제 변환
+                if re.match(r'^##\s+', line):
+                    subtitle_text = re.sub(r'^##\s+', '', line).strip()
+                    subtitle_text = re.sub(r'\*\*(.*?)\*\*', r'\1', subtitle_text)  # ** 제거
+                    subtitle_content.append(f"<h2><strong>{subtitle_text}</strong></h2>")
+                    current_section = 'body'
+                    self.log(f"📌 3단계 마크다운 소제목 변환: {subtitle_text}")
+                    continue
+                
+                # HTML h2 태그가 이미 있는 경우
+                if re.match(r'<h2[^>]*>', line, re.IGNORECASE):
+                    current_section = 'body'
+                    # <strong> 태그가 없으면 추가
+                    if '<strong>' not in line.lower():
+                        line = re.sub(r'<h2[^>]*>(.*?)</h2>', r'<h2><strong>\1</strong></h2>', line, flags=re.IGNORECASE)
+                    subtitle_content.append(line)
+                    self.log(f"📌 3단계 HTML 소제목 발견: {line}")
+                    continue
+                
+                # 볼드 마크다운 제거
+                line = re.sub(r'\*\*(.*?)\*\*', r'\1', line)
+                
+                # 본문 내용 수집
+                if current_section == 'body':
+                    body_content.append(line)
+                else:
+                    # 소제목이 없으면 이 내용으로 소제목 생성
+                    if not subtitle_content and current_section == 'subtitle':
+                        first_words = ' '.join(line.split()[:3])
+                        subtitle_content.append(f"<h2><strong>{keyword} {first_words} 활용 팁</strong></h2>")
+                        current_section = 'body'
+                        self.log(f"📌 3단계 소제목 자동 생성: {keyword} {first_words} 활용 팁")
+                    body_content.append(line)
+            
+            # 소제목이 없으면 강제 생성
+            if not subtitle_content:
+                processed_lines.append(f"<h2><strong>{keyword} 실무 활용 팁</strong></h2>")
+                self.log(f"📌 3단계 소제목 강제 생성: {keyword} 실무 활용 팁")
+            else:
+                processed_lines.extend(subtitle_content)
+            
+            # 본문을 <p> 태그로 강제 처리
+            if body_content:
+                body_text = ' '.join(body_content).strip()
+                # HTML 태그 제거 후 순수 텍스트만 추출
+                body_text = re.sub(r'<[^>]+>', '', body_text)
+                if body_text:
+                    processed_lines.append(f"<p>{body_text}</p>")
+                    self.log(f"📌 3단계 본문 생성: {body_text[:50]}...")
+            
+            result = '\n\n'.join(processed_lines)
+            self.log("✅ 3단계 HTML 구조 강제 적용 완료")
+            return result
+            
+        except Exception as e:
+            self.log(f"3단계 처리 중 오류: {e}")
+            return content
+
+    def generate_approval_content(self, keyword):
+        """승인용 콘텐츠 생성 - approval1.txt, approval2.txt, approval3.txt만 사용"""
+        try:
+            # 승인용 프롬프트 파일 로드 (3개만)
             approval_files = [
                 "approval1.txt", "approval2.txt", "approval3.txt"
             ]
@@ -1652,7 +2240,7 @@ class ContentGenerator:
             all_content_parts = []
             title = ""
 
-            # 모든 승인용 프롬프트 파일을 순차적으로 적용
+            # 3개 승인용 프롬프트 파일을 순차적으로 적용
             for i, approval_file in enumerate(approval_files, 1):
                 prompt_path = os.path.join(get_base_path(), "prompts", approval_file)
 
@@ -1668,6 +2256,8 @@ class ContentGenerator:
 
                     # 키워드 대체
                     prompt = prompt_template.replace("{keyword}", keyword)
+                    
+                    # 승인용 글 전용: 프롬프트 파일에 이미 규칙이 있으므로 추가하지 않음
 
                     print(f"승인용 {i}단계 생성 중", end=" ")
 
@@ -1676,62 +2266,47 @@ class ContentGenerator:
                         response_text = self.call_ai_api(prompt, f"승인용 {i}단계", max_tokens=1500, temperature=0.7)
 
                         if response_text and response_text.strip():
-                            step_content = self.remove_prompt_meta_terms(response_text.strip())
-                            
-                            # 1단계는 특별 처리 - 제목+서론+링크버튼만 유지
+                            # 첫 번째 단계에서 승인용 제목 추출 (처리 전 원본에서)
                             if i == 1:
-                                step_content = self.clean_step1_content(step_content)
-                                
+                                title = self.extract_approval_title(response_text.strip(), keyword)
+                            
+                            # AI 출력 검증 및 자동 수정 (프롬프트 '중요 주의사항' 규칙 적용)
+                            response_text = self.validate_ai_output(response_text.strip(), keyword)
+                            
+                            # 승인용 글 전용 정밀 처리 (제목 완전 제거)
+                            step_content = self.process_approval_step_content(response_text, i, keyword)
+                            
                             all_content_parts.append(step_content)
-
-                            # 첫 번째 단계에서 제목 추출
-                            if i == 1 and step_content:
-                                lines = step_content.split('\n')
-                                for line in lines:
-                                    line = line.strip()
-                                    if line and not line.startswith('<'):
-                                        import re
-                                        clean_title = re.sub(r'<[^>]+>', '', line)
-                                        if len(clean_title) > 10:
-                                            title = clean_title
-                                            break
 
                         # 다음 단계로 계속 진행
 
                     except Exception as step_error:
-                        self.log(f"  ✨ 승인용 단계 {i} 오류: {step_error}")
+                        self.log(f"❌ 승인용 {i}단계 오류: {str(step_error)}")
                         # 단계별 오류 시에도 계속 진행
                 else:
-                    self.log(f"  🔥 승인용 프롬프트 파일 없음: {approval_file}")
+                    self.log(f"❌ 승인용 프롬프트 파일 없음: {approval_file}")
 
             if not all_content_parts:
                 self.log(f"🔥 승인용 콘텐츠 생성 실패 - 모든 단계 실패")
                 return None, None, None
 
-            # 모든 단계의 콘텐츠를 결합
+            # 3단계의 콘텐츠를 결합
             full_content = "\n\n".join(all_content_parts)
+            
+            # 승인용 글 최종 검증 및 강제 HTML 변환
+            full_content = self.final_approval_validation(full_content, keyword)
+            
+            self.log(f"📝 승인용 본문 생성 완료 - 3단계 ({len(full_content)}자)")
             print()  # 승인용 콘텐츠 생성 완료 후 개행
 
-            # 마크다운을 HTML로 변환
-            full_content = self.convert_markdown_to_html(full_content)
-            
-            # HTML 구조 정리 및 오류 수정
-            full_content = self.clean_content(full_content)
-
             if not title:
-                # prompt1.txt 제목 지침에 따른 AI 생성 제목
-                title = self.generate_ai_title(keyword)
+                # 승인용 전용 fallback 제목 생성
+                self.log("⚠️ 승인용 제목 추출 실패, fallback 제목 생성")
+                title = self.generate_approval_fallback_title(keyword)
                 if not title:
-                    # AI 실패 시 fallback 제목 생성
-                    hook_phrases = [
-                        "5분만에 끝내는 완벽 가이드", "10가지 핵심 포인트", "3단계로 마스터하기",
-                        "7가지 전문가 팁", "2배 효과적인 방법", "30초만에 해결하는 비법",
-                        "15분 투자로 평생 활용", "4가지 실무 노하우", "6개월 경험을 압축한 가이드",
-                        "9가지 검증된 방법", "1일 1시간으로 완성", "12가지 실전 전략"
-                    ]
-                    import random
-                    hook_phrase = random.choice(hook_phrases)
-                    title = f"{keyword} | {hook_phrase}"
+                    # 최후 fallback - 승인용 형식에 맞게 생성
+                    approval_subtitles = ["활용법", "주요 특징", "실무 팁"]
+                    title = f"{keyword}: {approval_subtitles[0]}, {approval_subtitles[1]}, {approval_subtitles[2]}"
                 self.log(f"📝 자동 생성된 제목: {title}")
 
             # 썸네일 이미지 선택 및 제목 추가
@@ -1741,28 +2316,39 @@ class ContentGenerator:
             # 제목이 있으면 썸네일에 제목 추가
             thumbnail_path = self.create_thumbnail_with_title(title, keyword)
 
-            self.log(f"✅ 승인용 완료: {title}")
             return title, full_content, thumbnail_path
 
         except Exception as e:
-            self.log(f"🔥 승인용 콘텐츠 생성 오류: {e}")
+            self.log(f"🔥 승인용 콘텐츠 생성 오류: {str(e)}")
+            import traceback
+            self.log(f"🔍 상세 오류:\n{traceback.format_exc()}")
             return None, None, None
 
     def convert_markdown_to_html(self, content):
         """마크다운을 HTML로 변환"""
         try:
-            # 먼저 링크 버튼 부분을 보호 (class="blink" 포함)
+            # 먼저 링크 버튼 및 다운로드 버튼 HTML을 모두 보호
             link_patterns = []
             def preserve_link_html(match):
                 link_patterns.append(match.group(0))
                 return f"__LINK_PLACEHOLDER_{len(link_patterns)-1}__"
 
+            # 다운로드 버튼 전체 container 보호 (class="button-container")
+            content = re.sub(r'<div\s+class="button-container">.*?</div>', preserve_link_html, content, flags=re.DOTALL)
+            
+            # 개별 다운로드 버튼 <a> 태그 보호 (class="custom-download-btn")
+            content = re.sub(r'<a[^>]*class="custom-download-btn"[^>]*>.*?</a>', preserve_link_html, content, flags=re.DOTALL)
+            
             # <div><center><a class="blink"  패턴 보호
             content = re.sub(r'<div><center><a[^>]*class="blink"[^>]*>.*?</a></center></div>', preserve_link_html, content, flags=re.DOTALL)
             # <center><a class="blink"  패턴도 보호
             content = re.sub(r'<center><a[^>]*class="blink"[^>]*>.*?</a></center>', preserve_link_html, content, flags=re.DOTALL)
             # 단순 <a class="blink"  패턴도 보호
             content = re.sub(r'<a[^>]*class="blink"[^>]*>.*?</a>', preserve_link_html, content, flags=re.DOTALL)
+            
+            # link1, link2, link3 클래스 보호 - prompt2.txt, prompt3.txt, prompt4.txt에서 사용
+            content = re.sub(r'<div><center><p><a[^>]*class="link[123]"[^>]*>.*?</a></p></center></div>', preserve_link_html, content, flags=re.DOTALL)
+            content = re.sub(r'<a[^>]*class="link[123]"[^>]*>.*?</a>', preserve_link_html, content, flags=re.DOTALL)
 
             # 마크다운 코드 블록 제거 (```html, ```python 등)
             content = re.sub(r'```[a-z]*\n?', '', content, flags=re.IGNORECASE)
@@ -1825,6 +2411,298 @@ class ContentGenerator:
         except Exception as e:
             self.log(f"마크다운 변환 중 오류: {e}")
             return content
+
+    def validate_ai_output(self, content, keyword):
+        """
+        AI 출력 검증 - 프롬프트의 '중요 주의사항' 규칙들을 자동으로 검사하고 수정
+        프롬프트 파일에 적힌 주의사항들을 Python 로직으로 처리
+        """
+        try:
+            import re
+            
+            issues_found = []
+            fixes_applied = []
+            
+            # 규칙 1: 플레이스홀더 텍스트 검증
+            placeholder_patterns = [
+                (r'<p>본문\d+-?\d?\s*\d+자</p>', '실제 본문 내용이 없고 플레이스홀더만 있음'),
+                (r'<h[2-4]><strong>소제목\d+</strong></h[2-4]>', '소제목이 구체적이지 않고 플레이스홀더만 있음'),
+                (r'\[실제 유용한 URL\]', '[실제 유용한 URL] 플레이스홀더가 그대로 남아있음'),
+                (r'\[구체적인 앵커 텍스트\]', '[구체적인 앵커 텍스트] 플레이스홀더가 그대로 남아있음'),
+                (r'href="\s*url\s*입력\s*"', 'href="url 입력" 플레이스홀더가 그대로 남아있음'),
+                (r'href="\s*\[.*?\]\s*"', 'href에 대괄호 플레이스홀더가 남아있음'),
+                (r'>\s*앵커\s*텍스트\s*<', '"앵커 텍스트" 플레이스홀더가 그대로 남아있음'),
+                (r'\[\{keyword\}.*?\]', '[{keyword}...] 형태의 플레이스홀더가 남아있음'),
+                (r'\[.*?대상\s*\d+.*?\]', '[대상 1], [대상 2] 같은 플레이스홀더가 남아있음'),
+                (r'\[.*?항목\s*\d+.*?\]', '[항목 1], [비교 항목] 같은 플레이스홀더가 남아있음'),
+                (r'\[.*?표\s*주제.*?\]', '[표 주제] 플레이스홀더가 남아있음'),
+                (r'\[사용자의 실제 고민 질문\]', 'FAQ 질문이 구체적이지 않고 플레이스홀더만 있음'),
+                (r'\[상세한 답변 내용\]', 'FAQ 답변이 구체적이지 않고 플레이스홀더만 있음'),
+                (r'\[.*?\d+자.*?\]', '[300자], [200-300자] 같은 분량 플레이스홀더가 남아있음'),
+            ]
+            
+            for pattern, issue_msg in placeholder_patterns:
+                matches = re.findall(pattern, content, flags=re.IGNORECASE)
+                if matches:
+                    issues_found.append(f"❌ {issue_msg} (발견: {len(matches)}개)")
+                    self.log(f"⚠️ AI 출력 검증 실패: {issue_msg}")
+                    # 실제 내용으로 교체 시도
+                    if 'href="url 입력"' in content or 'href=" url 입력 "' in content:
+                        search_url = f"https://search.naver.com/search.naver?query={keyword.replace(' ', '+')}"
+                        content = re.sub(r'href="\s*url\s*입력\s*"', f'href="{search_url}"', content, flags=re.IGNORECASE)
+                        fixes_applied.append("✅ 'href=\"url 입력\"'을 실제 검색 URL로 교체")
+            
+            # 규칙 2: 형식 지시자 검증 (출력에 포함되면 안 되는 것들)
+            format_indicators = [
+                r'【형식\d+】',
+                r'▼▼▼.*?▼▼▼',
+                r'출력\s*형식',
+                r'출력\s*예시',
+                r'절대\s*지켜야\s*할\s*규칙',
+                r'중요\s*주의사항',
+                r'\(아래\s*형식을.*?출력해\)',
+            ]
+            
+            for pattern in format_indicators:
+                if re.search(pattern, content, flags=re.IGNORECASE):
+                    issues_found.append(f"❌ 형식 지시자가 출력에 포함됨: {pattern}")
+                    self.log(f"⚠️ AI가 형식 지시자를 출력에 포함시킴: {pattern}")
+                    # 형식 지시자 제거
+                    content = re.sub(pattern, '', content, flags=re.IGNORECASE)
+                    fixes_applied.append(f"✅ 형식 지시자 제거: {pattern}")
+            
+            # 규칙 3: HTML 속성 검증
+            html_attribute_issues = []
+            
+            # class 속성 없는 링크 검사 (blink, link1, link2, link3, custom-download-btn 중 하나는 있어야 함)
+            links_without_class = re.findall(r'<a\s+(?![^>]*class=)[^>]*href=[^>]*>', content, flags=re.IGNORECASE)
+            if links_without_class:
+                html_attribute_issues.append(f"❌ class 속성이 없는 <a> 태그 발견: {len(links_without_class)}개")
+            
+            # href 속성 없는 링크 검사
+            links_without_href = re.findall(r'<a\s+(?![^>]*href=)[^>]*class=[^>]*>', content, flags=re.IGNORECASE)
+            if links_without_href:
+                html_attribute_issues.append(f"❌ href 속성이 없는 <a> 태그 발견: {len(links_without_href)}개")
+            
+            # target 속성 없는 링크 검사
+            links_without_target = re.findall(r'<a\s+(?![^>]*target=)[^>]*href=[^>]*>', content, flags=re.IGNORECASE)
+            if links_without_target and len(links_without_target) > 0:
+                # target 속성 추가
+                content = re.sub(r'(<a\s+[^>]*)(href=[^>]*)>', r'\1\2 target="_self">', content, flags=re.IGNORECASE)
+                fixes_applied.append(f"✅ {len(links_without_target)}개 링크에 target=\"_self\" 속성 추가")
+            
+            # 따옴표 없는 class 속성 검사 (class=blink 같은 경우)
+            class_without_quotes = re.findall(r'class=(?!")([^\s>]+)', content, flags=re.IGNORECASE)
+            if class_without_quotes:
+                html_attribute_issues.append(f"❌ 따옴표 없는 class 속성 발견: {class_without_quotes}")
+                # 따옴표 추가
+                content = re.sub(r'class=(?!")([^\s>]+)', r'class="\1"', content, flags=re.IGNORECASE)
+                fixes_applied.append(f"✅ class 속성에 따옴표 추가")
+            
+            issues_found.extend(html_attribute_issues)
+            
+            # 규칙 4: link1, link2, link3 숫자 검증
+            link_classes = re.findall(r'class="(link\d?)"', content, flags=re.IGNORECASE)
+            if 'link"' in str(link_classes) or '"link"' in content:
+                issues_found.append("❌ class=\"link\"에서 숫자가 빠짐 (link1, link2, link3 중 하나여야 함)")
+                self.log("⚠️ class=\"link\"는 숫자가 필요함")
+            
+            # 검증 결과 로깅
+            if issues_found:
+                self.log(f"⚠️ AI 출력 검증: {len(issues_found)}개 문제 발견")
+                for issue in issues_found:
+                    self.log(f"  {issue}")
+            
+            if fixes_applied:
+                self.log(f"✅ AI 출력 자동 수정: {len(fixes_applied)}개 수정 적용")
+                for fix in fixes_applied:
+                    self.log(f"  {fix}")
+            
+            if not issues_found and not fixes_applied:
+                self.log("✅ AI 출력 검증 통과: 문제 없음")
+            
+            return content
+            
+        except Exception as e:
+            self.log(f"AI 출력 검증 중 오류: {e}")
+            import traceback
+            self.log(f"상세 오류:\n{traceback.format_exc()}")
+            return content
+
+    def enforce_html_structure(self, content, step_number, keyword):
+        """각 단계별로 정확한 HTML 구조를 강제 적용 - 마크다운 완전 제거"""
+        try:
+            import re
+            lines = content.strip().split('\n')
+            structured_content = []
+            
+            # 모든 마크다운 기호 완전 제거 함수
+            def clean_markdown(text):
+                # HTML 태그 제거
+                text = re.sub(r'<[^>]+>', '', text)
+                # 마크다운 헤더 기호 제거 (# ## ### 등)
+                text = re.sub(r'#+\s*', '', text)
+                # 마크다운 강조 기호 제거 (** __ * _ 등)
+                text = re.sub(r'\*+', '', text)
+                text = re.sub(r'_+', '', text)
+                # 마크다운 리스트 기호 제거 (- * + 1. 등)
+                text = re.sub(r'^[\-\*\+]\s*', '', text, flags=re.MULTILINE)
+                text = re.sub(r'^\d+\.\s*', '', text, flags=re.MULTILINE)
+                # 마크다운 코드 블록 제거
+                text = re.sub(r'```[a-z]*\n?', '', text, flags=re.IGNORECASE)
+                text = re.sub(r'```', '', text)
+                # 인라인 코드 제거
+                text = re.sub(r'`([^`]*)`', r'\1', text)
+                # 링크 제거 [text](url)
+                text = re.sub(r'\[([^\]]*)\]\([^\)]*\)', r'\1', text)
+                # 기타 특수문자 정리
+                text = re.sub(r'[\[\](){}]', '', text)
+                return text.strip()
+            
+            if step_number == 1:  # 1단계: 서론 + 소제목1 + 본문1
+                intro_text = ""
+                subtitle1_text = ""
+                content1_text = ""
+                
+                # AI 응답에서 텍스트 추출하고 마크다운 제거
+                all_text = ' '.join([clean_markdown(line) for line in lines if line.strip()])
+                
+                # 텍스트를 적절히 분할
+                words = all_text.split()
+                if len(words) > 50:
+                    intro_text = ' '.join(words[:50])  # 처음 50단어를 서론으로
+                    subtitle1_text = f"{keyword} 기본 활용법"
+                    content1_text = ' '.join(words[50:])  # 나머지를 본문으로
+                else:
+                    intro_text = all_text
+                    subtitle1_text = f"{keyword} 기본 활용법"
+                    content1_text = f"{keyword}의 기본적인 활용 방법에 대해 자세히 설명드리겠습니다. 다양한 측면에서 접근하여 실용적인 정보를 제공하고자 합니다. 기본 개념부터 시작하여 실무에 적용할 수 있는 구체적인 방법까지 포괄적으로 다루어보겠습니다. 이를 통해 효과적인 활용이 가능하도록 도움을 드리겠습니다. 단계적으로 접근하면 누구나 쉽게 이해하고 활용할 수 있을 것입니다. 기초부터 차근차근 알아보는 것이 중요합니다."
+                
+                # 기본값 설정 - approval.txt 지침에 따라 정확한 분량으로
+                if not intro_text or len(intro_text) < 270:
+                    intro_text = f"{keyword}는 현대 사회에서 점점 더 중요해지고 있는 핵심 개념입니다. 이와 관련하여 기본적인 활용법부터 시작해서 주요 특징들을 체계적으로 파악하고, 실무에서 바로 적용할 수 있는 실용적인 팁까지 포괄적으로 다뤄보겠습니다. 각 단계별로 구체적인 사례와 함께 설명하여 초보자부터 전문가까지 모두에게 도움이 되는 내용으로 구성하였습니다."
+                
+                if len(content1_text) < 700:
+                    content1_text = f"{keyword}의 기본적인 활용 방법에 대해 체계적으로 설명드리겠습니다. 먼저 가장 중요한 것은 기초 개념을 정확히 이해하는 것입니다. 이는 모든 응용과 심화 학습의 토대가 되기 때문입니다. 다음으로는 단계별 접근 방법을 통해 실제 적용 과정을 익혀야 합니다. 초기 설정부터 시작해서 기본 기능들을 하나씩 숙지해 나가는 것이 효과적입니다. 특히 실무에서 자주 사용되는 핵심 기능들을 우선적으로 학습하는 것이 중요합니다. 또한 올바른 사용 방법과 주의사항을 함께 익혀두면 향후 문제 상황을 예방할 수 있습니다. 기본기가 탄탄해야 나중에 고급 기능들도 쉽게 익힐 수 있으므로 충분한 연습을 통해 기초를 다져두시기 바랍니다. 실제 업무나 프로젝트에 적용할 때는 작은 부분부터 시작해서 점진적으로 확대해 나가는 방식을 권장드립니다."
+                
+                # 순수 HTML 구조 생성
+                structured_content.append(f"<p>{intro_text}</p>")
+                structured_content.append(f"<h2><strong>{subtitle1_text}</strong></h2>")
+                structured_content.append(f"<p>{content1_text}</p>")
+            
+            elif step_number == 2:  # 2단계: 소제목2 + 본문2
+                subtitle2_text = ""
+                content2_text = ""
+                
+                # AI 응답에서 텍스트 추출하고 마크다운 제거
+                all_text = ' '.join([clean_markdown(line) for line in lines if line.strip()])
+                
+                # 첫 번째 문장을 소제목으로, 나머지를 본문으로
+                sentences = all_text.split('.')[:2] if '.' in all_text else [all_text]
+                if sentences[0]:
+                    subtitle2_text = sentences[0][:25] + "의 주요 특징"
+                    content2_text = all_text
+                
+                # 기본값 설정 - approval2.txt 지침에 따라 700자 이상
+                if not subtitle2_text:
+                    subtitle2_text = f"{keyword} 주요 특징"
+                
+                if not content2_text or len(content2_text) < 700:
+                    content2_text = f"{keyword}의 주요 특징과 핵심적인 요소들을 상세히 살펴보겠습니다. 가장 두드러진 특징은 사용자 친화적인 접근성과 높은 효율성을 동시에 제공한다는 점입니다. 이러한 특성 덕분에 초보자도 쉽게 시작할 수 있으면서도 전문가들에게는 강력한 기능을 제공합니다. 또한 확장성이 뛰어나서 작은 규모부터 대규모 프로젝트까지 유연하게 대응할 수 있습니다. 특히 주목할 만한 점은 지속적인 업데이트와 개선을 통해 최신 트렌드를 반영한다는 것입니다. 보안 측면에서도 강화된 기능들을 제공하여 안전한 사용 환경을 보장합니다. 성능 면에서는 최적화된 알고리즘과 효율적인 리소스 관리를 통해 빠른 처리 속도를 실현하고 있습니다. 사용자 인터페이스는 직관적으로 설계되어 학습 곡선을 최소화하면서도 전문적인 작업이 가능하도록 구성되어 있습니다."
+                
+                # 순수 HTML 구조 생성
+                structured_content.append(f"<h2><strong>{subtitle2_text}</strong></h2>")
+                structured_content.append(f"<p>{content2_text}</p>")
+            
+            elif step_number == 3:  # 3단계: 소제목3 + 본문3 + 표
+                subtitle3_text = ""
+                content3_text = ""
+                
+                # AI 응답에서 텍스트 추출하고 마크다운 제거
+                all_text = ' '.join([clean_markdown(line) for line in lines if line.strip()])
+                
+                # 첫 번째 문장을 소제목으로, 나머지를 본문으로
+                sentences = all_text.split('.')[:2] if '.' in all_text else [all_text]
+                if sentences[0]:
+                    subtitle3_text = sentences[0][:25] + " 실무 팁"
+                    content3_text = all_text
+                
+                # 기본값 설정 - approval3.txt 지침에 따라 700자 이상
+                if not subtitle3_text:
+                    subtitle3_text = f"{keyword} 실무 팁"
+                
+                if not content3_text or len(content3_text) < 700:
+                    content3_text = f"{keyword}의 실무 활용 팁과 고급 테크닉을 소개해드리겠습니다. 실제 업무 환경에서 효율성을 극대화하기 위한 핵심적인 방법들을 중심으로 설명하겠습니다. 먼저 작업 흐름을 최적화하는 방법부터 살펴보겠습니다. 반복적인 작업을 자동화하고 단축키나 템플릿을 활용하면 시간을 크게 절약할 수 있습니다. 또한 협업 환경에서의 효과적인 활용 방안도 중요한 고려사항입니다. 팀원들과의 원활한 소통과 작업 공유를 위한 도구와 방법론을 익혀두면 프로젝트 진행이 훨씬 수월해집니다. 문제 해결 능력을 기르기 위해서는 일반적인 오류 상황과 대처 방안을 미리 숙지해두는 것이 좋습니다. 정기적인 백업과 버전 관리를 통해 작업 손실을 방지하고 이전 상태로 복구할 수 있는 시스템을 구축하는 것도 필수입니다."
+                
+                # 순수 HTML 구조 생성
+                structured_content.append(f"<h2><strong>{subtitle3_text}</strong></h2>")
+                structured_content.append(f"<p>{content3_text}</p>")
+                
+                # 표 추가
+                table_html = f"""<table border="1">
+<tr>
+<th>구분</th>
+<th>내용</th>
+<th>특징</th>
+</tr>
+<tr>
+<td>기본 활용</td>
+<td>{keyword} 기초 사용법</td>
+<td>누구나 쉽게 접근 가능</td>
+</tr>
+<tr>
+<td>고급 활용</td>
+<td>{keyword} 심화 기능</td>
+<td>전문적 활용 방법</td>
+</tr>
+<tr>
+<td>실무 적용</td>
+<td>{keyword} 현장 활용</td>
+<td>실제 업무 효율성 증대</td>
+</tr>
+</table>"""
+                structured_content.append(table_html)
+            
+            return '\n\n'.join(structured_content)
+            
+        except Exception as e:
+            self.log(f"HTML 구조 강제 적용 오류: {e}")
+            return content
+
+    def generate_approval_fallback_title(self, keyword):
+        """승인용 형식에 맞는 fallback 제목 생성"""
+        try:
+            # approval1.txt 형식에 맞는 제목 생성 요청
+            prompt = f"""키워드 '{keyword}'를 사용하여 승인용 제목을 생성해줘.
+
+형식: [메인 키워드]: [소제목1 키워드], [소제목2 키워드], [소제목3 키워드]
+예시: "gpt chat 무료 한국어: 활용법, 글쓰기 지원, 창의적 작업"
+
+요구사항:
+- 메인 키워드 '{keyword}' 필수 포함
+- 콜론(:) 뒤에 3개의 소제목 키워드를 콤마(,)로 구분
+- 30자 내외
+- HTML 태그 사용 금지, 순수 텍스트만
+
+제목만 출력해줘."""
+
+            response_text = self.call_ai_api(prompt, "승인용 fallback 제목 생성", max_tokens=100)
+            if response_text and response_text.strip():
+                title = response_text.strip()
+                # HTML 태그 제거
+                import re
+                title = re.sub(r'<[^>]+>', '', title)
+                # 승인용 형식 검증 (콜론과 콤마 포함)
+                if ':' in title and ',' in title:
+                    self.log(f"✅ 승인용 fallback 제목 생성 성공: {title}")
+                    return title
+                    
+            self.log("⚠️ 승인용 fallback 제목 생성 실패")
+            return None
+            
+        except Exception as e:
+            self.log(f"승인용 fallback 제목 생성 중 오류: {e}")
+            return None
 
     def generate_simple_content(self, keyword, content_type="revenue"):
         """간단한 콘텐츠 생성 - 수익용/승인용 선택 가능"""
@@ -1902,14 +2780,28 @@ class ContentGenerator:
                     self.log(f"❌ {step_num}단계 AI 응답 실패")
                     return None, None, None
                 
+                # AI 출력 검증 및 자동 수정 (프롬프트 '중요 주의사항' 규칙 적용)
+                response_text = self.validate_ai_output(response_text, keyword)
+                
+                # 모든 단계에서 마크다운 코드 블록 언어 표시 제거
+                import re
+                response_text = re.sub(r'`html\s*\n?', '', response_text, flags=re.IGNORECASE)
+                response_text = re.sub(r'`javascript\s*\n?', '', response_text, flags=re.IGNORECASE)
+                response_text = re.sub(r'`css\s*\n?', '', response_text, flags=re.IGNORECASE)
+                response_text = re.sub(r'`json\s*\n?', '', response_text, flags=re.IGNORECASE)
+                response_text = re.sub(r'`python\s*\n?', '', response_text, flags=re.IGNORECASE)
+                response_text = re.sub(r'`[a-z]+\s*\n?', '', response_text)  # 기타 언어명
+                response_text = re.sub(r'```[a-z]*\n?', '', response_text)  # ```html 등
+                response_text = re.sub(r'```\n?', '', response_text)  # ``` 끝
+                
                 # 1단계는 정리 함수 사용하지 않음 (HTML 구조 보존 위해)
                 if step_num == 1:
                     step_content = response_text.strip()
                 else:
                     # 2-5단계도 HTML 구조 보존 - AI 역할 언급만 제거
                     step_content = response_text.strip()
-                    # 간단한 AI 역할 언급만 제거 (HTML 구조는 보존)
-                    import re
+                    
+                    # AI 역할 언급 제거
                     ai_mentions = [
                         r'SEO\s*전문가로서',
                         r'콘텐츠\s*작가로서',
@@ -1926,32 +2818,11 @@ class ContentGenerator:
                         r'#{1,6}\s+',         # ### 마크다운 헤더
                         r'\*\*([^*]+)\*\*',   # **bold** → 내용만 남기고 제거
                         r'\*([^*]+)\*',       # *italic* → 내용만 남기고 제거
-                        r'```[a-z]*',         # ```code 시작
-                        r'```',               # ``` 끝
                         r'`([^`]+)`',         # `inline code` → 내용만 남기고 제거
-                        r'`html\s*',          # `html 제거
-                        r'`javascript\s*',    # `javascript 제거
-                        r'`css\s*',           # `css 제거
-                        r'`[a-z]+\s*',        # `언어명 제거
                     ]
                     for pattern in markdown_patterns:
                         if pattern in [r'\*\*([^*]+)\*\*', r'\*([^*]+)\*', r'`([^`]+)`']:
-                            step_content = re.sub(pattern, r'\1', step_content)  # 내용만 남기고 마크다운 제거
-                        else:
-                            step_content = re.sub(pattern, '', step_content)
-                    
-                    # 마크다운 문법 제거 (HTML 구조는 보존)
-                    markdown_patterns = [
-                        r'#{1,6}\s+',         # ### 마크다운 헤더
-                        r'\*\*([^*]+)\*\*',   # **bold** → 제거
-                        r'\*([^*]+)\*',       # *italic* → 제거
-                        r'```[a-z]*',         # ```code 시작
-                        r'```',               # ``` 끝
-                        r'`([^`]+)`',         # `inline code` → 제거
-                    ]
-                    for pattern in markdown_patterns:
-                        if pattern in [r'\*\*([^*]+)\*\*', r'\*([^*]+)\*', r'`([^`]+)`']:
-                            step_content = re.sub(pattern, r'\1', step_content)  # 내용만 남기고 마크다운 제거
+                            step_content = re.sub(pattern, r'\1', step_content)
                         else:
                             step_content = re.sub(pattern, '', step_content)
                 
@@ -1999,20 +2870,18 @@ class ContentGenerator:
                     pass
                 
                 all_content_parts.append(step_content)
-                self.log(f"✅ {step_num}단계 완료")
-            
+                
             # 전체 내용 결합
             full_content = "\n\n".join(all_content_parts)
             
             # 체크리스트 감지 및 리스트 코드 추가
             full_content = self.add_checklist_if_needed(full_content, keyword)
             
-            # 앱 다운로드 버튼 추가 (필요한 경우) - 플래그 초기화
-            self.download_buttons_added = False
-            full_content = self.add_download_buttons_to_content(full_content, keyword)
-            
-            # 가짜 URL 교체 (다운로드 버튼이 없는 경우에만 외부링크 추가)
+            # 가짜 URL 교체
             full_content = self.replace_fake_urls(full_content, keyword)
+            
+            # 콘텐츠 최종 정리 (발행 전)
+            full_content = self.clean_content_before_publish(full_content)
             
             # 썸네일 생성
             thumbnail_path = self.create_thumbnail(title, keyword) if title else None
@@ -2045,37 +2914,6 @@ class ContentGenerator:
             for pattern, replacement in link_text_patterns:
                 content = re.sub(pattern, replacement, content, flags=re.IGNORECASE)
             
-            # 다운로드 버튼이 있는 경우 기존 URL 교체만 수행 (새 링크 추가 안함)
-            if hasattr(self, 'download_buttons_added') and self.download_buttons_added:
-                self.log("🔗 다운로드 버튼이 이미 추가되어 기존 URL만 교체합니다.")
-                
-                # 기존 href URL만 교체 (HTML 구조 유지)
-                href_pattern = r'href="(https?://[^"]*)"'
-                replacement_count = 0
-                
-                def replace_url(match):
-                    nonlocal replacement_count
-                    original_url = match.group(1)
-                    # 이미 신뢰할 수 있는 URL인지 확인
-                    if self.is_trusted_url(original_url, trusted_urls):
-                        return match.group(0)  # 원본 그대로 반환
-                        
-                    # 콘텐츠 맥락과 키워드를 분석하여 적절한 URL 선택
-                    replacement_url = self.select_contextual_url(original_url, keyword, content, trusted_urls)
-                    replacement_count += 1
-                    self.log(f"🔗 기존 URL 교체 ({replacement_count}): {original_url} → {replacement_url}")
-                    return f'href="{replacement_url}"'
-                
-                content = re.sub(href_pattern, replace_url, content)
-                
-                if replacement_count > 0:
-                    self.log(f"✅ 총 {replacement_count}개의 기존 URL이 교체되었습니다.")
-                else:
-                    self.log("ℹ️ 교체할 URL이 없거나 모든 URL이 이미 신뢰할 수 있는 URL입니다.")
-                
-                return content
-            
-            # 다운로드 버튼이 없는 경우: URL 교체 + 외부링크 추가
             # 2. href URL 교체 (HTML 구조 유지)
             href_pattern = r'href="(https?://[^"]*)"'
             replacement_count = 0
@@ -2118,17 +2956,194 @@ class ContentGenerator:
             self.log(f"URL 교체 중 오류: {e}")
             return content
     
-    def load_trusted_urls(self):
-        """setting.json에서 신뢰할 수 있는 URL 리스트 로드"""
+    def clean_content_before_publish(self, content):
+        """발행 전 콘텐츠 정리 (AI 작성을 방해하지 않는 최소한의 수정만)"""
         try:
-            import json
-            config_path = os.path.join(get_base_path(), "setting.json")
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config_data = json.load(f)
-            return config_data.get('trusted_urls', {})
+            import re
+            from urllib.parse import quote
+            
+            # 0. 다운로드 버튼 HTML을 보호 및 복구 (먼저 추출)
+            download_button_pattern = r'<div class="button-container">.*?</div>'
+            download_buttons = re.findall(download_button_pattern, content, flags=re.IGNORECASE | re.DOTALL)
+            
+            # 다운로드 버튼 URL 복구 및 속성 수정
+            fixed_buttons = []
+            for button in download_buttons:
+                fixed_button = button
+                
+                # 1. href 속성 복구 - 공백으로 잘린 URL 수정
+                # href="https://...?q=키워드 일부" 나머지..." → href="https://...?q=전체키워드..."
+                href_matches = re.findall(r'href="([^"]*)"([^<>]*?)<img', fixed_button, re.DOTALL)
+                for href_url, text_after in href_matches:
+                    # href 뒤에 잘린 텍스트가 있는지 확인
+                    if text_after.strip() and not text_after.strip().startswith('class='):
+                        # 잘린 부분 추출
+                        cut_text = text_after.split('class=')[0].strip()
+                        # URL에 추가 (URL 인코딩)
+                        if '?' in href_url:
+                            # 쿼리 파라미터가 있는 경우
+                            fixed_url = href_url.rstrip('"') + quote(cut_text)
+                        else:
+                            fixed_url = href_url + quote(cut_text)
+                        # 수정된 URL로 교체
+                        original = f'href="{href_url}"{text_after}<img'
+                        replacement = f'href="{fixed_url}" <img'
+                        fixed_button = fixed_button.replace(original, replacement)
+                
+                # 2. 깨진 class 속성 수정 - 중복 따옴표 제거
+                fixed_button = re.sub(r'class="([^"]+)""', r'class="\1"', fixed_button)
+                
+                # 3. 따옴표 없는 속성에 따옴표 추가
+                fixed_button = re.sub(r'class=([^\s">]+)(?=\s|>)', r'class="\1"', fixed_button)
+                fixed_button = re.sub(r'target=([^\s">]+)(?=\s|>)', r'target="\1"', fixed_button)
+                fixed_button = re.sub(r'src=([^\s">]+)(?=\s|>)', r'src="\1"', fixed_button)
+                fixed_button = re.sub(r'alt=([^\s">]+)(?=\s|>)', r'alt="\1"', fixed_button)
+                
+                fixed_buttons.append(fixed_button)
+                
+            if fixed_buttons:
+                self.log(f"✅ 다운로드 버튼 {len(fixed_buttons)}개 URL 및 속성 복구 완료")
+            
+            # 다운로드 버튼을 플레이스홀더로 교체 (수정된 버전으로)
+            for i, button in enumerate(download_buttons):
+                content = content.replace(button, f"__PROTECTED_DOWNLOAD_BUTTON_{i}__", 1)
+            
+            # 1. 불완전한 style 속성 수정 (값이 비어있는 경우만)
+            # style="text-align:" → style="text-align:center;"
+            # style="color:" → style="color: #ee2323;"
+            style_fixed = False
+            if 'style="text-align:"' in content:
+                content = re.sub(r'style="text-align:\s*"', 'style="text-align:center;"', content)
+                style_fixed = True
+            if 'style="color:"' in content:
+                content = re.sub(r'style="color:\s*"', 'style="color: #ee2323;"', content)
+                style_fixed = True
+            if style_fixed:
+                self.log("✅ 불완전한 style 속성 수정")
+            
+            # 2. 불완전한 h태그 수정 (h2, h3, h4 모두 처리)
+            # <strong>...</strong></h2> → <h2><strong>...</strong></h2>
+            # <strong>...</strong></h3> → <h3><strong>...</strong></h3>
+            # <strong>...</strong></h4> → <h4><strong>...</strong></h4>
+            h_tag_fixed = False
+            for h_num in [2, 3, 4]:
+                h_pattern = rf'(?<!<h{h_num}>)(<strong>[^<]+</strong></h{h_num}>)'
+                h_matches = re.findall(h_pattern, content)
+                if h_matches:
+                    for match in h_matches:
+                        if not match.startswith(f'<h{h_num}>'):
+                            fixed = f'<h{h_num}>' + match
+                            content = content.replace(match, fixed)
+                            h_tag_fixed = True
+            if h_tag_fixed:
+                self.log("✅ 불완전한 h태그 수정 (h2, h3, h4)")
+            
+            # 3. 유니코드 큰따옴표와 백틱만 제거 (일반 큰따옴표는 HTML 속성에 필수이므로 보존)
+            # ❌ 제거: ", ", " (유니코드 큰따옴표), ` (백틱)
+            # ✅ 보존: " (일반 큰따옴표 - HTML 속성에 필수), ' (작은따옴표 - 텍스트에 사용 가능)
+            unicode_quotes_and_backticks = ['"', '"', '"', '`']  # 유니코드 큰따옴표 + 백틱만
+            quote_found = False
+            for bad_char in unicode_quotes_and_backticks:
+                if bad_char in content:
+                    content = content.replace(bad_char, '')
+                    quote_found = True
+            if quote_found:
+                self.log("✅ 유니코드 큰따옴표/백틱 제거 (일반 따옴표는 보존)")
+            
+            # 4. '클릭' 단어를 유의어로 대체 (제목 제외)
+            # HTML h1 태그 안의 내용은 보존 (제목은 '클릭' 사용 가능)
+            click_replaced = False
+            
+            # h1 태그 내용 추출 및 보호
+            h1_pattern = r'(<h1[^>]*>)(.*?)(</h1>)'
+            h1_matches = re.findall(h1_pattern, content, re.DOTALL | re.IGNORECASE)
+            h1_contents = []
+            
+            # h1 태그를 임시 플레이스홀더로 대체
+            for i, (opening, title_content, closing) in enumerate(h1_matches):
+                placeholder = f"___H1_PLACEHOLDER_{i}___"
+                h1_contents.append((opening, title_content, closing))
+                content = content.replace(opening + title_content + closing, placeholder, 1)
+            
+            # h1 태그 밖의 '클릭' 단어를 유의어로 대체
+            click_alternatives = ['선택', '확인', '눌러보기', '터치', '접속', '방문']
+            if '클릭' in content:
+                import random
+                # 다양한 '클릭' 패턴 대체
+                content = re.sub(r'클릭하세요', lambda m: random.choice(['선택하세요', '확인하세요', '눌러보세요']), content)
+                content = re.sub(r'클릭해서', lambda m: random.choice(['선택해서', '눌러서', '터치해서']), content)
+                content = re.sub(r'클릭하여', lambda m: random.choice(['선택하여', '눌러', '터치하여']), content)
+                content = re.sub(r'클릭하면', lambda m: random.choice(['선택하면', '누르면', '터치하면']), content)
+                content = re.sub(r'클릭', lambda m: random.choice(click_alternatives), content)
+                click_replaced = True
+            
+            # h1 태그 복원
+            for i, (opening, title_content, closing) in enumerate(h1_contents):
+                placeholder = f"___H1_PLACEHOLDER_{i}___"
+                content = content.replace(placeholder, opening + title_content + closing)
+            
+            if click_replaced:
+                self.log("✅ '클릭' 단어를 유의어로 대체 (제목 제외)")
+            
+            # 5. &amp; HTML 엔티티를 &로 변경
+            if '&amp;' in content:
+                content = content.replace('&amp;', '&')
+                self.log("✅ HTML 엔티티 정리")
+            
+            # 6. 다운로드 버튼 복원 (수정된 버전으로)
+            for i, fixed_button in enumerate(fixed_buttons):
+                content = content.replace(f"__PROTECTED_DOWNLOAD_BUTTON_{i}__", fixed_button, 1)
+            
+            return content
+            
         except Exception as e:
-            self.log(f"신뢰할 수 있는 URL 리스트 로드 실패: {e}")
-            return {}
+            self.log(f"❌ 콘텐츠 정리 중 오류: {e}")
+            # 오류 발생 시에도 다운로드 버튼 복원 시도
+            try:
+                for i, fixed_button in enumerate(fixed_buttons):
+                    content = content.replace(f"__PROTECTED_DOWNLOAD_BUTTON_{i}__", fixed_button, 1)
+            except:
+                for i, button in enumerate(download_buttons):
+                    content = content.replace(f"__PROTECTED_DOWNLOAD_BUTTON_{i}__", button, 1)
+            return content
+    
+    def load_trusted_urls(self):
+        """코드 내장 신뢰할 수 있는 URL 리스트 (setting.json 불필요)"""
+        return {
+            '정부_공공기관': [
+                'https://www.hometax.go.kr',
+                'https://www.gov24.go.kr',
+                'https://www.safedriving.or.kr',
+            ],
+            '금융_관련': [
+                'https://www.fss.or.kr',
+                'https://www.cardgorilla.com',
+            ],
+            '부동산_관련': [
+                'https://www.lh.or.kr',
+                'https://land.naver.com',
+            ],
+            '자동차_관련': [
+                'https://www.encar.com',
+            ],
+            '통신_관련': [
+                'https://www.skt.com',
+                'https://www.kt.com',
+            ],
+            '교육_취업': [
+                'https://www.work.go.kr',
+            ],
+            '쇼핑_배송': [
+                'https://shopping.naver.com',
+            ],
+            'IT_기술': [
+                'https://www.microsoft.com/ko-kr',
+                'https://www.apple.com/kr',
+            ],
+            '생활_건강': [
+                'https://www.nhis.or.kr',
+            ]
+        }
     
     def is_trusted_url(self, url, trusted_urls):
         """URL이 신뢰할 수 있는 URL인지 확인"""
@@ -2161,53 +3176,107 @@ class ContentGenerator:
             return False
     
     def select_contextual_url(self, original_url, keyword, content, trusted_urls):
-        """콘텐츠 맥락을 분석하여 가장 적절한 신뢰할 수 있는 URL 선택"""
+        """콘텐츠 맥락을 분석하여 가장 적절한 신뢰할 수 있는 URL 선택 (정확도 대폭 개선)"""
         try:
+            import random
             keyword_lower = keyword.lower()
             content_lower = content.lower()
             
             # 원본 URL 주변 텍스트 분석
             import re
             url_context = ""
-            url_pattern = re.escape(original_url)
-            match = re.search(f'.{{0,100}}{url_pattern}.{{0,100}}', content_lower)
-            if match:
-                url_context = match.group()
+            if original_url:
+                url_pattern = re.escape(original_url)
+                match = re.search(f'.{{0,100}}{url_pattern}.{{0,100}}', content_lower)
+                if match:
+                    url_context = match.group()
             
-            # 키워드와 콘텐츠 맥락 기반 카테고리 선택
-            context_text = f"{keyword_lower} {url_context}".lower()
+            # 키워드만 집중 분석 (정확도 향상)
+            context_text = keyword_lower
             
-            # 자동차 관련
-            if any(term in context_text for term in ['자동차', '차량', '견적', '신차', '중고차', '운전', '면허', '대출', '보험']):
-                if trusted_urls.get('자동차_관련'):
-                    return trusted_urls['자동차_관련'][0]
+            # 🚫 명확하게 매칭되지 않는 키워드 체크 (네이버 검색 사용)
+            generic_keywords = ['다운로드', '양식', '서식', '템플릿', '예제', '샘플', '기출문제', 'pdf', '문서', '파일']
             
-            # 통신 관련
-            elif any(term in context_text for term in ['통신', '핸드폰', '휴대폰', '인터넷', '와이파이', '요금제', '모바일']):
-                if trusted_urls.get('통신_관련'):
-                    return trusted_urls['통신_관련'][0]
+            # 키워드가 일반적인 다운로드 관련이면 네이버 검색 사용
+            if any(generic in context_text for generic in generic_keywords):
+                # 단, 특정 기관/서비스명이 함께 있으면 예외
+                specific_terms = ['홈택스', '정부24', '은행', '카드', '아파트', '자동차', '핸드폰', 'skt', 'kt']
+                if not any(specific in context_text for specific in specific_terms):
+                    self.log(f"🔍 일반 키워드 감지 → 네이버 검색 사용: {keyword}")
+                    return f"https://search.naver.com/search.naver?query={keyword.replace(' ', '+')}"
             
-            # 정부/공공기관 관련
-            elif any(term in context_text for term in ['세금', '홈택스', '신고', '납부', '공제', '정부', '공공', '민원']):
-                if trusted_urls.get('정부_공공기관'):
-                    return trusted_urls['정부_공공기관'][0]
+            # 🎯 정확한 키워드 매칭만 사용
+            # 정부/공공기관 관련 (매우 구체적인 키워드만)
+            if any(term in context_text for term in ['홈택스', '국세청', '세무서', '종합소득세', '부가가치세']):
+                self.log(f"🔍 카테고리 매칭: 정부_공공기관 (홈택스) → {keyword}")
+                return 'https://www.hometax.go.kr'
             
-            # 금융 관련
-            elif any(term in context_text for term in ['은행', '대출', '적금', '예금', '카드', '결제', '금융', '투자']):
-                if trusted_urls.get('금융_관련'):
-                    return trusted_urls['금융_관련'][0]
+            elif any(term in context_text for term in ['정부24', '민원24', '정부민원']):
+                self.log(f"🔍 카테고리 매칭: 정부_공공기관 (정부24) → {keyword}")
+                return 'https://www.gov24.go.kr'
             
-            # 부동산 관련
-            elif any(term in context_text for term in ['부동산', '집', '아파트', '주택', '임대', '매매', '전세', '월세']):
-                if trusted_urls.get('부동산_관련'):
-                    return trusted_urls['부동산_관련'][0]
+            elif any(term in context_text for term in ['운전면허', '면허증', '안전운전']):
+                self.log(f"🔍 카테고리 매칭: 정부_공공기관 (안전운전) → {keyword}")
+                return 'https://www.safedriving.or.kr'
             
-            # 기본값: 네이버 검색
-            if trusted_urls.get('기본_검색'):
+            # 금융 관련 (구체적인 금융 서비스명만)
+            elif any(term in context_text for term in ['kb국민은행', '신한은행', '하나은행', '우리은행', '농협', 'nh은행']):
+                urls = trusted_urls.get('금융_관련', [])
+                if urls:
+                    selected = random.choice(urls)
+                    self.log(f"🔍 카테고리 매칭: 금융_관련 → {selected} ({keyword})")
+                    return selected
+            
+            elif '카드고릴라' in context_text or ('카드' in context_text and '비교' in context_text):
+                self.log(f"🔍 카테고리 매칭: 금융_관련 (카드고릴라) → {keyword}")
+                return 'https://www.cardgorilla.com'
+            
+            # 부동산 관련 (구체적인 부동산 키워드만)
+            elif any(term in context_text for term in ['lh청약', '청약플러스', '공공주택']):
+                self.log(f"🔍 카테고리 매칭: 부동산_관련 (LH) → {keyword}")
+                return 'https://www.lh.or.kr'
+            
+            elif any(term in context_text for term in ['네이버부동산', '네이버 부동산']):
+                self.log(f"🔍 카테고리 매칭: 부동산_관련 (네이버부동산) → {keyword}")
+                return 'https://land.naver.com'
+            
+            # 자동차 관련 (구체적인 자동차 서비스명만)
+            elif any(term in context_text for term in ['엔카', 'sk엔카', '중고차매매']):
+                self.log(f"🔍 카테고리 매칭: 자동차_관련 (엔카) → {keyword}")
+                return 'https://www.encar.com'
+            
+            # 통신 관련 (구체적인 통신사명만)
+            elif any(term in context_text for term in ['skt', 'sk텔레콤', '티월드']):
+                self.log(f"🔍 카테고리 매칭: 통신_관련 (SKT) → {keyword}")
+                return 'https://www.skt.com'
+            
+            elif any(term in context_text for term in ['kt', '올레']):
+                self.log(f"🔍 카테고리 매칭: 통신_관련 (KT) → {keyword}")
+                return 'https://www.kt.com'
+            
+            # 취업 관련 (구체적인 취업 서비스명만)
+            elif any(term in context_text for term in ['워크넷', '고용노동부', '구인구직']):
+                self.log(f"🔍 카테고리 매칭: 교육_취업 (워크넷) → {keyword}")
+                return 'https://www.work.go.kr'
+            
+            # IT/기술 관련 (구체적인 브랜드명만)
+            elif any(term in context_text for term in ['마이크로소프트', 'microsoft', 'ms오피스', '윈도우10', '윈도우11']):
+                self.log(f"🔍 카테고리 매칭: IT_기술 (Microsoft) → {keyword}")
+                return 'https://www.microsoft.com/ko-kr'
+            
+            elif any(term in context_text for term in ['애플', 'apple', '맥북', '아이맥', '아이패드프로']):
+                self.log(f"🔍 카테고리 매칭: IT_기술 (Apple) → {keyword}")
+                return 'https://www.apple.com/kr'
+            
+            # 건강보험 관련
+            elif any(term in context_text for term in ['건강보험공단', '국민건강보험', '건보공단']):
+                self.log(f"🔍 카테고리 매칭: 생활_건강 (건강보험공단) → {keyword}")
+                return 'https://www.nhis.or.kr'
+            
+            # 🎯 매칭 실패 시 기본값: 네이버 검색 (공식 홈페이지보다 안전)
+            else:
+                self.log(f"🔍 명확한 카테고리 매칭 실패 → 네이버 검색 사용: {keyword}")
                 return f"https://search.naver.com/search.naver?query={keyword.replace(' ', '+')}"
-            
-            # fallback
-            return f"https://search.naver.com/search.naver?query={keyword.replace(' ', '+')}"
                 
         except Exception as e:
             self.log(f"맥락 분석 중 오류: {e}")
@@ -2309,167 +3378,6 @@ class ContentGenerator:
             self.log(f"체크리스트 추가 중 오류: {e}")
             return content
 
-    def generate_download_button_html(self, keyword):
-        """앱 다운로드 버튼 HTML 생성"""
-        try:
-            import urllib.parse
-            encoded_keyword = urllib.parse.quote(keyword)
-            
-            download_html = f"""<div class="button-container">
-    <p>
-        <a href="https://www.apple.com/kr/search/{keyword}?src=globalnav" class="custom-download-btn appstore-button" target="_self">
-            <img src="https://upload.wikimedia.org/wikipedia/commons/6/67/App_Store_%28iOS%29.svg" class="btn-logo" alt="App Store">
-            <span>App Store에서 바로 다운로드</span>
-        </a>
-    </p>
-    <p>
-        <a href="https://play.google.com/store/search?q={keyword}&amp;c=apps" class="custom-download-btn playstore-button" target="_self">
-            <img src="https://upload.wikimedia.org/wikipedia/commons/d/d0/Google_Play_Arrow_logo.svg" class="btn-logo" alt="Google Play">
-            <span>Google Play에서 바로 다운로드</span>
-        </a>
-    </p>
-    <p>
-        <a href="https://apps.microsoft.com/search?query={keyword}&hl=ko-KR&gl=KR" class="custom-download-btn window-button" target="_self">
-            <img src="https://upload.wikimedia.org/wikipedia/commons/f/f7/Get_it_from_Microsoft_Badge.svg" class="btn-logo" alt="Microsoft Store">
-            <span>Windows에서 바로 다운로드</span>
-        </a>
-    </p>
-    <p>
-        <a href="https://www.apple.com/kr/search/{keyword}?src=globalnav" class="custom-download-btn macbook-button" target="_self">
-            <img src="https://upload.wikimedia.org/wikipedia/commons/f/fa/Apple_logo_black.svg" class="btn-logo" alt="Mac App Store">
-            <span>MacBook에서 바로 다운로드</span>
-        </a>
-    </p>
-</div>"""
-            
-            return download_html
-            
-        except Exception as e:
-            self.log(f"다운로드 버튼 HTML 생성 오류: {e}")
-            return ""
-
-    def generate_random_cta_message(self):
-        """다운로드 버튼용 랜덤 행동유도 멘트 생성"""
-        cta_messages = [
-            "<p style=\"text-align: center;\" data-ke-size=\"size16\"><b>📱지금 바로 <span style=\"color: #ee2323;\">다운로드</span>해서 체험해보세요! 🚀</b></p>",
-            "<p style=\"text-align: center;\" data-ke-size=\"size16\"><b>⬇️아래 <span style=\"color: #ee2323;\">링크</span>를 클릭하여 설치하세요! ✨</b></p>",
-            "<p style=\"text-align: center;\" data-ke-size=\"size16\"><b>🎯손쉽게 <span style=\"color: #ee2323;\">다운받고</span> 시작해보세요! 💪</b></p>",
-            "<p style=\"text-align: center;\" data-ke-size=\"size16\"><b>💡지금 <span style=\"color: #ee2323;\">설치</span>하고 편리함을 경험하세요! 🌟</b></p>",
-            "<p style=\"text-align: center;\" data-ke-size=\"size16\"><b>🔥바로 <span style=\"color: #ee2323;\">다운로드</span>해서 활용해보세요! 👍</b></p>",
-            "<p style=\"text-align: center;\" data-ke-size=\"size16\"><b>⚡빠르게 <span style=\"color: #ee2323;\">설치</span>하고 이용해보세요! 🎉</b></p>",
-            "<p style=\"text-align: center;\" data-ke-size=\"size16\"><b>📥아래에서 <span style=\"color: #ee2323;\">무료 다운로드</span> 가능합니다! 🎁</b></p>",
-            "<p style=\"text-align: center;\" data-ke-size=\"size16\"><b>🚀지금 <span style=\"color: #ee2323;\">클릭</span>해서 바로 시작하세요! 💫</b></p>"
-        ]
-        
-        import random
-        return random.choice(cta_messages)
-
-    def add_download_buttons_to_content(self, content, keyword):
-        """본문 내용에서 '앱 다운'과 관련된 내용을 찾아 다운로드 버튼 추가"""
-        try:
-            if not content or not keyword:
-                return content
-            
-            # 앱/소프트웨어 관련 키워드들 (더 정확한 필터링)
-            app_software_keywords = [
-                '앱', '어플', '어플리케이션', '소프트웨어', '프로그램', 
-                '설치', '다운로드', '다운받', '내려받',
-                '앱스토어', '플레이스토어', 'app store', 'play store',
-                '구글플레이', 'google play', '애플스토어',
-                '설치하기', '다운로드하기', '받기', '설치해', '다운해',
-                '모바일 앱', '데스크톱 앱', 'pc 프로그램', '윈도우 프로그램',
-                '게임', '어플게임', '모바일게임'
-            ]
-            
-            # 다운로드와 관련된 키워드들
-            download_action_keywords = [
-                '다운로드', '다운받', '설치', '받아보', '설치하', '다운하', '내려받',
-                '앱을 받', '앱을 다운', '앱 받기', '설치하기',
-                '다운로드하기', '내려받기', '받기', '설치해'
-            ]
-            
-            # 제외할 키워드들 (다운로드 버튼이 절대 불필요한 경우)
-            exclude_keywords = [
-                'gpt', 'chat', '챗', '지피티', 'chatgpt', 'ai', '인공지능',
-                '웹사이트', '사이트', '온라인', '브라우저', 'web', 'browser',
-                '서비스', '플랫폼', '검색', '정보', '가이드', '방법', '팁',
-                '제한', '요금', '가격', '비용', '구독', '무료', '유료', '요금제',
-                '사용법', '기능', '특징', '장점', '단점', '비교', '차이점',
-                '질문', 'faq', '문의', '문제', '오류', '해결'
-            ]
-            
-            # 키워드 자체가 앱/소프트웨어인지 확인 (단, 제외 키워드는 제외)
-            keyword_lower = keyword.lower()
-            is_excluded = any(exclude_word in keyword_lower for exclude_word in exclude_keywords)
-            
-            # 제외 키워드가 있으면 다운로드 버튼 생성하지 않음
-            if is_excluded:
-                self.log(f"'{keyword}' 키워드는 다운로드와 관련이 없는 내용으로 판단되어 다운로드 버튼을 생성하지 않습니다.")
-                return content
-            
-            is_app_keyword = any(app_word in keyword_lower for app_word in ['앱', '어플', 'app', '프로그램', '소프트웨어', '게임'])
-            
-            # 본문에서 앱/소프트웨어 관련 키워드 찾기
-            content_lower = content.lower()
-            has_app_keywords = any(app_word in content_lower for app_word in app_software_keywords)
-            has_download_keywords = any(download_word in content_lower for download_word in download_action_keywords)
-            
-            # 매우 엄격한 조건: 1) 키워드에 앱 관련 단어가 있거나, 2) 본문에 앱과 다운로드 키워드가 모두 있을 때만
-            if is_app_keyword or (has_app_keywords and has_download_keywords):
-                self.log(f"앱/소프트웨어 관련 키워드와 다운로드 관련 키워드를 발견했습니다. 다운로드 버튼을 추가합니다.")
-                
-                # 다운로드 버튼 HTML 생성
-                download_button_html = self.generate_download_button_html(keyword)
-                
-                # 랜덤 행동유도 멘트 생성
-                random_cta = self.generate_random_cta_message()
-                
-                # 본문의 적절한 위치에 다운로드 버튼 삽입
-                # 첫 번째 <h2> 태그 뒤나 본문 중간 적절한 위치에 삽입
-                h2_matches = list(re.finditer(r'<h2[^>]*>.*?</h2>', content, re.IGNORECASE | re.DOTALL))
-                
-                if h2_matches and len(h2_matches) >= 1:
-                    # 첫 번째 h2 태그 이후 적절한 위치 찾기
-                    first_h2_end = h2_matches[0].end()
-                    
-                    # h2 태그 이후 첫 번째 문단 끝에 버튼 추가
-                    remaining_content = content[first_h2_end:]
-                    p_match = re.search(r'</p>', remaining_content)
-                    
-                    if p_match:
-                        insert_position = first_h2_end + p_match.end()
-                        content = (content[:insert_position] + 
-                                 f"\n\n{random_cta}\n" +
-                                 download_button_html + "\n\n" + 
-                                 content[insert_position:])
-                    else:
-                        # 적절한 위치를 찾지 못했으면 첫 번째 h2 이후에 바로 추가
-                        content = (content[:first_h2_end] + 
-                                 f"\n\n{random_cta}\n" +
-                                 download_button_html + "\n\n" + 
-                                 content[first_h2_end:])
-                else:
-                    # h2 태그가 없으면 본문 처음 문단 이후에 추가
-                    first_p_match = re.search(r'</p>', content)
-                    if first_p_match:
-                        insert_position = first_p_match.end()
-                        content = (content[:insert_position] + 
-                                 f"\n\n{random_cta}\n" +
-                                 download_button_html + "\n\n" + 
-                                 content[insert_position:])
-                
-                self.log("✅ 다운로드 버튼을 본문에 성공적으로 추가했습니다.")
-                # 다운로드 버튼이 추가되었음을 표시하는 플래그 설정
-                self.download_buttons_added = True
-            else:
-                self.log(f"앱/소프트웨어 관련 내용이 아니거나 다운로드 언급이 없어 다운로드 버튼을 추가하지 않습니다.")
-                self.download_buttons_added = False
-            
-            return content
-            
-        except Exception as e:
-            self.log(f"다운로드 버튼 추가 중 오류 발생: {e}")
-            return content
     # def generate_with_gemini(self, keyword):
     #     """[사용하지 않음] AI 제공자별 구분은 제거됨. generate_content() 사용"""
     #     pass
@@ -2529,6 +3437,45 @@ class ContentGenerator:
 
                     # 키워드 대체
                     prompt = prompt_template.replace("{keyword}", keyword)
+                    
+                    # HTML 구조 정확성 지시사항 강화
+                    html_accuracy_instruction = f"""
+⚠️ **[최우선 필수] HTML 태그 구조 정확성 준수사항**:
+
+🚨 **절대 금지 사항**:
+   - ❌ <strong>제목</strong></h2> (여는 태그 없이 닫는 태그만 사용)
+   - ❌ <strong>제목</strong></h3> (여는 태그 없이 닫는 태그만 사용)
+   - ❌ style="text-align:" (값 없는 속성)
+   - ❌ style="color:" (값 없는 속성)
+   - ❌ '클릭'이라는 단어 사용 금지 (서론, 소제목, 본문, FAQ 모든 부분)
+
+✅ **반드시 지켜야 할 HTML 작성법**:
+   1. 소제목 작성 시:
+      - 올바름: <h2><strong>소제목 내용</strong></h2>
+      - 올바름: <h3><strong>소제목 내용</strong></h3>
+      - 잘못됨: <strong>소제목 내용</strong></h2>
+      - 여는 태그 <h2> 또는 <h3>를 반드시 먼저 작성!
+   
+   2. style 속성 작성 시:
+      - 올바름: style="text-align:center;"
+      - 올바름: style="color:#ee2323;"
+      - 잘못됨: style="text-align:"
+      - 반드시 속성값을 포함할 것!
+
+   3. '클릭' 단어 사용 금지:
+      - ❌ 금지: "여기를 클릭하세요", "클릭해서 확인", "클릭하면"
+      - ✅ 대신 사용: "선택하세요", "확인하세요", "눌러보세요", "터치하세요", "접속하세요", "방문하세요"
+      - 포스팅 제목에만 '클릭' 사용 가능, 본문에서는 절대 사용 금지
+
+📋 **prompts 폴더의 txt 파일 HTML 예시를 정확히 복사**:
+   - 예시에 있는 HTML 태그 구조를 그대로 사용
+   - 내용만 변경하고 HTML 태그 구조는 절대 변경 금지
+   - 여는 태그와 닫는 태그가 항상 쌍으로 존재해야 함
+
+현재 {i}단계입니다. 위 규칙을 반드시 지키세요.
+
+"""
+                    prompt = html_accuracy_instruction + prompt
 
                     # 기타 필요한 링크 변수들 처리
                     import urllib.parse
@@ -3048,8 +3995,28 @@ class ContentGenerator:
                 self.log(f"폰트 로드 오류: {font_error}")
                 font = ImageFont.load_default()
 
-            # 제목 텍스트 처리 (자동 줄바꿈)
-            cleaned_title = title.replace('|', '\n')  # | 문자를 줄바꿈으로 변환
+            # 제목 텍스트 처리 - 모든 마크다운과 특수문자 완전 제거
+            import re
+            cleaned_title = title
+            # HTML 태그 완전 제거
+            cleaned_title = re.sub(r'<[^>]+>', '', cleaned_title)
+            # 모든 마크다운 헤더 기호 제거 (# ## ### #### 등)
+            cleaned_title = re.sub(r'#+\s*', '', cleaned_title)
+            # 모든 마크다운 강조 기호 제거 (* ** _ __ 등)
+            cleaned_title = re.sub(r'\*+', '', cleaned_title)
+            cleaned_title = re.sub(r'_+', '', cleaned_title)
+            # 대괄호와 소괄호 제거 ([text] (url) 등)
+            cleaned_title = re.sub(r'[\[\](){}]', '', cleaned_title)
+            # 백틱 제거 (`code`)
+            cleaned_title = re.sub(r'`', '', cleaned_title)
+            # 기타 특수문자 제거
+            cleaned_title = re.sub(r'[~\^\\|]', '', cleaned_title)
+            # | 문자를 줄바꿈으로 변환
+            cleaned_title = cleaned_title.replace('|', '\n')
+            # 연속된 공백을 하나로
+            cleaned_title = re.sub(r'\s+', ' ', cleaned_title)
+            # 앞뒤 공백 제거
+            cleaned_title = cleaned_title.strip()
 
             # 텍스트 길이에 따른 자동 줄바꿈 (300px에 맞게 조정)
             max_chars_per_line = 12  # 300px 크기에 맞게 줄임
@@ -3156,12 +4123,16 @@ class ContentGenerator:
         """통합된 콘텐츠 생성 함수 - 포스팅 모드에 따라 승인용/수익용 구분"""
         if self.config_manager:
             posting_mode = self.config_manager.data.get("global_settings", {}).get("posting_mode", "수익용")
+            self.log(f"🔍 포스팅 모드 확인: '{posting_mode}' (config_manager 사용)")
         else:
             posting_mode = getattr(self.auto_wp, 'posting_mode', '수익용')
+            self.log(f"🔍 포스팅 모드 확인: '{posting_mode}' (auto_wp 속성 사용)")
             
         if posting_mode == "승인용":
+            self.log("✅ 승인용 콘텐츠 생성 모드 선택됨")
             return self.generate_approval_content(keyword)
         else:
+            self.log("✅ 수익용 콘텐츠 생성 모드 선택됨")
             return self.generate_revenue_content(keyword)
 
     # def generate_content_with_5_prompts(self, keyword):
@@ -3233,8 +4204,8 @@ class ContentGenerator:
                 return None, None, None
             self.log("  ✅ 4단계 완료")
 
-            # 5단계: 표, 자주 묻는 질문
-            self.log("📝 5단계: 표 및 FAQ 생성 중")
+            # 5단계: 마무리 내용
+            self.log("📝 5단계: 마무리 내용 생성 중")
             self.log("  ➡️ prompt5.txt 적용 + AI API 호출 중")
             
             # 중지 체크
@@ -3247,7 +4218,7 @@ class ContentGenerator:
                 self.log("❌ 5단계 실패")
                 return None, None, None
             
-            # 5단계 콘텐츠 검증 (표와 FAQ 구조 확인)
+            # 5단계 콘텐츠 검증 (마무리 구조 확인)
             final_part = self.clean_step5_content(final_part)
             self.log("  ✅ 5단계 완료")
 
@@ -3382,13 +4353,6 @@ class ContentGenerator:
    - h2 소제목이나 본문 내용 절대 금지
    - HTML 예시 구조 정확히 따라야 해
 
-6. **5단계 특별 주의사항**:
-   - prompt5.txt에 명시된 대로 반드시 '표'와 '자주 묻는 질문 5개' 모두 작성
-   - 표는 3행 3-4열 구성으로 비교 정보 제공
-   - FAQ는 Q1~Q5까지 총 5개 질문과 답변 완전 작성
-   - 각 답변은 200-300자로 작성
-   - HTML 구조를 정확히 따라야 함
-
 현재 {step_num}단계야. 프롬프트의 HTML 예시를 정확히 복사해서 내용만 채워 넣어."""
             
             max_tokens = 3000 if step_num == 5 else 1500
@@ -3441,47 +4405,91 @@ class ContentGenerator:
             try:
                 # fonts 폴더의 timon.ttf 폰트 사용 (본문과 동일)
                 font_path = os.path.join(get_base_path(), "fonts", "timon.ttf")
-                font = ImageFont.truetype(font_path, 28)  # 크기 약간 증가
+                large_font = ImageFont.truetype(font_path, 24)  # | 앞 제목용 (32→24로 축소)
+                small_font = ImageFont.truetype(font_path, 18)  # | 뒤 제목용 (22→18로 축소)
             except Exception as font_error:
                 print(f"timon.ttf 폰트 로드 실패: {font_error}")
                 try:
                     # 대체 폰트들
-                    font = ImageFont.truetype("C:/Windows/Fonts/gulim.ttc", 24)
+                    large_font = ImageFont.truetype("C:/Windows/Fonts/gulim.ttc", 22)
+                    small_font = ImageFont.truetype("C:/Windows/Fonts/gulim.ttc", 16)
                 except:
                     try:
-                        font = ImageFont.truetype("C:/Windows/Fonts/malgun.ttf", 24)
+                        large_font = ImageFont.truetype("C:/Windows/Fonts/malgun.ttf", 22)
+                        small_font = ImageFont.truetype("C:/Windows/Fonts/malgun.ttf", 16)
                     except:
-                        font = ImageFont.load_default()
+                        large_font = ImageFont.load_default()
+                        small_font = ImageFont.load_default()
 
-            # 제목 텍스트를 이미지 중앙에 그리기 (간단한 버전)
-            # 제목이 너무 길면 줄바꿈
-            words = title.split()
+            # 제목을 | 기준으로 분리
+            if '|' in title:
+                parts = title.split('|', 1)  # 최대 1번만 분리
+                main_title = parts[0].strip()    # | 앞부분 (첫 줄, 크게)
+                sub_title = parts[1].strip()     # | 뒷부분 (둘째 줄, 작게)
+            else:
+                main_title = title
+                sub_title = ""
+            
+            # 텍스트를 중앙에 배치하기 위한 계산
             lines = []
-            current_line = []
             
-            for word in words:
-                test_line = ' '.join(current_line + [word])
-                bbox = draw.textbbox((0, 0), test_line, font=font)
-                if bbox[2] - bbox[0] > 250:  # 250px 이상이면 줄바꿈
-                    if current_line:
-                        lines.append(' '.join(current_line))
-                        current_line = [word]
+            # 첫 번째 줄: main_title (큰 폰트)
+            if main_title:
+                # main_title이 너무 길면 자동 줄바꿈
+                words = main_title.split()
+                current_line = []
+                for word in words:
+                    test_line = ' '.join(current_line + [word])
+                    bbox = draw.textbbox((0, 0), test_line, font=large_font)
+                    if bbox[2] - bbox[0] > 250:  # 250px 이상이면 줄바꿈
+                        if current_line:
+                            lines.append((' '.join(current_line), large_font))
+                            current_line = [word]
+                        else:
+                            lines.append((word, large_font))
+                            current_line = []
                     else:
-                        lines.append(word)
-                        current_line = []
-                else:
-                    current_line.append(word)
+                        current_line.append(word)
+                
+                if current_line:
+                    lines.append((' '.join(current_line), large_font))
             
-            if current_line:
-                lines.append(' '.join(current_line))
+            # 두 번째 줄: sub_title (작은 폰트)
+            if sub_title:
+                # sub_title이 너무 길면 자동 줄바꿈
+                words = sub_title.split()
+                current_line = []
+                for word in words:
+                    test_line = ' '.join(current_line + [word])
+                    bbox = draw.textbbox((0, 0), test_line, font=small_font)
+                    if bbox[2] - bbox[0] > 260:  # 작은 폰트는 좀 더 길게 허용
+                        if current_line:
+                            lines.append((' '.join(current_line), small_font))
+                            current_line = [word]
+                        else:
+                            lines.append((word, small_font))
+                            current_line = []
+                    else:
+                        current_line.append(word)
+                
+                if current_line:
+                    lines.append((' '.join(current_line), small_font))
                 
             # 텍스트 중앙 정렬
-            y_start = 150 - (len(lines) * 15)  # 대략적인 중앙 위치
-            for i, line in enumerate(lines):
-                bbox = draw.textbbox((0, 0), line, font=font)
-                x = (300 - (bbox[2] - bbox[0])) // 2
-                y = y_start + (i * 30)
-                draw.text((x, y), line, fill=(255, 255, 255), font=font)
+            line_spacing = 35  # 줄 간격
+            total_height = len(lines) * line_spacing
+            y_start = (300 - total_height) // 2 + 10  # 중앙에서 약간 위로
+            
+            for i, (line_text, line_font) in enumerate(lines):
+                bbox = draw.textbbox((0, 0), line_text, font=line_font)
+                text_width = bbox[2] - bbox[0]
+                x = (300 - text_width) // 2
+                y = y_start + (i * line_spacing)
+                
+                # 그림자 효과 (가독성 향상)
+                draw.text((x + 2, y + 2), line_text, fill=(0, 0, 0, 180), font=line_font)
+                # 메인 텍스트 (흰색)
+                draw.text((x, y), line_text, fill=(255, 255, 255), font=line_font)
             
             # 최종 이미지를 WebP 형식으로 저장
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -3500,6 +4508,67 @@ class ContentGenerator:
             username = site_data.get('username')
             password = site_data.get('password')
             category = site_data.get('category_id', 1)
+
+            # 제목에서 불필요한 문자 최종 제거 (워드프레스 포스팅 직전)
+            title = title.replace('"', '').replace("'", '').replace('`', '')
+            title = title.replace('#', '').replace('*', '').replace('**', '')
+            title = re.sub(r'^[\s\-_=]+', '', title)
+            title = re.sub(r'[\s\-_=]+$', '', title)
+            title = title.strip()
+            self.log(f"📝 최종 정리된 제목: {title}")
+            
+            # 콘텐츠 최종 검증 1: 링크 class 속성 따옴표 추가
+            # class=link1 → class="link1", class=link2 → class="link2", class=link3 → class="link3"
+            content = re.sub(r'class=link1(?=\s|>)', 'class="link1"', content)
+            content = re.sub(r'class=link2(?=\s|>)', 'class="link2"', content)
+            content = re.sub(r'class=link3(?=\s|>)', 'class="link3"', content)
+            content = re.sub(r'class=blink(?=\s|>)', 'class="blink"', content)
+            self.log("✅ 본문 링크 class 속성 따옴표 복구 완료")
+            
+            # 콘텐츠 최종 검증 2: 다운로드 버튼 HTML 완전 복구 (AI 응답이 잘못되었을 경우 대비)
+            # 키워드 추출 (제목에서)
+            keyword_from_title = title.split('|')[0].strip() if '|' in title else title
+            
+            if 'button-container' in content:
+                self.log("🔧 다운로드 버튼 발견 - 완전 재구성 시작")
+                
+                # 기존 button-container를 완전히 제거하고 새로 생성
+                content = re.sub(r'<div\s+class="?button-container"?>.*?</div>', '__BUTTON_PLACEHOLDER__', content, flags=re.DOTALL | re.IGNORECASE)
+                
+                # 올바른 다운로드 버튼 HTML 생성 (prompt1.txt 형식 준수)
+                from urllib.parse import quote
+                keyword_encoded = quote(keyword_from_title)
+                
+                correct_button_html = f'''<div class="button-container">
+    <p>
+        <a href="https://www.apple.com/kr/search/{keyword_encoded}?src=globalnav" class="custom-download-btn appstore-button" target="_self">
+            <img src="https://developer.apple.com/assets/elements/icons/app-store/app-store-128x128_2x.png" class="btn-logo" alt="App Store">
+            <span>App Store에서 바로 다운로드</span>
+        </a>
+    </p>
+    <p>
+        <a href="https://play.google.com/store/search?q={keyword_encoded}&amp;c=apps" class="custom-download-btn playstore-button" target="_self">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/7/78/Google_Play_Store_badge_EN.svg" class="btn-logo" alt="Google Play">
+            <span>Google Play에서 바로 다운로드</span>
+        </a>
+    </p>
+    <p>
+        <a href="https://apps.microsoft.com/search?query={keyword_encoded}&hl=ko-KR&gl=KR" class="custom-download-btn window-button" target="_self">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/4/44/Microsoft_logo.svg" class="btn-logo" alt="Microsoft Store">
+            <span>Windows에서 바로 다운로드</span>
+        </a>
+    </p>
+    <p>
+        <a href="https://www.apple.com/kr/search/{keyword_encoded}?src=globalnav" class="custom-download-btn macbook-button" target="_self">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/f/fa/Apple_logo_black.svg" class="btn-logo" alt="Mac App Store">
+            <span>MacBook에서 바로 다운로드</span>
+        </a>
+    </p>
+</div>'''
+                
+                # 플레이스홀더를 올바른 HTML로 교체
+                content = content.replace('__BUTTON_PLACEHOLDER__', correct_button_html)
+                self.log(f"✅ 다운로드 버튼 완전 재구성 완료 (키워드: {keyword_from_title})")
 
             # WordPress REST API URL 구성
             api_url = f"{site_url.rstrip('/')}/wp-json/wp/v2/posts"
@@ -3569,7 +4638,6 @@ class ContentGenerator:
                     with open(html_filepath, 'w', encoding='utf-8') as f:
                         f.write(full_html)
                     
-                    self.log(f"💾 HTML 저장 완료: {html_filename}")
                 except Exception as e:
                     self.log(f"⚠️ HTML 저장 실패: {e}")
                 
@@ -3592,12 +4660,23 @@ class ContentGenerator:
             return {'success': False, 'error': str(e)}
 
     def try_authentication_methods(self, site_name, site_url, username, password):
-        """다양한 인증 방법을 시도합니다"""
+        """다양한 인증 방법을 시도합니다 (캐싱 포함)"""
         session = get_requests_session()
         user_url = f"{site_url.rstrip('/')}/wp-json/wp/v2/users/me"
         
         # 비밀번호 힌트 생성 (보안을 위해 일부만 표시)
         password_hint = password[:4] + "***" + password[-4:] if len(password) > 8 else password[:2] + "***"
+        
+        # 캐시된 인증 방법이 있으면 먼저 시도
+        if site_url in self.auth_cache:
+            cached_headers, cached_method = self.auth_cache[site_url]
+            self.log(f"🔑 {site_name}: 캐시된 인증 방법 ({cached_method}) 사용")
+            if self.test_auth_method(session, user_url, cached_headers, site_name, f"{cached_method} (캐시)", username, password_hint):
+                self.log(f"✅ {site_name}: 캐시된 인증 성공!")
+                return True, cached_headers
+            else:
+                self.log(f"⚠️ {site_name}: 캐시된 인증 실패, 다른 방법 시도...")
+                del self.auth_cache[site_url]  # 캐시 삭제
         
         # WordPress REST API 접근성 확인
         self.check_rest_api_accessibility(site_name, site_url)
@@ -3605,6 +4684,7 @@ class ContentGenerator:
         # 방법 1: Application Password (공백 포함)
         headers1 = self.create_auth_header(username, password, "Application Password with spaces")
         if self.test_auth_method(session, user_url, headers1, site_name, "Application Password (공백포함)", username, password_hint):
+            self.auth_cache[site_url] = (headers1, "Application Password (공백포함)")  # 캐시 저장
             return True, headers1
         
         # 방법 2: Application Password (공백 제거)
@@ -3613,12 +4693,14 @@ class ContentGenerator:
         self.log(f"🔧 {site_name}: 공백 제거된 비밀번호 길이: {len(password_no_spaces)}자")
         headers2 = self.create_auth_header(username, password_no_spaces, "Application Password without spaces")
         if self.test_auth_method(session, user_url, headers2, site_name, "Application Password (공백제거)", username, password_hint):
+            self.auth_cache[site_url] = (headers2, "Application Password (공백제거)")  # 캐시 저장
             return True, headers2
         
         # 방법 3: 기본 Basic Auth
         self.log(f"🔑 {site_name}: 방법 3 - 기본 Basic Auth 시도")
         headers3 = self.create_auth_header(username, password, "Basic Auth")
         if self.test_auth_method(session, user_url, headers3, site_name, "Basic Auth", username, password_hint):
+            self.auth_cache[site_url] = (headers3, "Basic Auth")  # 캐시 저장
             return True, headers3
         
         # 방법 4: WordPress 기본 인증 (username@domain 형식)
@@ -3627,12 +4709,14 @@ class ContentGenerator:
             username_with_domain = f"{username}@{domain}"
             headers4 = self.create_auth_header(username_with_domain, password, "Domain Auth")
             if self.test_auth_method(session, user_url, headers4, site_name, "도메인 포함 인증", username_with_domain, password_hint):
+                self.auth_cache[site_url] = (headers4, "도메인 포함 인증")  # 캐시 저장
                 return True, headers4
             
             # 방법 5: 도메인 포함 + 공백 제거
             self.log(f"🔑 {site_name}: 방법 5 - 도메인 포함 + 공백 제거 시도")
             headers5 = self.create_auth_header(username_with_domain, password_no_spaces, "Domain Auth + No Spaces")
             if self.test_auth_method(session, user_url, headers5, site_name, "도메인 포함 + 공백제거", username_with_domain, password_hint):
+                self.auth_cache[site_url] = (headers5, "도메인 포함 + 공백제거")  # 캐시 저장
                 return True, headers5
         
         # 모든 인증 방법 실패 시 자세한 가이드 제공
@@ -3647,7 +4731,7 @@ class ContentGenerator:
             api_base_url = f"{site_url.rstrip('/')}/wp-json/wp/v2"
             
             session = get_requests_session()
-            response = session.get(api_base_url, timeout=10)
+            response = session.get(api_base_url, timeout=30)  # 타임아웃 30초로 증가
             
             if response.status_code == 200:
                 return True
@@ -3674,27 +4758,52 @@ class ContentGenerator:
         }
 
     def test_auth_method(self, session, user_url, headers, site_name, method_name, username="", password_hint=""):
-        """인증 방법 테스트"""
-        try:
-            response = session.get(user_url, headers=headers, timeout=15)
-            
-            if response.status_code == 200:
-                user_info = response.json()
-                user_name = user_info.get('name', 'Unknown')
-                return True
-            else:
-                # 인증 실패 시 사용자명과 비밀번호 힌트 표시
-                if username:
-                    self.log(f"❌ {site_name}: {method_name} 인증 실패 (HTTP {response.status_code}) - 사용자명: '{username}', 비밀번호: '{password_hint}'")
+        """인증 방법 테스트 (재시도 포함)"""
+        max_retries = 2  # 최대 2번 재시도
+        
+        for attempt in range(max_retries):
+            try:
+                # 타임아웃 시간을 30초로 증가
+                response = session.get(user_url, headers=headers, timeout=30)
+                
+                if response.status_code == 200:
+                    user_info = response.json()
+                    user_name = user_info.get('name', 'Unknown')
+                    if attempt > 0:
+                        self.log(f"✅ {site_name}: {method_name} 인증 성공 ({attempt+1}번째 시도)")
+                    return True
                 else:
-                    self.log(f"❌ {site_name}: {method_name} 인증 실패 (HTTP {response.status_code})")
-                return False
-        except Exception as e:
-            if username:
-                self.log(f"❌ {site_name}: {method_name} 인증 중 오류: {e} - 사용자명: '{username}', 비밀번호: '{password_hint}'")
-            else:
-                self.log(f"❌ {site_name}: {method_name} 인증 중 오류: {e}")
-            return False
+                    # 인증 실패 시 사용자명과 비밀번호 힌트 표시
+                    if attempt == max_retries - 1:  # 마지막 시도에서만 로그 출력
+                        if username:
+                            self.log(f"❌ {site_name}: {method_name} 인증 실패 (HTTP {response.status_code}) - 사용자명: '{username}', 비밀번호: '{password_hint}'")
+                        else:
+                            self.log(f"❌ {site_name}: {method_name} 인증 실패 (HTTP {response.status_code})")
+                    return False
+                    
+            except requests.exceptions.Timeout as e:
+                if attempt < max_retries - 1:
+                    self.log(f"⏳ {site_name}: {method_name} 타임아웃 발생, {attempt+2}번째 시도 중...")
+                    continue
+                else:
+                    if username:
+                        self.log(f"❌ {site_name}: {method_name} 타임아웃 (30초) - 사용자명: '{username}', 비밀번호: '{password_hint}'")
+                    else:
+                        self.log(f"❌ {site_name}: {method_name} 타임아웃 (30초)")
+                    return False
+                    
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    self.log(f"⚠️ {site_name}: {method_name} 오류 발생, {attempt+2}번째 시도 중... ({str(e)[:50]})")
+                    continue
+                else:
+                    if username:
+                        self.log(f"❌ {site_name}: {method_name} 인증 중 오류: {e} - 사용자명: '{username}', 비밀번호: '{password_hint}'")
+                    else:
+                        self.log(f"❌ {site_name}: {method_name} 인증 중 오류: {e}")
+                    return False
+        
+        return False
 
     def upload_featured_image(self, site_url, headers, image_path, post_id):
         """특성 이미지(썸네일) 업로드"""
@@ -3743,15 +4852,15 @@ class ContentGenerator:
         content = re.sub(r'</div>\s*</div>', '</div>', content, flags=re.IGNORECASE)
         
         # 2. 색상 스타일 속성이 깨진 경우 수정
-        content = re.sub(r'<span style="color:\s*"[^>]*>', '<span style="color: #ee2323;">', content, flags=re.IGNORECASE)
-        content = re.sub(r'<span style="color:\s+[^"]*"', '<span style="color: #ee2323;"', content, flags=re.IGNORECASE)
-        content = re.sub(r'style="color:\s*//[^"]*"', 'style="color: #ee2323;"', content, flags=re.IGNORECASE)
-        content = re.sub(r'style="color:\s*#ee2323[^"]*"', 'style="color: #ee2323;"', content, flags=re.IGNORECASE)
+        content = re.sub(r'<span style="color:\s*"[^>]*>', '<span style="color:#ee2323;">', content, flags=re.IGNORECASE)
+        content = re.sub(r'<span style="color:\s+[^"]*"', '<span style="color:#ee2323;"', content, flags=re.IGNORECASE)
+        content = re.sub(r'style="color:\s*//[^"]*"', 'style="color:#ee2323;"', content, flags=re.IGNORECASE)
+        content = re.sub(r'style="color:\s*#ee2323[^"]*"', 'style="color:#ee2323;"', content, flags=re.IGNORECASE)
         
         # 2-1. 더 강력한 깨진 HTML 속성 수정
         # style 속성이 URL로 잘못 들어간 경우 완전 수정
-        content = re.sub(r'<span style="color:\s*//[^"]*"[^>]*>', '<span style="color: #ee2323;">', content, flags=re.IGNORECASE)
-        content = re.sub(r'<span[^>]*style="[^"]*//[^"]*"[^>]*>', '<span style="color: #ee2323;">', content, flags=re.IGNORECASE)
+        content = re.sub(r'<span style="color:\s*//[^"]*"[^>]*>', '<span style="color:#ee2323;">', content, flags=re.IGNORECASE)
+        content = re.sub(r'<span[^>]*style="[^"]*//[^"]*"[^>]*>', '<span style="color:#ee2323;">', content, flags=re.IGNORECASE)
         
         # href 속성에 잘못된 URL이 들어간 경우 수정
         if keyword:
@@ -3764,7 +4873,7 @@ class ContentGenerator:
         # 올바른 패턴으로 수정
         if keyword:
             pattern = r'style="color:\s*//[^"]*"\s*target="_self">([^<]*)</a>'
-            replacement = f'style="color: #ee2323;">{keyword} 상세정보</span>을 통해, 지금 바로 해보세요!</b></p><br><div><center><a class="blink" href="{search_url}" target="_self">\\1</a>'
+            replacement = f'style="color:#ee2323;">{keyword} 상세정보</span>을 통해, 지금 바로 해보세요!</b></p><br><div><center><a class="blink" href="{search_url}" target="_self">\\1</a>'
             content = re.sub(pattern, replacement, content, flags=re.IGNORECASE)
         
         # 3. 불완전한 닫는 태그들 정리
@@ -3871,13 +4980,28 @@ class ContentGenerator:
                 if open_tags and open_tags[-1] == tag_name:
                     open_tags.pop()
         
-        # 13. 끝부분의 불완전한 내용 제거
+        # 13. 끝부분의 불완전한 내용 제거 (다운로드 버튼 보호)
+        # 다운로드 버튼 HTML을 임시로 보호
+        download_button_pattern = r'<div class="button-container">.*?</div>'
+        download_buttons = re.findall(download_button_pattern, content, flags=re.IGNORECASE | re.DOTALL)
+        
+        # 다운로드 버튼을 플레이스홀더로 교체
+        temp_content = content
+        for i, button in enumerate(download_buttons):
+            temp_content = temp_content.replace(button, f"__DOWNLOAD_BUTTON_{i}__", 1)
+        
         # 의미없는 단어들이나 불완전한 문장, 깨진 HTML 구조 제거
-        content = re.sub(r'\s*(당근|단호|center|table|td|tr|color|style|href)\s*$', '', content, flags=re.IGNORECASE)
-        content = re.sub(r'<[^>]*>?\s*$', '', content)  # 끝에 불완전한 태그 제거
-        content = re.sub(r'[^>]*>\s*$', '', content)  # 끝에 불완전한 태그 내용 제거
-        content = re.sub(r'\s*=\s*$', '', content)  # 끝에 등호나 불완전한 속성 제거
-        content = re.sub(r'\s*"\s*$', '', content)  # 끝에 따옴표만 있는 경우 제거
+        temp_content = re.sub(r'\s*(당근|단호|center(?!>)|table(?!>)|td(?!>)|tr(?!>)|color(?![:="])|style(?![:="])|href(?![:="]))\s*$', '', temp_content, flags=re.IGNORECASE)
+        temp_content = re.sub(r'<[^>]*>?\s*$', '', temp_content)  # 끝에 불완전한 태그 제거
+        temp_content = re.sub(r'[^>]*>\s*$', '', temp_content)  # 끝에 불완전한 태그 내용 제거
+        temp_content = re.sub(r'\s*=\s*$', '', temp_content)  # 끝에 등호나 불완전한 속성 제거
+        temp_content = re.sub(r'^\s*"\s*$', '', temp_content, flags=re.MULTILINE)  # 줄 전체가 따옴표만 있는 경우만 제거
+        
+        # 다운로드 버튼 복원
+        for i, button in enumerate(download_buttons):
+            temp_content = temp_content.replace(f"__DOWNLOAD_BUTTON_{i}__", button, 1)
+        
+        content = temp_content
         
         # 13-1. 불완전한 문장이나 단락 제거
         # 끝이 완전하지 않은 문장들 제거 (마침표, 물음표, 느낌표로 끝나지 않는 경우)
@@ -3969,6 +5093,13 @@ class ContentGenerator:
         
         # 제목에서 HTML 태그 제거 (제목은 순수 텍스트로)
         title = re.sub(r'<[^>]+>', '', title).strip()
+        
+        # 제목에서 불필요한 문자 제거 (큰따옴표, 작은따옴표, #, *, 백틱 등)
+        title = title.replace('"', '').replace("'", '').replace('`', '')
+        title = title.replace('#', '').replace('*', '').replace('**', '')
+        title = re.sub(r'^[\s\-_=]+', '', title)  # 앞쪽 특수문자 제거
+        title = re.sub(r'[\s\-_=]+$', '', title)  # 뒤쪽 특수문자 제거
+        title = title.strip()
         
         # 제목 형식 검증 및 보정
         if not self.is_valid_title_format(title, keyword):
@@ -4211,92 +5342,15 @@ class ContentGenerator:
         return prompt
 
     def get_approval_system_prompt(self, step, keyword):
-        """승인용 시스템 프롬프트 생성 - 통합된 URL과 기본 지침 포함"""
+        """승인용 시스템 프롬프트 생성 - 최소화 (API 토큰 대폭 절약)"""
         
-        # URL 변수들을 하나로 통합  
-        url_variables = {
-            # 기본 검색 링크들
-            "{url}": f"https://search.naver.com/search.naver?query={keyword.replace(' ', '+')}",
-            "{naver_search_link}": f'<a href="https://search.naver.com/search.naver?query={keyword.replace(" ", "+")}" target="_self">{keyword} 관련 정보</a>',
-            "{youtube_link}": f'<a href="https://tv.naver.com/search?query={keyword.replace(" ", "+")}" target="_self">{keyword} 관련 영상</a>',
-            "{primary_link}": f'<a href="https://search.naver.com/search.naver?query={keyword.replace(" ", "+")}" target="_self">{keyword} 상세 정보</a>',
-            
-            # 정부 및 공공기관 링크들
-            "{hometax_link}": '<a href="https://www.hometax.go.kr" target="_self">홈택스 바로가기</a>',
-            "{lh_link}": '<a href="https://www.lh.or.kr" target="_self">LH 한국토지주택공사</a>',
-            "{efine_link}": '<a href="https://www.efine.go.kr" target="_self">교통민원24</a>',
-            "{gov24_link}": '<a href="https://www.gov.kr" target="_self">정부24</a>',
-            "{wetax_link}": '<a href="https://www.wetax.go.kr" target="_self">위택스</a>',
-            "{kepco_link}": '<a href="https://cyber.kepco.co.kr" target="_self">한국전력 사이버지점</a>',
-            "{car365_link}": '<a href="https://www.car365.go.kr" target="_self">자동차365</a>',
-            "{apply_lh_link}": '<a href="https://apply.lh.or.kr" target="_self">LH청약플러스</a>',
-            "{bokjiro_link}": '<a href="https://www.bokjiro.go.kr" target="_self">복지로</a>',
-            
-            # 금융기관 링크들
-            "{kbstar_link}": '<a href="https://www.kbstar.com" target="_self">KB국민은행</a>',
-            "{shinhan_link}": '<a href="https://www.shinhan.com" target="_self">신한은행</a>',
-            "{hanabank_link}": '<a href="https://www.hanabank.com" target="_self">하나은행</a>',
-            "{wooribank_link}": '<a href="https://www.wooribank.com" target="_self">우리은행</a>',
-            "{ibk_link}": '<a href="https://www.ibk.co.kr" target="_self">IBK기업은행</a>',
-            "{kdb_link}": '<a href="https://www.kdb.co.kr" target="_self">KDB산업은행</a>',
-            "{bok_link}": '<a href="https://www.bok.or.kr" target="_self">한국은행</a>',
-            "{fss_link}": '<a href="https://www.fss.or.kr" target="_self">금융감독원</a>',
-            "{toss_link}": '<a href="https://toss.im" target="_self">토스</a>',
-            "{kakaopay_link}": '<a href="https://www.kakaopay.com" target="_self">카카오페이</a>',
-            
-            # 통신 및 유틸리티 링크들
-            "{tworld_link}": '<a href="https://www.tworld.co.kr" target="_self">T월드</a>',
-            "{kt_link}": '<a href="https://www.kt.com" target="_self">KT</a>',
-            "{uplus_link}": '<a href="https://www.uplus.co.kr" target="_self">LG U+</a>',
-            "{naver_land_link}": '<a href="https://land.naver.com" target="_self">네이버 부동산</a>',
-            "{zigbang_link}": '<a href="https://www.zigbang.com" target="_self">직방</a>',
-            
-            # 자동차 관련 링크들
-            "{bobaedream_link}": '<a href="https://www.bobaedream.co.kr" target="_self">보배드림</a>',
-            "{encar_link}": '<a href="https://www.encar.com" target="_self">엔카</a>',
-            "{kcar_link}": '<a href="https://www.kcar.com" target="_self">K카</a>',
-            "{tmap_link}": '<a href="https://www.tmap.co.kr" target="_self">T맵</a>',
-            "{naver_map_link}": '<a href="https://map.naver.com" target="_self">네이버 지도</a>',
-            "{kakao_map_link}": '<a href="https://map.kakao.com" target="_self">카카오맵</a>',
-            "{hyundai_link}": '<a href="https://www.hyundai.com" target="_self">현대자동차</a>',
-            "{kia_link}": '<a href="https://www.kia.com" target="_self">기아</a>'
-        }
-        
-        # URL 목록을 문자열로 변환
-        url_list = '\n'.join([f"- {key}: {value}" for key, value in url_variables.items()])
-        
-        base_prompt = f"""넌 10년 경력의 고도로 숙련된 SEO 콘텐츠 전문가야.
+        # approval 프롬프트 파일에 이미 상세 규칙이 있으므로 최소한만 전달
+        return f"""너는 SEO 콘텐츠 전문가야. {keyword}에 대한 글을 작성해.
 
-IMPORTANT: 반드시 prompts.txt 파일의 지침을 엄격히 따라야 합니다.
-
-승인용 콘텐츠 작성 규칙:
-1. 마크다운 문법 절대 금지 (**, ##, - 등 금지)
-2. HTML 태그만 사용 (<h1>, <h2>, <h3>, <p>, <strong>, <ul>, <li>, <table> 등)
-3. 자연스럽고 유익한 내용으로 구성
-4. 검색엔진과 사용자 모두에게 최적화된 고품질 콘텐츠 작성
-5. 읽기 쉽고 정보가 풍부한 콘텐츠를 작성
-6. 상업적 색채를 최소화하고 순수한 정보 전달에 집중
-
-prompts.txt 파일 지침 준수:
-- prompt1.txt: 제목은 반드시 '{keyword} |' 로 시작, 서론 작성 규칙 따르기
-- prompt2~4.txt: 본문 지침에 따라 소제목과 내용 구성
-- prompt5.txt: 표와 FAQ 구성 지침 준수
-
-외부링크 사용 시:
-- 절대로 존재하지 않는 URL (https://www.example.com 등) 사용 금지
-- 아래 제공된 실제 URL 변수들만 사용
-- 외부링크 위에 행동 유도 멘트 추가 (독자의 고통 해결이나 혜택 암시)
-
-사용 가능한 실제 URL 변수들:
-{url_list}
-
-키워드: '{keyword}'
-단계: {step}
-출력 형식: 순수 HTML (마크다운 절대 금지)
-
-중요: prompts.txt 파일의 모든 지침을 정확히 따라주세요."""
-
-        return base_prompt
+규칙:
+- HTML만 사용 (마크다운 금지)
+- '~해요'체 사용
+- prompts/approval{step}.txt 파일의 지침을 정확히 따르기"""
 
     def get_revenue_system_prompt(self, step_num, keyword):
         """수익용 시스템 프롬프트 생성 - prompt 파일 읽어서 사용"""
@@ -4311,9 +5365,7 @@ prompts.txt 파일 지침 준수:
             # {keyword} 치환
             prompt_content = prompt_content.replace('{keyword}', keyword)
             
-            # 간단한 전처리 - AI 역할 언급 방지 규칙 추가
-            prompt_content += "\n\n중요: AI 역할이나 '인공지능' 언급 절대 금지. '~해요'체로 작성."
-            
+            # 프롬프트 파일에 이미 규칙이 있으므로 추가 규칙 없음 (API 토큰 절약)
             return prompt_content
             
         except Exception as e:
@@ -4323,6 +5375,7 @@ prompts.txt 파일 지침 준수:
             
 규칙:
 - AI 역할 언급 절대 금지
+- '클릭' 단어 사용 금지 (대신: 선택, 확인, 눌러보기, 터치, 접속, 방문)
 - 마크다운 문법 사용 금지
 - 순수 HTML만 사용
 - {keyword}에 대한 유용한 정보 제공"""
@@ -5225,16 +6278,16 @@ class SiteWidget(QWidget):
 
         keyword_row = QHBoxLayout()
         keywords_count = self.get_keywords_count()
-        keyword_info = QLabel(f"키워드 {keywords_count}개")
-        keyword_info.setFont(QFont("맑은 고딕", 10))
-        keyword_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        keyword_info.setStyleSheet(f"""
+        self.keyword_info = QLabel(f"키워드 {keywords_count}개")  # self로 변경하여 나중에 업데이트 가능
+        self.keyword_info.setFont(QFont("맑은 고딕", 10))
+        self.keyword_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.keyword_info.setStyleSheet(f"""
             color: {COLORS['info']};
             text-decoration: underline;
         """)
-        keyword_info.setCursor(Qt.CursorShape.PointingHandCursor)
-        keyword_info.mousePressEvent = lambda event: self.open_keyword_file()
-        keyword_row.addWidget(keyword_info, 1)
+        self.keyword_info.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.keyword_info.mousePressEvent = lambda event: self.open_keyword_file()
+        keyword_row.addWidget(self.keyword_info, 1)
 
         keyword_row.addStretch()
 
@@ -5620,6 +6673,29 @@ class SiteWidget(QWidget):
             
         except Exception as e:
             QMessageBox.critical(None, "오류", f"썸네일 파일을 열 수 없습니다:\n{e}")
+    
+    def update_keyword_display(self):
+        """실시간 키워드 개수 업데이트"""
+        try:
+            # 키워드 파일에서 남은 키워드 개수 계산
+            keyword_file = self.site_data.get("keyword_file", "")
+            if keyword_file:
+                keyword_path = os.path.join(get_base_path(), "keywords", keyword_file)
+                if os.path.exists(keyword_path):
+                    try:
+                        with open(keyword_path, 'r', encoding='utf-8') as f:
+                            lines = f.readlines()
+                            remaining_keywords = [line.strip() for line in lines if line.strip()]
+                            count = len(remaining_keywords)
+                            self.keyword_info.setText(f"{count}개")
+                    except Exception:
+                        self.keyword_info.setText("0개")
+                else:
+                    self.keyword_info.setText("0개")
+            else:
+                self.keyword_info.setText("0개")
+        except Exception:
+            pass
             
 class MainWindow(QMainWindow):
     """메인 윈도우"""
@@ -5701,7 +6777,7 @@ class MainWindow(QMainWindow):
                 background: transparent;
                 border: none;
                 padding: 0px;
-                text-align: center;
+                text-align:center;
             }}
             QPushButton:hover {{
                 color: {COLORS['primary_hover']};
@@ -5723,7 +6799,7 @@ class MainWindow(QMainWindow):
                     padding: 15px 20px;
                     font-weight: normal;
                     font-size: 10pt;
-                    text-align: center;
+                    text-align:center;
                 }}
                 QPushButton:hover {{
                     background-color: {COLORS['primary']};
@@ -6105,8 +7181,29 @@ class MainWindow(QMainWindow):
         """UI 설정 - 간단한 레이아웃"""
         self.setWindowTitle("Auto WP multi-site - 멀티 사이트 관리 시스템")
         
-        # 기본 창 크기 설정 (반응형 복잡성 제거)
-        self.setGeometry(50, 50, 1400, 900)
+        # 화면 크기에 맞춰 창 크기 자동 조정
+        from PyQt6.QtGui import QGuiApplication
+        screen = QGuiApplication.primaryScreen()
+        screen_geometry = screen.availableGeometry()
+        
+        # 화면 크기의 80%로 창 크기 설정
+        window_width = int(screen_geometry.width() * 0.8)
+        window_height = int(screen_geometry.height() * 0.8)
+        
+        # 최소 크기 보장
+        window_width = max(window_width, 1200)
+        window_height = max(window_height, 800)
+        
+        # 창을 화면 중앙에 배치
+        x = (screen_geometry.width() - window_width) // 2
+        y = (screen_geometry.height() - window_height) // 2
+        
+        self.setGeometry(x, y, window_width, window_height)
+        
+        # F5 새로고침 단축키 설정
+        from PyQt6.QtGui import QShortcut, QKeySequence
+        refresh_shortcut = QShortcut(QKeySequence("F5"), self)
+        refresh_shortcut.activated.connect(self.refresh_monitoring)
         
         # 중앙 위젯
         central_widget = QWidget()
@@ -6717,60 +7814,65 @@ class MainWindow(QMainWindow):
         status_layout.setSpacing(25)
         status_layout.setContentsMargins(20, 20, 20, 20)
 
-        # 설정 정보 표시 - 3x2 그리드
+        # 설정 정보 표시 - 명확한 2행 x 3열 그리드
         self.settings_grid = QGridLayout()
         self.settings_grid.setSpacing(15)
-        
-        # 컬럼 스트레치 설정 (균등 분배)
+        self.settings_grid.setColumnMinimumWidth(0, 200)
+        self.settings_grid.setColumnMinimumWidth(1, 200)
+        self.settings_grid.setColumnMinimumWidth(2, 200)
         self.settings_grid.setColumnStretch(0, 1)
         self.settings_grid.setColumnStretch(1, 1)
         self.settings_grid.setColumnStretch(2, 1)
         
-        # 첫 번째 행
+        # 행 0, 열 0: AI 모델
         self.ai_model_label = self.create_unified_card("🤖 AI 모델", "", self.goto_settings_ai, "combobox")
         self.ai_model_combo = self.ai_model_label.value_widget
-        self.settings_grid.addWidget(self.ai_model_label, 0, 0)
+        self.settings_grid.addWidget(self.ai_model_label, 0, 0, 1, 1)
         
+        # 행 0, 열 1: 포스팅 모드
         self.posting_mode_label = self.create_unified_card("📝 포스팅 모드", "", self.goto_settings_posting_mode, "combobox")
         self.posting_mode_combo = self.posting_mode_label.value_widget
-        self.settings_grid.addWidget(self.posting_mode_label, 0, 1)
+        self.settings_grid.addWidget(self.posting_mode_label, 0, 1, 1, 1)
         
-        self.total_keywords_label = self.create_unified_card("📊 총 키워드", "", self.goto_site_management, "combobox")
-        self.total_keywords_combo = self.total_keywords_label.value_widget
-        self.settings_grid.addWidget(self.total_keywords_label, 0, 2)
+        # 행 0, 열 2: 남은 키워드
+        self.total_keywords_label = self.create_unified_card("📊 남은 키워드", "0개", self.goto_site_management, "button")
+        self.total_keywords_button = self.total_keywords_label.value_button
+        self.settings_grid.addWidget(self.total_keywords_label, 0, 2, 1, 1)
         
-        # 두 번째 행
-        # 사이트 선택 ('다른 설정 라벨과 동일한 스타일')
+        # 행 1, 열 0: 사이트
         self.site_label = self.create_site_selector_label()
-        self.settings_grid.addWidget(self.site_label, 1, 0)
+        self.settings_grid.addWidget(self.site_label, 1, 0, 1, 1)
         
+        # 행 1, 열 1: 다음 포스팅
         self.next_posting_label = self.create_unified_card("⏰ 다음 포스팅", "대기중", self.goto_settings_interval, "button")
-        self.settings_grid.addWidget(self.next_posting_label, 1, 1)
+        self.settings_grid.addWidget(self.next_posting_label, 1, 1, 1, 1)
         
-        # 새로고침 카드
-        self.refresh_container = self.create_unified_card("🔄 새로고침", "", self.refresh_all_status, "combobox")
-        self.refresh_combo = self.refresh_container.value_widget
-        self.settings_grid.addWidget(self.refresh_container, 1, 2)
+        # 행 1, 열 2: 새로고침
+        self.refresh_button_label = self.create_unified_card("🔄 새로고침", "F5", self.refresh_all_status, "button")
+        self.refresh_button = self.refresh_button_label.value_button
+        self.settings_grid.addWidget(self.refresh_button_label, 1, 2, 1, 1)
         
         status_layout.addLayout(self.settings_grid)
         
-        # 포스팅 제어 버튼들
+        # 포스팅 제어 버튼들 - 2x2 그리드로 변경
         status_layout.addSpacing(20)
-        control_layout = QHBoxLayout()
-        control_layout.setSpacing(15)
+        control_grid = QGridLayout()
+        control_grid.setSpacing(15)
         
         # 시작 버튼
         self.start_btn = QPushButton("▶️ 시작")
+        self.start_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.start_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['success']};
                 color: white;
                 font-weight: bold;
-                padding: 15px 25px;
+                padding: 15px 10px;
                 border-radius: 8px;
                 border: none;
                 font-size: 14px;
                 min-height: 20px;
+                min-width: 80px;
             }}
             QPushButton:hover {{
                 background-color: #8FBCBB;
@@ -6778,20 +7880,22 @@ class MainWindow(QMainWindow):
         """)
         self.start_btn.clicked.connect(self.start_posting)
         self.start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        control_layout.addWidget(self.start_btn)
+        control_grid.addWidget(self.start_btn, 0, 0)
         
         # 중지 버튼
         self.stop_btn = QPushButton("🛑 중지")
+        self.stop_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.stop_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['danger']};
                 color: white;
                 font-weight: bold;
-                padding: 15px 25px;
+                padding: 15px 10px;
                 border-radius: 8px;
                 border: none;
                 font-size: 14px;
                 min-height: 20px;
+                min-width: 80px;
             }}
             QPushButton:hover {{
                 background-color: #D08770;
@@ -6799,20 +7903,22 @@ class MainWindow(QMainWindow):
         """)
         self.stop_btn.clicked.connect(self.stop_posting)
         self.stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        control_layout.addWidget(self.stop_btn)
+        control_grid.addWidget(self.stop_btn, 0, 1)
         
         # 재개 버튼 (파란색으로 변경)
         self.resume_btn = QPushButton("⏯️ 재개")
+        self.resume_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.resume_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['primary']};
                 color: white;
                 font-weight: bold;
-                padding: 15px 25px;
+                padding: 15px 10px;
                 border-radius: 8px;
                 border: none;
                 font-size: 14px;
                 min-height: 20px;
+                min-width: 80px;
             }}
             QPushButton:hover {{
                 background-color: #7C9CBF;
@@ -6820,20 +7926,22 @@ class MainWindow(QMainWindow):
         """)
         self.resume_btn.clicked.connect(self.resume_posting)
         self.resume_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        control_layout.addWidget(self.resume_btn)
+        control_grid.addWidget(self.resume_btn, 1, 0)
         
         # 일시정지 버튼 (노란색으로 변경)
         self.pause_btn = QPushButton("⏸️ 일시정지")
+        self.pause_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.pause_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['warning']};
                 color: white;
                 font-weight: bold;
-                padding: 15px 25px;
+                padding: 15px 10px;
                 border-radius: 8px;
                 border: none;
                 font-size: 14px;
                 min-height: 20px;
+                min-width: 80px;
             }}
             QPushButton:hover {{
                 background-color: #EBCB8B;
@@ -6841,9 +7949,9 @@ class MainWindow(QMainWindow):
         """)
         self.pause_btn.clicked.connect(self.pause_posting)
         self.pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        control_layout.addWidget(self.pause_btn)
+        control_grid.addWidget(self.pause_btn, 1, 1)
         
-        status_layout.addLayout(control_layout)
+        status_layout.addLayout(control_grid)
         status_group.setLayout(status_layout)
         layout.addWidget(status_group)
 
@@ -6875,7 +7983,9 @@ class MainWindow(QMainWindow):
 
         self.progress_text = QTextEdit()
         self.progress_text.setReadOnly(True)
-        self.progress_text.setMinimumHeight(400)
+        self.progress_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # 최소 높이만 설정하고 최대 높이는 제한 없음
+        self.progress_text.setMinimumHeight(300)
         
         # 폰트 설정
         font = self.progress_text.font()
@@ -6915,8 +8025,15 @@ class MainWindow(QMainWindow):
             }}
         """)
 
-        # Ctrl+휠 확대/축소 기능 비활성화하고 커스텀 휠 이벤트 적용
+        # Ctrl+휠 확대/축소 기능 활성화하고 커스텀 휠 이벤트 적용
         self.progress_text.wheelEvent = self.progress_wheel_event
+        
+        # 사용자 스크롤 추적 변수 초기화
+        self.user_scrolling = False
+        self.last_scroll_time = 0
+        self.scroll_timer = QTimer()
+        self.scroll_timer.timeout.connect(self.check_scroll_timeout)
+        self.scroll_timer.start(1000)  # 1초마다 체크
 
         # 시작 메시지
         from datetime import datetime
@@ -7044,10 +8161,36 @@ class MainWindow(QMainWindow):
             print(f"AI 모델 설정 저장 오류: {e}")
 
     def on_posting_mode_changed(self, mode):
-        """포스팅 모드 변경 시 설정 업데이트"""
+        """포스팅 모드 변경 시 설정 업데이트 및 설정 탭과 동기화"""
         try:
             self.config_manager.data["global_settings"]["posting_mode"] = mode
             self.config_manager.save_config()
+            
+            # 설정 탭의 포스팅 모드 콤보박스도 업데이트
+            if hasattr(self, 'settings_posting_mode_combo'):
+                self.settings_posting_mode_combo.blockSignals(True)  # 무한 루프 방지
+                self.settings_posting_mode_combo.setCurrentText(mode)
+                self.settings_posting_mode_combo.blockSignals(False)
+            
+            print(f"포스팅 모드가 '{mode}'로 변경되었습니다.")
+            
+        except Exception as e:
+            print(f"포스팅 모드 설정 저장 오류: {e}")
+
+    def on_settings_posting_mode_changed(self, mode):
+        """설정 탭의 포스팅 모드 변경 시 모니터링 탭과 동기화"""
+        try:
+            self.config_manager.data["global_settings"]["posting_mode"] = mode
+            self.config_manager.save_config()
+            
+            # 모니터링 탭의 포스팅 모드 콤보박스도 업데이트
+            if hasattr(self, 'posting_mode_combo'):
+                self.posting_mode_combo.blockSignals(True)  # 무한 루프 방지
+                self.posting_mode_combo.setCurrentText(mode)
+                self.posting_mode_combo.blockSignals(False)
+            
+            print(f"설정 탭에서 포스팅 모드가 '{mode}'로 변경되었습니다.")
+            
         except Exception as e:
             print(f"포스팅 모드 설정 저장 오류: {e}")
 
@@ -7081,7 +8224,7 @@ class MainWindow(QMainWindow):
                 border-radius: 4px;
                 border: 1px solid {COLORS['border']};
                 font-size: 8pt;
-                text-align: center;
+                text-align:center;
             }}
             QPushButton:hover {{
                 background-color: {COLORS['surface_light']};
@@ -7171,6 +8314,25 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.update_posting_status(f"❌ 새로고침 중 오류: {str(e)}")
             print(f"❌ 새로고침 중 오류: {e}")
+    
+    def refresh_monitoring(self):
+        """F5 단축키로 호출되는 새로고침 메서드"""
+        self.refresh_all_status()
+    
+    def check_scroll_timeout(self):
+        """사용자 스크롤 타임아웃 체크 - 10초 이상 스크롤하지 않으면 자동 스크롤 재개"""
+        try:
+            import time
+            current_time = time.time()
+            
+            # 사용자가 스크롤 중이고, 마지막 스크롤 후 10초 경과
+            if self.user_scrolling and (current_time - self.last_scroll_time) >= 10:
+                self.user_scrolling = False
+                # 현재 진행 상황으로 스크롤
+                self.progress_text.moveCursor(self.progress_text.textCursor().End)
+                
+        except Exception:
+            pass
 
     def update_all_ui_status(self):
         """모든 UI 상태 정보 업데이트"""
@@ -7193,7 +8355,7 @@ class MainWindow(QMainWindow):
             # AI 모델 업데이트는 콤보박스에서 자동 처리됨
             # 포스팅 모드 업데이트도 콤보박스에서 자동 처리됨
 
-            # 총 키워드 개수 업데이트
+            # 남은 키워드 개수 업데이트 (실시간)
             total_keywords = 0
             # sites 데이터 직접 접근
             sites_data = self.config_manager.data.get("sites", [])
@@ -7210,7 +8372,7 @@ class MainWindow(QMainWindow):
                         except:
                             pass
 
-            self.total_keywords_label.value_button.setText(f"{total_keywords}개")
+            self.total_keywords_button.setText(f"{total_keywords}개")
 
             # 현재 포스팅 중인 사이트 정보 업데이트는 드롭다운에서 생략
             # (사용자가 직접 선택할 수 있으므로)
@@ -7585,6 +8747,9 @@ class MainWindow(QMainWindow):
                 
             print(f"사이트 데이터 타입: {type(sites_data)}, 개수: {len(sites_data)}")
             
+            # 키워드 300개 미만 사이트 체크
+            low_keyword_sites = []
+            
             for site in sites_data:
                 # 모든 사이트를 표시 (활성화된 사이트와 비활성화된 사이트 모두)
                 site_widget = SiteWidget(site)
@@ -7594,11 +8759,60 @@ class MainWindow(QMainWindow):
                 site_widget.delete_requested.connect(self.delete_site)
                 site_widget.toggle_requested.connect(self.toggle_site_active)
                 self.sites_layout.insertWidget(self.sites_layout.count() - 1, site_widget)
+                
+                # 키워드 개수 체크 (활성화된 사이트만)
+                if site.get("active", True):
+                    keyword_file = site.get("keyword_file", "")
+                    if keyword_file:
+                        keyword_path = os.path.join(get_base_path(), "keywords", keyword_file)
+                        if os.path.exists(keyword_path):
+                            try:
+                                with open(keyword_path, 'r', encoding='utf-8') as f:
+                                    lines = [line.strip() for line in f.readlines() if line.strip() and not line.strip().startswith('#')]
+                                    keyword_count = len(lines)
+                                    if keyword_count < 300:
+                                        site_name = site.get("name", "알 수 없음")
+                                        low_keyword_sites.append((site_name, keyword_count))
+                            except Exception as e:
+                                print(f"키워드 파일 읽기 오류 ({keyword_file}): {e}")
             
             # 시작 사이트 드롭다운 업데이트
             self.update_start_site_combo(sites_data)
+            
+            # 키워드 부족 경고창 표시 (비차단, 백그라운드에서 표시)
+            if low_keyword_sites:
+                QTimer.singleShot(500, lambda: self.show_detailed_low_keyword_warning(low_keyword_sites))
+                
         except Exception as e:
             print(f"사이트 로드 오류: {e}")
+
+    def show_low_keyword_warning(self, low_keyword_sites):
+        """키워드 부족 경고창 표시 (비차단) - 구버전, 사용 안함"""
+        pass
+    
+    def show_detailed_low_keyword_warning(self, low_keyword_sites):
+        """키워드 300개 미만 상세 경고 메시지 표시 (비차단)"""
+        try:
+            # 사이트별 상세 정보 생성
+            warning_msg = f"⚠️ 총 {len(low_keyword_sites)}개 사이트의 키워드가 300개 미만입니다:\n\n"
+            
+            for site_name, count in low_keyword_sites:
+                warning_msg += f"• {site_name}: 현재 {count}개\n"
+            
+            warning_msg += "\n⚠️ 키워드가 부족하면 포스팅이 조기에 중단될 수 있습니다."
+            warning_msg += "\n💡 Keywords 폴더에서 키워드를 추가해주세요."
+            
+            # 비차단 메시지 박스 (경고 아이콘)
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Icon.Warning)
+            msg_box.setWindowTitle("키워드 부족 경고")
+            msg_box.setText(warning_msg)
+            msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg_box.setModal(False)  # 비차단 모드
+            msg_box.show()
+            
+        except Exception as e:
+            print(f"경고창 표시 오류: {e}")
 
     def update_start_site_combo(self, sites_data):
         """사이트 드롭다운 업데이트"""
@@ -7751,8 +8965,29 @@ class MainWindow(QMainWindow):
         
         # OpenAI 공개/비공개 토글 버튼
         self.openai_toggle_btn = QPushButton("👁️")
-        self.openai_toggle_btn.setMaximumWidth(40)
+        self.openai_toggle_btn.setMaximumWidth(50)
+        self.openai_toggle_btn.setMinimumHeight(35)
         self.openai_toggle_btn.setToolTip("클릭하여 API 키 표시/숨김")
+        self.openai_toggle_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['surface_light']};
+                border: 2px solid {COLORS['border']};
+                border-radius: 8px;
+                font-size: 16px;
+                font-weight: bold;
+                text-align:center;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['primary']};
+                border-color: {COLORS['primary']};
+                color: white;
+                transform: scale(1.1);
+            }}
+            QPushButton:pressed {{
+                background-color: {COLORS['primary_hover']};
+                transform: scale(0.95);
+            }}
+        """)
         try:
             self.openai_toggle_btn.clicked.connect(lambda: self.toggle_password_visibility(self.openai_key_edit, self.openai_toggle_btn))
         except:
@@ -7779,8 +9014,29 @@ class MainWindow(QMainWindow):
         
         # Gemini 공개/비공개 토글 버튼
         self.gemini_toggle_btn = QPushButton("👁️")
-        self.gemini_toggle_btn.setMaximumWidth(40)
+        self.gemini_toggle_btn.setMaximumWidth(50)
+        self.gemini_toggle_btn.setMinimumHeight(35)
         self.gemini_toggle_btn.setToolTip("클릭하여 API 키 표시/숨김")
+        self.gemini_toggle_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['surface_light']};
+                border: 2px solid {COLORS['border']};
+                border-radius: 8px;
+                font-size: 16px;
+                font-weight: bold;
+                text-align:center;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['primary']};
+                border-color: {COLORS['primary']};
+                color: white;
+                transform: scale(1.1);
+            }}
+            QPushButton:pressed {{
+                background-color: {COLORS['primary_hover']};
+                transform: scale(0.95);
+            }}
+        """)
         try:
             self.gemini_toggle_btn.clicked.connect(lambda: self.toggle_password_visibility(self.gemini_key_edit, self.gemini_toggle_btn))
         except:
@@ -7862,17 +9118,17 @@ class MainWindow(QMainWindow):
         global_layout = QFormLayout()
 
         # 포스팅 모드
-        self.posting_mode_combo = QComboBox()
-        self.posting_mode_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.posting_mode_combo.addItems(["승인용", "수익용"])
+        self.settings_posting_mode_combo = QComboBox()
+        self.settings_posting_mode_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.settings_posting_mode_combo.addItems(["승인용", "수익용"])
         posting_mode_value = self.config_manager.data["global_settings"].get("posting_mode", "수익형")
         print(f"🔧 [LOAD] 포스팅 모드 로딩: '{posting_mode_value}'")
-        self.posting_mode_combo.setCurrentText(posting_mode_value)
+        self.settings_posting_mode_combo.setCurrentText(posting_mode_value)
         try:
-            self.posting_mode_combo.currentTextChanged.connect(self.on_setting_changed)
+            self.settings_posting_mode_combo.currentTextChanged.connect(self.on_settings_posting_mode_changed)
         except:
             pass
-        global_layout.addRow("포스팅 모드:", self.posting_mode_combo)
+        global_layout.addRow("포스팅 모드:", self.settings_posting_mode_combo)
 
         # 포스팅 간격
         self.wait_time_edit = QLineEdit()
@@ -7901,8 +9157,29 @@ class MainWindow(QMainWindow):
         
         # 응용프로그램 비밀번호 공개/비공개 토글 버튼
         self.password_toggle_btn = QPushButton("👁️")
-        self.password_toggle_btn.setMaximumWidth(40)
+        self.password_toggle_btn.setMaximumWidth(50)
+        self.password_toggle_btn.setMinimumHeight(35)
         self.password_toggle_btn.setToolTip("클릭하여 비밀번호 표시/숨김")
+        self.password_toggle_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['surface_light']};
+                border: 2px solid {COLORS['border']};
+                border-radius: 8px;
+                font-size: 16px;
+                font-weight: bold;
+                text-align:center;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['primary']};
+                border-color: {COLORS['primary']};
+                color: white;
+                transform: scale(1.1);
+            }}
+            QPushButton:pressed {{
+                background-color: {COLORS['primary_hover']};
+                transform: scale(0.95);
+            }}
+        """)
         try:
             self.password_toggle_btn.clicked.connect(lambda: self.toggle_password_visibility(self.common_password_edit, self.password_toggle_btn))
         except:
@@ -8112,34 +9389,72 @@ class MainWindow(QMainWindow):
                 if GEMINI_AVAILABLE:
                     import google.generativeai as genai
                     genai.configure(api_key=gemini_key)
-                    # 최신 모델들 순서대로 시도
-                    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
                     
+                    # 최신 Gemini 모델들 순서대로 시도 (2025년 최신 모델 포함)
+                    models_to_try = [
+                        'gemini-2.0-flash-exp',      # 2025년 최신 실험 모델
+                        'gemini-2.5-flash-lite',     # 2.5 lite 모델
+                        'gemini-1.5-flash-latest',   # 최신 Flash
+                        'gemini-1.5-flash',
+                        'gemini-1.5-pro-latest',     # 최신 Pro
+                        'gemini-1.5-pro',
+                        'gemini-pro'                 # Fallback
+                    ]
+                    
+                    last_error = None
                     for model_name in models_to_try:
                         try:
+                            print(f"🔍 Gemini 모델 시도: {model_name}")
                             model = genai.GenerativeModel(model_name)
                             response = model.generate_content(
-                                "테스트", 
-                                generation_config=genai.types.GenerationConfig(max_output_tokens=10)
+                                "안녕", 
+                                generation_config=genai.types.GenerationConfig(
+                                    max_output_tokens=10,
+                                    temperature=0.7
+                                ),
+                                request_options={'timeout': 10}
                             )
+                            
+                            # 응답 확인
                             if hasattr(response, 'text') and response.text:
                                 self.gemini_status_label.setText("✅ 연결됨")
                                 self.gemini_status_label.setStyleSheet("color: #A3BE8C; font-weight: bold;")
                                 self.update_posting_status(f"✅ Gemini API 연결 성공! (모델: {model_name})")
+                                print(f"✅ Gemini 연결 성공: {model_name}")
                                 break
                         except Exception as model_error:
+                            last_error = str(model_error)
+                            print(f"❌ {model_name} 실패: {last_error}")
                             continue
                     else:
                         # 모든 모델 실패
-                        raise Exception("사용 가능한 Gemini 모델이 없습니다")
+                        error_msg = f"모든 Gemini 모델 테스트 실패. 마지막 오류: {last_error}"
+                        print(f"❌ {error_msg}")
+                        raise Exception(error_msg)
                 else:
                     self.gemini_status_label.setText("❌ 라이브러리 없음")
                     self.gemini_status_label.setStyleSheet("color: #EBCB8B; font-weight: bold;")
                     self.update_posting_status("❌ google-generativeai 라이브러리가 설치되지 않음")
+                    print("❌ google-generativeai 라이브러리 없음")
             except Exception as e:
                 self.gemini_status_label.setText("❌ 실패")
                 self.gemini_status_label.setStyleSheet("color: #BF616A; font-weight: bold;")
-                self.update_posting_status(f"❌ Gemini API 연결 실패: {str(e)}")
+                error_detail = str(e)
+                # API 키 오류인 경우 더 명확한 메시지
+                if 'API_KEY_INVALID' in error_detail or 'invalid' in error_detail.lower():
+                    error_msg = "API 키가 유효하지 않습니다. Google AI Studio에서 새 키를 발급받으세요."
+                elif 'PERMISSION_DENIED' in error_detail:
+                    error_msg = "API 키 권한이 없습니다. API 활성화를 확인하세요."
+                elif 'quota' in error_detail.lower() or 'RATE_LIMIT_EXCEEDED' in error_detail:
+                    if 'quota_limit_value' in error_detail and '"0"' in error_detail:
+                        error_msg = "무료 API 키 할당량이 없습니다. 유료 API 키를 사용하거나 Google AI Studio에서 새 키를 발급받으세요."
+                    else:
+                        error_msg = "API 할당량 초과. 잠시 후 다시 시도하거나 유료 API 키를 사용하세요."
+                else:
+                    error_msg = f"연결 실패: {error_detail}"
+                
+                self.update_posting_status(f"❌ Gemini API {error_msg}")
+                print(f"❌ Gemini 연결 실패: {error_detail}")
         else:
             self.gemini_status_label.setText("❌ 미설정")
             self.gemini_status_label.setStyleSheet("color: #BF616A; font-weight: bold;")
@@ -8166,7 +9481,7 @@ class MainWindow(QMainWindow):
             # AI 설정 저장 - data 직접 수정
             default_ai = self.default_ai_combo.currentText()
             ai_model = self.ai_model_combo.currentText()
-            posting_mode = self.posting_mode_combo.currentText()
+            posting_mode = self.settings_posting_mode_combo.currentText()
             
             self.config_manager.data["global_settings"]["default_ai"] = default_ai
             self.config_manager.data["global_settings"]["ai_model"] = ai_model
@@ -8193,6 +9508,15 @@ class MainWindow(QMainWindow):
                 
                 # API 상태 업데이트
                 self.update_api_status_labels()
+                
+                # 모니터링 탭의 AI 모델 콤보박스 업데이트
+                if hasattr(self, 'ai_model_combo') and self.ai_model_combo:
+                    # 현재 설정된 AI 모델 가져오기
+                    current_ai_model = self.config_manager.data["global_settings"].get("ai_model", "")
+                    # 콤보박스에서 해당 모델 선택
+                    index = self.ai_model_combo.findText(current_ai_model)
+                    if index >= 0:
+                        self.ai_model_combo.setCurrentIndex(index)
                 
                 self.update_posting_status("✅ 설정이 저장되었습니다!")
                 print("✅ 설정이 저장되었습니다!")
@@ -8369,15 +9693,15 @@ class MainWindow(QMainWindow):
         """비밀번호 필드의 표시/숨김 상태를 토글하는 함수"""
         try:
             if line_edit.echoMode() == QLineEdit.EchoMode.Password:
-                # 비밀번호 모드에서 일반 텍스트 모드로 변경
+                # 비밀번호 모드에서 일반 텍스트 모드로 변경 (보이기)
                 line_edit.setEchoMode(QLineEdit.EchoMode.Normal)
                 toggle_button.setText("🙈")  # 숨김 아이콘
-                toggle_button.setToolTip("클릭하여 숨김")
+                toggle_button.setToolTip("현재: 표시됨 - 클릭하여 숨김")
             else:
-                # 일반 텍스트 모드에서 비밀번호 모드로 변경
+                # 일반 텍스트 모드에서 비밀번호 모드로 변경 (숨기기)
                 line_edit.setEchoMode(QLineEdit.EchoMode.Password)
                 toggle_button.setText("👁️")  # 보기 아이콘
-                toggle_button.setToolTip("클릭하여 표시")
+                toggle_button.setToolTip("현재: 숨겨짐 - 클릭하여 표시")
         except Exception as e:
             print(f"토글 기능 오류: {e}")
 
@@ -8476,6 +9800,7 @@ class MainWindow(QMainWindow):
             self.posting_worker.status_update.connect(self.update_posting_status)
             self.posting_worker.posting_complete.connect(self.on_posting_complete)
             self.posting_worker.single_posting_complete.connect(self.on_single_posting_complete)
+            self.posting_worker.keyword_used.connect(self.update_keyword_count)
             self.posting_worker.error_occurred.connect(self.on_posting_error)
             
             self.posting_worker.start()
@@ -8519,7 +9844,7 @@ class MainWindow(QMainWindow):
                     # 텍스트 업데이트
                     self.progress_text.setPlainText(new_text)
                     
-                    # 스크롤을 맨 아래로
+                    # 항상 맨 아래로 스크롤 (최신 로그가 보이도록)
                     scrollbar = self.progress_text.verticalScrollBar()
                     if scrollbar:
                         scrollbar.setValue(scrollbar.maximum())
@@ -8542,6 +9867,38 @@ class MainWindow(QMainWindow):
             print(f"❌ update_posting_status 전체 오류: {e}")
             import traceback
             traceback.print_exc()
+
+    def update_keyword_count(self):
+        """키워드 사용 후 실시간으로 키워드 개수 업데이트"""
+        try:
+            # 남은 키워드 개수 계산
+            total_keywords = 0
+            sites_data = self.config_manager.data.get("sites", [])
+                
+            for site_data in sites_data:
+                keyword_file = site_data.get("keyword_file", "")
+                if keyword_file:
+                    keyword_path = os.path.join(get_base_path(), "keywords", keyword_file)
+                    if os.path.exists(keyword_path):
+                        try:
+                            with open(keyword_path, 'r', encoding='utf-8') as f:
+                                lines = [line.strip() for line in f.readlines() if line.strip() and not line.strip().startswith('#')]
+                                total_keywords += len(lines)
+                        except:
+                            pass
+
+            # 모니터링 탭의 키워드 개수 업데이트
+            self.total_keywords_button.setText(f"{total_keywords}개")
+            
+            # 모든 SiteWidget의 키워드 표시 업데이트
+            if hasattr(self, 'sites_layout'):
+                for i in range(self.sites_layout.count()):
+                    widget = self.sites_layout.itemAt(i).widget()
+                    if isinstance(widget, SiteWidget):
+                        widget.update_keyword_display()
+            
+        except Exception as e:
+            print(f"❌ 키워드 개수 업데이트 오류: {e}")
 
     def parse_and_update_current_site(self, message):
         """메시지에서 현재 포스팅 중인 사이트 정보를 파싱하고 업데이트"""
@@ -8761,12 +10118,32 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
 
     def progress_wheel_event(self, event):
-        """프로그레스 텍스트 휠 이벤트 - 스마트 스크롤"""
+        """프로그레스 텍스트 휠 이벤트 - Ctrl+휠로 폰트 크기 조절"""
         try:
             from PyQt6.QtCore import Qt
-            from PyQt6.QtGui import QWheelEvent
+            import time
             
-            # 현재 스크롤 위치 정보 가져오기
+            # 사용자가 스크롤 중임을 표시
+            self.user_scrolling = True
+            self.last_scroll_time = time.time()
+            
+            # Ctrl 키가 눌린 경우 폰트 크기 조절
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                wheel_delta = event.angleDelta().y()
+                current_font = self.progress_text.font()
+                current_size = current_font.pointSize()
+                
+                if wheel_delta > 0:  # 확대
+                    new_size = min(current_size + 1, 24)  # 최대 24pt
+                else:  # 축소
+                    new_size = max(current_size - 1, 8)   # 최소 8pt
+                
+                current_font.setPointSize(new_size)
+                self.progress_text.setFont(current_font)
+                event.accept()
+                return
+            
+            # 일반 스크롤 처리
             scrollbar = self.progress_text.verticalScrollBar()
             current_value = scrollbar.value()
             min_value = scrollbar.minimum()
