@@ -36,7 +36,7 @@ class NaverBlogAutomation:
         
         # Gemini API 설정
         genai.configure(api_key=gemini_api_key)
-        self.model = genai.GenerativeModel('gemini-pro')
+        self.model = genai.GenerativeModel('gemini-1.5-flash')
     
     def _update_status(self, message):
         """상태 메시지 업데이트"""
