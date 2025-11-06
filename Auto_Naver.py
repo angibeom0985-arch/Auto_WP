@@ -157,8 +157,14 @@ class NaverBlogAutomation:
             # keywords.txt에서 키워드 로드 및 저장
             self._update_status("📋 키워드 파일 읽는 중...")
             keywords = self.load_keywords()
+            
+            if not keywords:
+                self._update_status("❌ 사용 가능한 키워드가 없습니다!")
+                return None, None
+            
             self.current_keyword = keywords
             self._update_status(f"✅ 선택된 키워드: {keywords}")
+            print(f"🎯 키워드 사용: {keywords}")
             
             # prompt.txt 파일 읽기
             self._update_status("📄 프롬프트 템플릿 로드 중...")
@@ -168,6 +174,7 @@ class NaverBlogAutomation:
                     prompt_template = f.read()
                 prompt = prompt_template.replace('{keywords}', keywords)
                 self._update_status("✅ 사용자 정의 프롬프트 로드 완료")
+                print(f"📄 프롬프트에 키워드 '{keywords}' 삽입 완료")
             else:
                 # 기본 프롬프트
                 prompt = f"""
@@ -185,6 +192,7 @@ class NaverBlogAutomation:
    예: !두 번째 핵심 포인트
 """
                 self._update_status("✅ 기본 프롬프트 사용")
+                print(f"📄 기본 프롬프트에 키워드 '{keywords}' 삽입 완료")
             
             # AI 모델에 따라 호출
             self._update_status(f"🔄 AI에게 글 생성 요청 중... (모델: {model_name})")
@@ -520,6 +528,11 @@ class NaverBlogAutomation:
                 # 1단계: 먼저 모든 내용 입력
                 current_line = 0
                 for i, line in enumerate(content_lines):
+                    # 정지 요청 확인
+                    if self.should_stop:
+                        self._update_status("⏹️ 사용자가 포스팅을 중지했습니다.")
+                        return False
+                    
                     if line.strip():
                         current_line += 1
                         is_subtitle = line.strip().startswith('!')
@@ -3117,7 +3130,8 @@ class NaverBlogGUI(QMainWindow):
                 external_link = self.link_url_entry.text() if self.use_link_checkbox.isChecked() else ""
                 external_link_text = self.link_text_entry.text() if self.use_link_checkbox.isChecked() else ""
                 
-                start_automation(
+                # 자동화 인스턴스 생성 및 저장
+                self.automation = NaverBlogAutomation(
                     naver_id=self.naver_id_entry.text(),
                     naver_pw=self.naver_pw_entry.text(),
                     api_key=api_key,
@@ -3126,12 +3140,14 @@ class NaverBlogGUI(QMainWindow):
                     open_type="전체공개",
                     external_link=external_link,
                     external_link_text=external_link_text,
-                    publish_time="now",  # 항상 현재 시간에 발행
+                    publish_time="now",
                     scheduled_hour="00",
                     scheduled_minute="00",
-                    wait_interval=wait_interval,  # 발행 간격 전달
                     callback=self.log_message
                 )
+                
+                # 자동화 실행
+                self.automation.run(wait_interval)
                 
                 self.update_progress_status("✅ 포스팅이 완료되었습니다!")
                 print("✅ 포스팅이 완료되었습니다!")
@@ -3158,11 +3174,19 @@ class NaverBlogGUI(QMainWindow):
         """포스팅 정지"""
         self.is_running = False
         self.is_paused = False
+        
+        # 실행 중인 자동화 인스턴스 정지
+        if self.automation:
+            self.automation.should_stop = True
+            self._update_status("⏹️ 포스팅 중지 요청됨...")
+            print("⏹️ 포스팅 중지 요청됨...")
+        
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.pause_btn.setEnabled(False)
         self.resume_btn.setEnabled(False)
-        self.show_message("⏹️ 정지", "포스팅을 정지했습니다.", "info")
+        self.update_progress_status("⏹️ 포스팅을 정지했습니다.")
+        print("⏹️ 포스팅을 정지했습니다.")
     
     def pause_posting(self):
         """포스팅 일시정지"""
