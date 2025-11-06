@@ -1706,6 +1706,9 @@ class NaverBlogGUI(QMainWindow):
         self.setWindowTitle("NAVER 블로그 AI 자동 포스팅")
         self.setGeometry(100, 100, 1100, 850)
         
+        # 드래그 관련 변수 초기화
+        self.drag_position = None
+        
         # 시그널 연결
         self.countdown_signal.connect(self.start_countdown)
         self.progress_signal.connect(self._update_progress_status_safe)
@@ -2192,7 +2195,7 @@ class NaverBlogGUI(QMainWindow):
         # 로그인 정보 상태
         login_status_layout = QHBoxLayout()
         self.login_status_label = QLabel("👤 로그인 정보: 미설정")
-        self.login_status_label.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
+        self.login_status_label.setFont(QFont(self.font_family, 13))
         self.login_status_label.setStyleSheet(f"color: #000000; border: none;")
         login_status_layout.addWidget(self.login_status_label)
         
@@ -2222,7 +2225,7 @@ class NaverBlogGUI(QMainWindow):
         # API 키 상태
         api_status_layout = QHBoxLayout()
         self.api_status_label = QLabel("🔑 API 키: 미설정")
-        self.api_status_label.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
+        self.api_status_label.setFont(QFont(self.font_family, 13))
         self.api_status_label.setStyleSheet(f"color: #000000; border: none;")
         api_status_layout.addWidget(self.api_status_label)
         
@@ -2252,7 +2255,7 @@ class NaverBlogGUI(QMainWindow):
         # 키워드 개수 상태
         keyword_status_layout = QHBoxLayout()
         self.keyword_count_label = QLabel("📦 키워드 개수: 0개")
-        self.keyword_count_label.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
+        self.keyword_count_label.setFont(QFont(self.font_family, 13))
         self.keyword_count_label.setStyleSheet(f"color: #000000; border: none;")
         keyword_status_layout.addWidget(self.keyword_count_label)
         
@@ -3263,7 +3266,23 @@ class NaverBlogGUI(QMainWindow):
         except Exception as e:
             print(f"로그 업데이트 오류: {e}")
             print(f"⚠️ 진행 상태 업데이트 오류: {e}")
-
+    
+    def mousePressEvent(self, event):
+        """마우스 클릭 시 드래그 시작"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+    
+    def mouseMoveEvent(self, event):
+        """마우스 이동 시 창 이동"""
+        if event.buttons() == Qt.MouseButton.LeftButton and self.drag_position is not None:
+            self.move(event.globalPosition().toPoint() - self.drag_position)
+            event.accept()
+    
+    def mouseReleaseEvent(self, event):
+        """마우스 릴리즈 시 드래그 종료"""
+        self.drag_position = None
+        event.accept()
 
 
 if __name__ == "__main__":
