@@ -1588,7 +1588,7 @@ class PremiumCard(QFrame):
         
         status_card.content_layout.addLayout(keyword_status_layout)
         
-        self.interval_label = QLabel("⏱️ 대기 시간: 10분")
+        self.interval_label = QLabel("⏱️ 발행 간격: 10분")
         self.interval_label.setFont(QFont(self.font_family, 13))
         self.interval_label.setStyleSheet(f"color: #000000; border: none;")
         status_card.content_layout.addWidget(self.interval_label)
@@ -2295,7 +2295,7 @@ class NaverBlogGUI(QMainWindow):
         
         status_card.content_layout.addLayout(keyword_status_layout)
         
-        self.interval_label = QLabel("⏱️ 대기 시간: 10분")
+        self.interval_label = QLabel("⏱️ 발행 간격: 10분")
         self.interval_label.setFont(QFont(self.font_family, 13))
         self.interval_label.setStyleSheet(f"color: #000000; border: none;")
         status_card.content_layout.addWidget(self.interval_label)
@@ -2460,15 +2460,15 @@ class NaverBlogGUI(QMainWindow):
         
         layout.addWidget(login_card, 0, 0)
         
-        # === Row 0, Col 1: 대기 시간 설정 ===
-        time_card = PremiumCard("대기 시간 설정", "⏱️")
+        # === Row 0, Col 1: 발행 간격 설정 ===
+        time_card = PremiumCard("발행 간격 설정", "⏱️")
         
-        # 대기 시간 입력 레이아웃
+        # 발행 간격 입력 레이아웃
         time_input_layout = QVBoxLayout()
         time_input_layout.setSpacing(10)
         
-        # 대기 시간 라벨
-        time_main_label = PremiumCard.create_section_label("⏱️ 대기 시간 : 포스팅 완료 후 다음 포스팅 시작까지 대기 시간", self.font_family)
+        # 발행 간격 라벨
+        time_main_label = PremiumCard.create_section_label("⏱️ 발행 간격", self.font_family)
         time_input_layout.addWidget(time_main_label)
         
         # 입력 필드 레이아웃
@@ -2501,7 +2501,7 @@ class NaverBlogGUI(QMainWindow):
         time_input_layout.addLayout(interval_input_layout)
         time_card.content_layout.addLayout(time_input_layout)
         
-        time_save_btn = QPushButton("💾 대기 시간 저장")
+        time_save_btn = QPushButton("💾 발행 간격 저장")
         time_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         time_save_btn.setStyleSheet(f"background-color: {NAVER_GREEN}; padding: 8px 20px; font-size: 13px;")
         time_save_btn.clicked.connect(self.save_time_settings)
@@ -2948,7 +2948,7 @@ class NaverBlogGUI(QMainWindow):
         
         # 발행 간격
         interval = self.interval_entry.text() or "10"
-        self.interval_label.setText(f"⏱️ 대기 시간: {interval}분")
+        self.interval_label.setText(f"⏱️ 발행 간격: {interval}분")
     
     def count_keywords(self):
         """키워드 개수 카운트"""
@@ -3215,7 +3215,7 @@ class NaverBlogGUI(QMainWindow):
             interval = int(self.interval_entry.text())
         except:
             interval = 10
-        self.interval_label.setText(f"⏱️ 대기 시간: {interval}분")
+        self.interval_label.setText(f"⏱️ 발행 간격: {interval}분")
     
     def _update_countdown(self):
         """카운트다운 업데이트 (1초마다 호출)"""
@@ -3230,7 +3230,7 @@ class NaverBlogGUI(QMainWindow):
                 interval = int(self.interval_entry.text())
             except:
                 interval = 10
-            self.interval_label.setText(f"⏱️ 대기 시간: {interval}분")
+            self.interval_label.setText(f"⏱️ 발행 간격: {interval}분")
             
             # 카운트다운 완료 후 자동으로 다음 포스팅 시작
             if self.is_running and not self.is_paused:
