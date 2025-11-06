@@ -411,7 +411,7 @@ class NaverBlogAutomation:
         except Exception as e:
             self._update_status(f"소제목 처리 오류: {str(e)}")
     
-    def write_post(self, title, content):
+    def write_post(self, title, content, wait_interval=0):
         """블로그 글 작성"""
         try:
             self._update_status("📝 블로그 페이지로 이동 중...")
@@ -774,6 +774,24 @@ class NaverBlogAutomation:
                 except Exception as e:
                     self._update_status(f"❌ 발행 시간 설정 실패: {str(e)}")
                 
+                # 2.5. 발행 간격 대기 (첫 포스팅이 아닌 경우에만)
+                if wait_interval > 0:
+                    self._update_status(f"⏰ 발행 간격 대기 중: {wait_interval}분")
+                    print(f"⏰ 발행 간격 대기 중: {wait_interval}분")
+                    
+                    # 1분 단위로 대기하면서 상태 업데이트
+                    for remaining in range(wait_interval, 0, -1):
+                        if self.should_stop:
+                            self._update_status("⏹️ 사용자가 중지했습니다")
+                            return False
+                        
+                        self._update_status(f"⏰ 남은 시간: {remaining}분")
+                        print(f"⏰ 남은 시간: {remaining}분")
+                        time.sleep(60)  # 1분 대기
+                    
+                    self._update_status("✅ 발행 간격 대기 완료!")
+                    print("✅ 발행 간격 대기 완료!")
+                
                 # 3. 최종 발행 버튼 클릭
                 self._update_status("🚀 최종 발행 버튼 찾는 중...")
                 time.sleep(2)
@@ -828,7 +846,7 @@ class NaverBlogAutomation:
             self._update_status(f"❌ 포스팅 오류: {str(e)}")
             return False
     
-    def run(self):
+    def run(self, wait_interval=0):
         """전체 프로세스 실행"""
         try:
             self._update_status("🚀 자동 포스팅 프로세스 시작!")
@@ -869,9 +887,9 @@ class NaverBlogAutomation:
                 self._update_status("⏹️ 프로세스가 정지되었습니다.")
                 return False
             
-            # 4단계: 블로그 포스팅
+            # 4단계: 블로그 포스팅 (발행 간격 전달)
             self._update_status("✍️ [4/4] 블로그 포스팅 단계")
-            if not self.write_post(title, content):
+            if not self.write_post(title, content, wait_interval):
                 self._update_status("⚠️ 포스팅 실패 - 브라우저는 열린 상태로 유지됩니다")
                 return False
             
@@ -894,15 +912,16 @@ class NaverBlogAutomation:
 
 def start_automation(naver_id, naver_pw, api_key, ai_model="gemini", theme="", 
                      open_type="전체공개", external_link="", external_link_text="", 
-                     publish_time="now", scheduled_hour="09", scheduled_minute="00", callback=None):
+                     publish_time="now", scheduled_hour="09", scheduled_minute="00", 
+                     wait_interval=0, callback=None):
     """자동화 시작 함수"""
     automation = NaverBlogAutomation(
         naver_id, naver_pw, api_key, ai_model,
         theme, open_type, external_link, external_link_text, 
         publish_time, scheduled_hour, scheduled_minute, callback
     )
-    # 자동화 실행
-    automation.run()
+    # 자동화 실행 (발행 간격 전달)
+    automation.run(wait_interval)
     return automation
 
 
@@ -3038,9 +3057,8 @@ class NaverBlogGUI(QMainWindow):
         self.config["external_link_text"] = self.link_text_entry.text()
         self.save_config_file()
     
-    def start_posting(self):
+    def start_posting(self, is_first_start=True):
         """포스팅 시작"""
-        is_first_start = False
         
         if self.is_running:
             # 이미 실행 중이면 자동 재시작 (카운트다운 후)
@@ -3069,10 +3087,22 @@ class NaverBlogGUI(QMainWindow):
             self.show_message("⚠️ 경고", "네이버 로그인 정보를 입력해주세요!", "warning")
             return
         
+        # 발행 간격 설정
+        try:
+            interval = int(self.interval_entry.text())
+        except:
+            interval = 10
+        
+        # 첫 시작일 때는 발행 간격 0, 아니면 설정된 간격 사용
+        wait_interval = 0 if is_first_start else interval
+        
         # 첫 시작일 때는 즉시 포스팅 시작 (발행 간격 대기 없음)
         if is_first_start:
             self.update_progress_status("🚀 첫 포스팅을 즉시 시작합니다...")
             print("🚀 첫 포스팅을 즉시 시작합니다...")
+        else:
+            self.update_progress_status(f"⏰ 발행 간격 {interval}분 대기 후 포스팅을 시작합니다...")
+            print(f"⏰ 발행 간격 {interval}분 대기 후 포스팅을 시작합니다...")
         
         # 진행 상태 업데이트
         self.update_progress_status("🚀 포스팅 프로세스를 시작합니다...")
@@ -3083,12 +3113,6 @@ class NaverBlogGUI(QMainWindow):
             try:
                 external_link = self.link_url_entry.text() if self.use_link_checkbox.isChecked() else ""
                 external_link_text = self.link_text_entry.text() if self.use_link_checkbox.isChecked() else ""
-                
-                # 포스팅 완료 후 카운트다운 시작 (시그널을 통해 메인 스레드에서 실행)
-                try:
-                    interval = int(self.interval_entry.text())
-                except:
-                    interval = 10
                 
                 start_automation(
                     naver_id=self.naver_id_entry.text(),
@@ -3102,16 +3126,19 @@ class NaverBlogGUI(QMainWindow):
                     publish_time="now",  # 항상 현재 시간에 발행
                     scheduled_hour="00",
                     scheduled_minute="00",
+                    wait_interval=wait_interval,  # 발행 간격 전달
                     callback=self.log_message
                 )
                 
                 self.update_progress_status("✅ 포스팅이 완료되었습니다!")
                 print("✅ 포스팅이 완료되었습니다!")
                 
-                # 포스팅 완료 후 카운트다운 시작
-                self.update_progress_status(f"⏰ 다음 포스팅까지 {interval}분 대기합니다...")
-                print(f"⏰ 다음 포스팅까지 {interval}분 대기합니다...")
-                self.countdown_signal.emit(interval)
+                # 포스팅 완료 후 다음 포스팅을 자동으로 시작
+                if self.is_running and not self.is_paused:
+                    self.update_progress_status("🔄 다음 포스팅을 준비합니다...")
+                    print("🔄 다음 포스팅을 준비합니다...")
+                    # 다음 포스팅은 발행 간격 대기가 필요함 (is_first_start=False)
+                    self.start_posting(is_first_start=False)
             except Exception as e:
                 self.update_progress_status(f"❌ 오류: {e}")
                 print(f"❌ 자동화 오류: {e}")
@@ -3128,7 +3155,6 @@ class NaverBlogGUI(QMainWindow):
         """포스팅 정지"""
         self.is_running = False
         self.is_paused = False
-        self.stop_countdown()
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.pause_btn.setEnabled(False)
