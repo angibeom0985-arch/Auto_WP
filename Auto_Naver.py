@@ -3178,7 +3178,7 @@ class NaverBlogGUI(QMainWindow):
         # 실행 중인 자동화 인스턴스 정지
         if self.automation:
             self.automation.should_stop = True
-            self._update_status("⏹️ 포스팅 중지 요청됨...")
+            self.update_progress_status("⏹️ 포스팅 중지 요청됨...")
             print("⏹️ 포스팅 중지 요청됨...")
         
         self.start_btn.setEnabled(True)
@@ -3258,19 +3258,36 @@ class NaverBlogGUI(QMainWindow):
     def _update_progress_status_safe(self, message):
         """진행 현황 로그 메시지 추가 (메인 스레드에서 실행)"""
         try:
-            # 기존 로그에 새 메시지 추가 (중복 방지)
+            # 기존 로그에 새 메시지 추가 (중복 방지 강화)
             current_log = self.log_label.text()
             
-            # 중복 메시지 체크
+            # 초기 상태
             if current_log == "⏸️ 대기 중...":
                 new_log = message
             else:
-                # 마지막 로그와 동일하면 추가하지 않음
-                last_message = current_log.split("\n")[-1] if "\n" in current_log else current_log
-                if last_message.strip() != message.strip():
-                    new_log = current_log + "\n" + message
+                lines = current_log.split("\n")
+                last_message = lines[-1].strip() if lines else ""
+                
+                # 완전히 동일한 메시지는 무시
+                if last_message == message.strip():
+                    return
+                
+                # 같은 단계의 진행 상황 업데이트 (이모지로 판단)
+                # 예: "✍️ 작성 중... (10/100줄)" → "✍️ 작성 중... (20/100줄)"
+                last_emoji = last_message.split()[0] if last_message else ""
+                current_emoji = message.split()[0] if message else ""
+                
+                if last_emoji == current_emoji and last_emoji in ["✍️", "⏰", "🔄", "📋", "🤖", "🌐", "🔐"]:
+                    # 같은 단계의 세부 진행 상황은 마지막 줄을 덮어씀
+                    # 단, "완료" 메시지는 덮어쓰지 않음
+                    if "완료" not in last_message and "성공" not in last_message:
+                        lines[-1] = message
+                        new_log = "\n".join(lines)
+                    else:
+                        new_log = current_log + "\n" + message
                 else:
-                    return  # 중복이면 종료
+                    # 다른 단계의 메시지는 새 줄로 추가
+                    new_log = current_log + "\n" + message
             
             self.log_label.setText(new_log)
             
