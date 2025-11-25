@@ -626,18 +626,31 @@ class NaverBlogAutomation:
                     )
                     
                     if self.current_keyword:
+                        # 키워드 하나만 태그로 입력
                         main_tag = self.current_keyword.replace(" ", "")
-                        tag_input.send_keys(main_tag)
-                        tag_input.send_keys(Keys.ENTER)
-                        time.sleep(0.3)
                         
-                        related_tags = [f"{main_tag}정보", f"{main_tag}추천"]
-                        for tag in related_tags:
-                            tag_input.send_keys(tag)
-                            tag_input.send_keys(Keys.ENTER)
+                        # 클립보드로 복사 후 붙여넣기
+                        try:
+                            import pyperclip
+                            pyperclip.copy(main_tag)
+                            time.sleep(0.2)
+                            
+                            # Ctrl+V로 붙여넣기
+                            tag_input.click()
+                            time.sleep(0.2)
+                            actions = ActionChains(self.driver)
+                            actions.key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
                             time.sleep(0.3)
+                        except:
+                            # pyperclip 실패 시 직접 입력
+                            tag_input.send_keys(main_tag)
+                            time.sleep(0.2)
                         
-                        self._update_status(f"✅ 태그 입력 완료: #{main_tag} #{main_tag}정보 #{main_tag}추천")
+                        # Enter로 태그 등록
+                        tag_input.send_keys(Keys.ENTER)
+                        time.sleep(0.5)
+                        
+                        self._update_status(f"✅ 태그 입력 완료: #{main_tag}")
                 except Exception as e:
                     self._update_status(f"⚠️ 태그 입력 실패: {str(e)}")
                 
