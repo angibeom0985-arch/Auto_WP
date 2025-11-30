@@ -1453,6 +1453,29 @@ class NaverBlogGUI(QMainWindow):
         self.settings_tab_btn.clicked.connect(lambda: self._switch_tab(1))
         tab_buttons_layout.addWidget(self.settings_tab_btn)
         
+        # 새로고침 버튼 추가
+        self.refresh_btn = QPushButton("🔄 새로고침")
+        self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.refresh_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(255, 255, 255, 0.2);
+                color: white;
+                border: 2px solid white;
+                border-radius: 10px;
+                padding: 10px 25px;
+                font-size: 13px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255, 255, 255, 0.3);
+            }}
+            QPushButton:pressed {{
+                background-color: rgba(255, 255, 255, 0.4);
+            }}
+        """)
+        self.refresh_btn.clicked.connect(self.refresh_settings)
+        tab_buttons_layout.addWidget(self.refresh_btn)
+        
         header_layout.addWidget(tab_buttons_container, 0, 1, Qt.AlignmentFlag.AlignCenter)
         
         # 오른쪽 제작자 표시
