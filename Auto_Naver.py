@@ -1356,6 +1356,29 @@ class PremiumCard(QFrame):
         self.settings_tab_btn.clicked.connect(lambda: self._switch_tab(1))
         tab_buttons_layout.addWidget(self.settings_tab_btn)
         
+        # 새로고침 버튼 추가
+        self.refresh_btn = QPushButton("🔄 새로고침")
+        self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.refresh_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(255, 255, 255, 0.2);
+                color: white;
+                border: 2px solid white;
+                border-radius: 10px;
+                padding: 10px 25px;
+                font-size: 13px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255, 255, 255, 0.3);
+            }}
+            QPushButton:pressed {{
+                background-color: rgba(255, 255, 255, 0.4);
+            }}
+        """)
+        self.refresh_btn.clicked.connect(self.refresh_settings)
+        tab_buttons_layout.addWidget(self.refresh_btn)
+        
         header_layout.addWidget(tab_buttons_container, 0, 1, Qt.AlignmentFlag.AlignCenter)
         
         # 오른쪽 제작자
@@ -1957,6 +1980,38 @@ class NaverBlogGUI(QMainWindow):
         """)
         
         msg_box.exec()
+    
+    def keyPressEvent(self, event):
+        """키보드 이벤트 처리 (F5 = 설정 저장 + 새로고침)"""
+        if event.key() == Qt.Key.Key_F5:
+            self.refresh_settings()
+        else:
+            super().keyPressEvent(event)
+    
+    def refresh_settings(self):
+        """설정 저장 후 새로고침"""
+        try:
+            # 1. 현재 입력된 설정 저장
+            self.config["gpt_api_key"] = self.gpt_api_entry.text()
+            self.config["gemini_api_key"] = self.gemini_api_entry.text()
+            self.config["ai_model"] = "gpt" if self.gpt_radio.isChecked() else "gemini"
+            self.config["naver_id"] = self.naver_id_entry.text()
+            self.config["naver_pw"] = self.naver_pw_entry.text()
+            self.config["interval"] = int(self.interval_entry.text()) if self.interval_entry.text() else 30
+            self.config["use_external_link"] = self.use_link_checkbox.isChecked()
+            self.config["external_link"] = self.link_url_entry.text()
+            self.config["external_link_text"] = self.link_text_entry.text()
+            
+            # 2. 설정 파일로 저장
+            with open("config.json", "w", encoding="utf-8") as f:
+                json.dump(self.config, f, ensure_ascii=False, indent=4)
+            
+            # 3. UI 업데이트
+            self._apply_config()
+            
+            self.show_message("✅ 새로고침 완료", "설정이 저장되고 업데이트되었습니다!", "info")
+        except Exception as e:
+            self.show_message("❌ 새로고침 실패", f"오류 발생:\n{str(e)}", "error")
     
     def _create_gui(self):
         """GUI 생성"""
