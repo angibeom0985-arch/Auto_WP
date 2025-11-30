@@ -109,11 +109,10 @@ class NaverBlogAutomation:
             # 터미널에도 진행 현황 표시
             print(message)
     
-    def load_keywords(self):
-        """keywords.txt 파일에서 하나의 키워드 로드하고 used_keywords.txt로 이동"""
+    def load_keyword(self):
+        """keywords.txt 파일에서 하나의 키워드 로드 (이동하지 않음)"""
         try:
             keywords_file = "keywords.txt"
-            used_keywords_file = "used_keywords.txt"
             
             if os.path.exists(keywords_file):
                 with open(keywords_file, 'r', encoding='utf-8') as f:
@@ -123,19 +122,6 @@ class NaverBlogAutomation:
                 if keywords:
                     # 첫 번째 키워드 선택
                     selected_keyword = keywords[0]
-                    
-                    # 남은 키워드들
-                    remaining_keywords = keywords[1:]
-                    
-                    # keywords.txt 업데이트 (사용한 키워드 제거)
-                    with open(keywords_file, 'w', encoding='utf-8') as f:
-                        for kw in remaining_keywords:
-                            f.write(kw + '\n')
-                    
-                    # used_keywords.txt에 추가
-                    with open(used_keywords_file, 'a', encoding='utf-8') as f:
-                        f.write(selected_keyword + '\n')
-                    
                     self._update_status(f"선택된 키워드: {selected_keyword}")
                     return selected_keyword
                 else:
@@ -148,21 +134,48 @@ class NaverBlogAutomation:
             self._update_status(f"키워드 로드 오류: {str(e)}")
             return ""
     
+    def move_keyword_to_used(self, keyword):
+        """키워드를 keywords.txt에서 제거하고 used_keywords.txt로 이동"""
+        try:
+            keywords_file = "keywords.txt"
+            used_keywords_file = "used_keywords.txt"
+            
+            if os.path.exists(keywords_file):
+                with open(keywords_file, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                    keywords = [line.strip() for line in lines if line.strip() and not line.strip().startswith('#')]
+                
+                # 사용한 키워드 제거
+                remaining_keywords = [kw for kw in keywords if kw != keyword]
+                
+                # keywords.txt 업데이트
+                with open(keywords_file, 'w', encoding='utf-8') as f:
+                    for kw in remaining_keywords:
+                        f.write(kw + '\n')
+                
+                # used_keywords.txt에 추가
+                with open(used_keywords_file, 'a', encoding='utf-8') as f:
+                    f.write(keyword + '\n')
+                
+                self._update_status(f"✅ 키워드 '{keyword}'를 사용 완료 목록으로 이동")
+        except Exception as e:
+            self._update_status(f"키워드 이동 오류: {str(e)}")
+    
     def generate_content_with_ai(self):
         """AI를 사용하여 블로그 글 생성 (Gemini 또는 GPT)"""
         try:
             model_name = "Gemini 2.5 Flash-Lite" if self.ai_model == "gemini" else "GPT-4o"
             self._update_status(f"🤖 AI 모델 준비 중: {model_name}")
             
-            # keywords.txt에서 키워드 로드 및 저장
+            # keywords.txt에서 키워드 로드
             self._update_status("📋 키워드 파일 읽는 중...")
-            keywords = self.load_keywords()
+            keyword = self.load_keyword()
             
-            if not keywords:
+            if not keyword:
                 self._update_status("❌ 사용 가능한 키워드가 없습니다!")
                 return None, None
             
-            self.current_keyword = keywords
+            self.current_keyword = keyword
             self._update_status(f"✅ 선택된 키워드: {keywords}")
             print(f"🎯 키워드 사용: {keywords}")
             
@@ -918,6 +931,10 @@ class NaverBlogAutomation:
             if not self.write_post(title, content, wait_interval):
                 self._update_status("⚠️ 포스팅 실패 - 브라우저는 열린 상태로 유지됩니다")
                 return False
+            
+            # 포스팅 성공 시에만 키워드를 used_keywords.txt로 이동
+            if self.current_keyword:
+                self.move_keyword_to_used(self.current_keyword)
             
             self._update_status("🎊 전체 프로세스 완료! 포스팅 성공!")
             self._update_status("✅ 브라우저는 열린 상태로 유지됩니다")
