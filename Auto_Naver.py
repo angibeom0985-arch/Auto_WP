@@ -1,9 +1,8 @@
 ﻿# -*- coding: utf-8 -*-
+# type: ignore
 """
-네이버 블로그 AI 자동 포스팅 통합 프로그램 v5.0
-- Selenium을 사용한 네이버 블로그 자동화
-- Gemini AI / GPT-4o를 활용한 콘텐츠 생성
-- PyQt6 GUI
+네이버 블로그 AI 자동 포스팅 통합 프로그램 v5.1
+
 """
 
 import sys
@@ -12,6 +11,8 @@ import locale
 import json
 import os
 import threading
+import ctypes
+import pyperclip
 
 # UTF-8 환경 강제 설정
 if sys.platform == 'win32':
@@ -65,6 +66,10 @@ import google.generativeai as genai
 from openai import OpenAI
 import time
 import os
+from datetime import datetime
+from license_check import LicenseManager
+from PIL import Image, ImageDraw, ImageFont
+import random
 
 
 class NaverBlogAutomation:
@@ -86,14 +91,33 @@ class NaverBlogAutomation:
         self.scheduled_hour = scheduled_hour
         self.scheduled_minute = scheduled_minute
         self.callback = callback
-        self.driver = None
+        self.driver: webdriver.Chrome | None = None
         self.should_stop = False  # 정지 플래그
         self.current_keyword = ""  # 현재 사용 중인 키워드
         
+        # 디렉토리 설정 (exe 실행 시 고려)
+        if getattr(sys, 'frozen', False):
+            exe_dir = os.path.dirname(sys.executable)
+            # 쓰기 권한 테스트
+            try:
+                test_dir = os.path.join(exe_dir, "setting")
+                os.makedirs(test_dir, exist_ok=True)
+                test_file = os.path.join(test_dir, ".write_test")
+                with open(test_file, 'w') as f:
+                    f.write('test')
+                os.remove(test_file)
+                self.data_dir = exe_dir
+            except (PermissionError, OSError):
+                import pathlib
+                self.data_dir = str(pathlib.Path.home() / "Documents" / "Auto_Naver")
+                os.makedirs(os.path.join(self.data_dir, "setting"), exist_ok=True)
+        else:
+            self.data_dir = os.path.dirname(os.path.abspath(__file__))
+        
         # AI 모델 설정
         if ai_model == "gemini":
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-2.5-flash-lite')
+            genai.configure(api_key=api_key)  # type: ignore
+            self.model = genai.GenerativeModel('gemini-2.5-flash-lite')  # type: ignore
         elif ai_model == "gpt":
             self.client = OpenAI(api_key=api_key)
             self.model = "gpt-4o"
@@ -110,35 +134,50 @@ class NaverBlogAutomation:
             print(message)
     
     def load_keyword(self):
-        """keywords.txt 파일에서 하나의 키워드 로드 (이동하지 않음)"""
+        """키워드를 keywords.txt 파일에서 로드 (개수 확인 및 경고)"""
         try:
-            keywords_file = "keywords.txt"
+            keywords_file = os.path.join(self.data_dir, "setting", "keywords.txt")
             
             if os.path.exists(keywords_file):
                 with open(keywords_file, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
                     keywords = [line.strip() for line in lines if line.strip() and not line.strip().startswith('#')]
                 
-                if keywords:
-                    # 첫 번째 키워드 선택
-                    selected_keyword = keywords[0]
-                    self._update_status(f"선택된 키워드: {selected_keyword}")
-                    return selected_keyword
-                else:
-                    self._update_status("경고: 사용 가능한 키워드가 없습니다.")
-                    return ""
+                keyword_count = len(keywords)
+                
+                # 키워드 개수 확인 및 경고
+                if keyword_count == 0:
+                    self._update_status("⚠️ 오류: 사용 가능한 키워드가 없습니다. 프로그램을 종료합니다.")
+                    # callback을 통해 메인 스레드에 메시지 전달
+                    if self.callback:
+                        self.callback("KEYWORD_EMPTY")
+                    return None  # None 반환으로 중지 신호
+                    
+                elif keyword_count < 30:
+                    self._update_status(f"⚠️ 경고: 키워드가 {keyword_count}개 남았습니다! 추가 등록이 필요합니다.")
+                    # callback을 통해 메인 스레드에 메시지 전달
+                    if self.callback:
+                        self.callback(f"KEYWORD_LOW:{keyword_count}")
+                
+                # 첫 번째 키워드 선택
+                selected_keyword = keywords[0]
+                self._update_status(f"선택된 키워드: {selected_keyword} (남은 개수: {keyword_count}개)")
+                return selected_keyword
             else:
-                self._update_status("경고: keywords.txt 파일이 없습니다.")
-                return ""
+                self._update_status("오류: keywords.txt 파일이 없습니다.")
+                # callback을 통해 메인 스레드에 메시지 전달
+                if self.callback:
+                    self.callback("KEYWORD_FILE_MISSING")
+                return None
         except Exception as e:
             self._update_status(f"키워드 로드 오류: {str(e)}")
-            return ""
+            return None
     
     def move_keyword_to_used(self, keyword):
         """키워드를 keywords.txt에서 제거하고 used_keywords.txt로 이동"""
         try:
-            keywords_file = "keywords.txt"
-            used_keywords_file = "used_keywords.txt"
+            keywords_file = os.path.join(self.data_dir, "setting", "keywords.txt")
+            used_keywords_file = os.path.join(self.data_dir, "setting", "used_keywords.txt")
             
             if os.path.exists(keywords_file):
                 with open(keywords_file, 'r', encoding='utf-8') as f:
@@ -171,62 +210,130 @@ class NaverBlogAutomation:
             self._update_status("📋 키워드 파일 읽는 중...")
             keyword = self.load_keyword()
             
+            if keyword is None:
+                self._update_status("❌ 사용 가능한 키워드가 없습니다! 프로그램을 중지합니다.")
+                return None, None
+            
             if not keyword:
-                self._update_status("❌ 사용 가능한 키워드가 없습니다!")
+                self._update_status("❌ 키워드 로드 실패!")
                 return None, None
             
             self.current_keyword = keyword
             self._update_status(f"✅ 선택된 키워드: {keyword}")
             print(f"🎯 키워드 사용: {keyword}")
             
-            # prompt.txt 파일 읽기
+            # prompt1.txt와 prompt2.txt 파일 읽기
             self._update_status("📄 프롬프트 템플릿 로드 중...")
-            prompt_file = "prompt.txt"
-            if os.path.exists(prompt_file):
-                with open(prompt_file, 'r', encoding='utf-8') as f:
-                    prompt_template = f.read()
-                prompt = prompt_template.replace('{keywords}', keyword)
-                self._update_status("✅ 사용자 정의 프롬프트 로드 완료")
+            prompt1_file = os.path.join(self.data_dir, "setting", "prompt1.txt")
+            prompt2_file = os.path.join(self.data_dir, "setting", "prompt2.txt")
+            
+            prompt1_content = ""
+            prompt2_content = ""
+            
+            # prompt1.txt 읽기 (제목+서론)
+            if os.path.exists(prompt1_file):
+                with open(prompt1_file, 'r', encoding='utf-8') as f:
+                    prompt1_content = f.read().replace('{keywords}', keyword)
+                self._update_status("✅ 프롬프트1 (제목+서론) 로드 완료")
+            
+            # prompt2.txt 읽기 (소제목+본문)
+            if os.path.exists(prompt2_file):
+                with open(prompt2_file, 'r', encoding='utf-8') as f:
+                    prompt2_content = f.read().replace('{keywords}', keyword)
+                self._update_status("✅ 프롬프트2 (소제목+본문) 로드 완료")
+            
+            if prompt1_content and prompt2_content:
+                # 프롬프트 조합
+                full_prompt = f"""당신은 블로그 글 작성 전문가입니다. 아래 두 개의 프롬프트를 정확히 따라 글을 작성하세요.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[프롬프트 1 - 제목과 서론 작성]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{prompt1_content}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[프롬프트 2 - 소제목과 본문 작성]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{prompt2_content}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[출력 형식]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+제목
+서론
+소제목1
+본문1
+소제목2
+본문2
+소제목3
+본문3
+
+⚠️ 필수 준수사항: 
+- **제목은 반드시 '{keyword}, 후킹문구' 형식을 정확히 따르세요**
+- **제목 맨 앞에 반드시 {keyword}가 와야 합니다**
+- 제목 예시: "{keyword}, 5가지 방법 총정리" 또는 "{keyword}, 최신 트렌드 10가지"
+- 제목에서 키워드 뒤에 반드시 쉬표(,)를 넣고 공백 후 후킹문구(숫자 포함)를 작성하세요
+- **서론은 정확히 200자 내외로 작성하세요 (180자~220자 범위)**
+- 본문은 각각 **최소 500자 이상** 상세히 작성하세요
+- 본문은 각각 **최소 500자 이상** 상세히 작성하세요
+- 프롬프트 1의 모든 조건을 정확히 지켜 '제목'과 '서론'을 작성하세요
+- 프롬프트 2의 모든 조건을 정확히 지켜 '소제목'과 '본문' 3세트를 작성하세요
+- 두 프롬프트의 '절대 금지 사항'을 반드시 준수하세요
+- 각 섹션 사이는 빈 줄 없이 줄바꿈 1번만 하세요
+- **가능한 한 많은 토큰을 사용하여 길게 작성하세요**
+"""
                 print(f"📄 프롬프트에 키워드 '{keyword}' 삽입 완료")
             else:
-                # 기본 프롬프트
-                prompt = f"""
-다음 키워드로 블로그 글을 작성해주세요:
-키워드: {keyword}
-
-요구사항:
-1. 제목: 간단하고 매력적인 제목 (한 줄)
-2. 서론: 160자 정도의 흥미로운 도입부
-3. 본문: 2000자 이상의 유익하고 흥미로운 내용
-4. 자연스러운 문체 사용
-5. 적절한 문단 나누기
-6. **소제목 표시**: 소제목으로 강조하고 싶은 줄의 앞에 느낌표(!) 기호를 붙여주세요
-   예: !첫 번째 핵심 포인트
-   예: !두 번째 핵심 포인트
-"""
-                self._update_status("✅ 기본 프롬프트 사용")
-                print(f"📄 기본 프롬프트에 키워드 '{keyword}' 삽입 완료")
+                self._update_status("❌ 프롬프트 파일을 찾을 수 없습니다")
+                return None, None
             
             # AI 모델에 따라 호출
             self._update_status(f"🔄 AI에게 글 생성 요청 중... (모델: {model_name})")
             if self.ai_model == "gemini":
-                response = self.model.generate_content(prompt)
-                content = response.text
+                response = self.model.generate_content(full_prompt)  # type: ignore
+                content = response.text  # type: ignore
             elif self.ai_model == "gpt":
                 response = self.client.chat.completions.create(
-                    model=self.model,
+                    model=self.model,  # type: ignore
                     messages=[
-                        {"role": "system", "content": "당신은 전문 블로그 작가입니다."},
-                        {"role": "user", "content": prompt}
-                    ]
+                        {"role": "system", "content": "당신은 블로그 글 작성 전문가입니다. 사용자가 제공하는 프롬프트의 모든 지시사항을 정확히 준수하여 글을 작성하세요. 특히 제목 형식은 반드시 '키워드, 후킹문구' 형식을 지켜야 합니다. 가능한 한 상세하고 길게 작성하세요."},
+                        {"role": "user", "content": full_prompt}
+                    ],
+                    max_tokens=4000  # 최대 토큰 수 증가
                 )
                 content = response.choices[0].message.content
             
             self._update_status("📝 AI 응답 처리 중...")
+            
             # 제목과 본문 분리
             lines = content.strip().split('\n')
+            if len(lines) < 2:
+                self._update_status("❌ AI 응답 형식 오류")
+                return None, None
+            
             title = lines[0].strip()
-            body = '\n'.join(lines[1:]).strip()
+            body_lines = [line for line in lines[1:] if line.strip()]
+            body = '\n'.join(body_lines)
+            
+            # AI 생성 글을 result 폴더에 저장
+            try:
+                result_folder = os.path.join("setting", "result")
+                os.makedirs(result_folder, exist_ok=True)
+                
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                result_filename = f"{keyword}_{timestamp}.txt"
+                result_filepath = os.path.join(result_folder, result_filename)
+                
+                with open(result_filepath, 'w', encoding='utf-8') as f:
+                    f.write(f"제목: {title}\n\n")
+                    f.write(f"본문:\n{body}\n")
+                
+                self._update_status(f"✅ AI 생성 글 저장: {result_filename}")
+            except Exception as e:
+                self._update_status(f"⚠️ 글 저장 실패: {str(e)}")
             
             self._update_status(f"✅ AI 글 생성 완료! (제목: {title[:30]}...)")
             return title, body
@@ -234,6 +341,951 @@ class NaverBlogAutomation:
         except Exception as e:
             self._update_status(f"❌ AI 글 생성 오류: {str(e)}")
             return None, None
+    
+    def create_thumbnail(self, title):
+        """setting/image 폴더의 jpg를 배경으로 300x300 썸네일 생성"""
+        try:
+            self._update_status("🎨 썸네일 생성 중...")
+            
+            # setting/image 폴더의 jpg 파일 찾기
+            image_folder = os.path.join(self.data_dir, "setting", "image")
+            if not os.path.exists(image_folder):
+                self._update_status(f"⚠️ {image_folder} 폴더가 없습니다.")
+                return None
+            
+            # jpg 파일 검색
+            jpg_files = [f for f in os.listdir(image_folder) if f.lower().endswith('.jpg')]
+            
+            if not jpg_files:
+                self._update_status(f"⚠️ {image_folder} 폴더에 jpg 파일이 없습니다.")
+                return None
+            
+            # 첫 번째 jpg 파일 사용
+            source_image_path = os.path.join(image_folder, jpg_files[0])
+            self._update_status(f"📷 배경 이미지: {jpg_files[0]}")
+            
+            # 이미지 열기 및 300x300으로 리사이즈
+            img = Image.open(source_image_path)
+            img = img.resize((300, 300), Image.Resampling.LANCZOS)
+            
+            # 이미지 위에 텍스트 그리기
+            draw = ImageDraw.Draw(img)
+            
+            # 제목을 줄바꿈 처리 (글자 수 제한)
+            max_chars_per_line = 12  # 한 줄당 최대 12자
+            max_lines = 4  # 최대 4줄
+            
+            if ',' in title:
+                # 쉼표가 있으면 쉼표 기준으로 먼저 분리
+                parts = title.split(',')
+                lines = []
+                for part in parts:
+                    part = part.strip()
+                    if part:
+                        # 각 파트가 12자를 넘으면 추가로 분할
+                        if len(part) > max_chars_per_line:
+                            for i in range(0, len(part), max_chars_per_line):
+                                lines.append(part[i:i+max_chars_per_line])
+                        else:
+                            lines.append(part)
+                title_text = '\n'.join(lines[:max_lines])
+            else:
+                # 쉼표가 없으면 글자 수로만 분할
+                lines = []
+                for i in range(0, len(title), max_chars_per_line):
+                    lines.append(title[i:i+max_chars_per_line])
+                title_text = '\n'.join(lines[:max_lines])
+            
+            # 폰트 설정 (고정 크기)
+            font_size = 26
+            
+            try:
+                # 맑은 고딕 폰트 사용
+                font_path = "C:/Windows/Fonts/malgun.ttf"
+                font = ImageFont.truetype(font_path, font_size)
+            except:
+                # 폰트 로드 실패 시 기본 폰트
+                font = ImageFont.load_default()
+            
+            # 텍스트 바운딩 박스 계산
+            bbox = draw.multiline_textbbox((0, 0), title_text, font=font, align='center')
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            
+            # 중앙 위치 계산
+            x = (300 - text_width) // 2
+            y = (300 - text_height) // 2
+            
+            # 텍스트 그림자 (검정색)
+            shadow_offset = 2
+            draw.multiline_text(
+                (x + shadow_offset, y + shadow_offset), 
+                title_text, 
+                fill=(50, 50, 50), 
+                font=font, 
+                align='center'
+            )
+            
+            # 텍스트 그리기 (흰색)
+            draw.multiline_text(
+                (x, y), 
+                title_text, 
+                fill=(255, 255, 255), 
+                font=font, 
+                align='center'
+            )
+            
+            # 이미지 저장
+            result_folder = os.path.join("setting", "result")
+            os.makedirs(result_folder, exist_ok=True)
+            
+            # 파일명 생성 (키워드 사용)
+            # 현재 키워드를 파일명으로 사용 (파일명에 사용 불가한 문자 제거)
+            safe_keyword = "".join(c for c in self.current_keyword if c.isalnum() or c in (' ', '-', '_')).strip()
+            safe_keyword = safe_keyword.replace(' ', '_')  # 공백을 언더스코어로 변경
+            filename = f"{safe_keyword}.jpg"
+            filepath = os.path.join(result_folder, filename)
+            
+            img.save(filepath, 'JPEG', quality=95)
+            self._update_status(f"✅ 썸네일 생성 완료: {filename}")
+            
+            return filepath
+            
+        except Exception as e:
+            self._update_status(f"⚠️ 썸네일 생성 실패: {str(e)}")
+            return None
+    
+    def _write_body_with_linebreaks(self, text):
+        """본문을 작성하면서 60자 이상이면 자동으로 줄바꿈"""
+        max_length = 60
+        
+        # 이미 줄바꿈이 있으면 그대로 사용
+        if '\n' in text:
+            lines = text.split('\n')
+            for i, line in enumerate(lines):
+                if line.strip():
+                    ActionChains(self.driver).send_keys(line).perform()
+                    time.sleep(0.05)
+                    if i < len(lines) - 1:  # 마지막 줄이 아니면 Enter 2번
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.05)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.05)
+        # 줄바꿈이 없고 60자 이상이면 자동 줄바꿈
+        elif len(text) > max_length:
+            # 문장 단위로 분리 (마침표, 느낌표, 물음표 기준 - 단, 따옴표 안은 제외)
+            sentences = []
+            current = ""
+            in_quote = False  # 따옴표 안인지 체크
+            quote_chars = ["'", '"', ''', ''', '"', '"']  # 작은따옴표, 큰따옴표 (일반/특수문자)
+            
+            for i, char in enumerate(text):
+                current += char
+                
+                # 따옴표 상태 토글
+                if char in quote_chars:
+                    in_quote = not in_quote
+                
+                # 문장 종결 기호이면서 따옴표 밖에 있을 때만 문장 분리
+                if char in ['.', '!', '?'] and len(current) > 0 and not in_quote:
+                    # 다음 문자가 공백이거나 끝이면 문장 종료로 간주
+                    if i + 1 >= len(text) or text[i + 1] in [' ', '\n', '\t']:
+                        sentences.append(current.strip())
+                        current = ""
+            
+            if current.strip():
+                sentences.append(current.strip())
+            
+            # 각 문장을 입력하고 줄바꿈 (Enter 2번)
+            for i, sentence in enumerate(sentences):
+                if sentence:
+                    ActionChains(self.driver).send_keys(sentence).perform()
+                    time.sleep(0.05)
+                    if i < len(sentences) - 1:  # 마지막 문장이 아니면 Enter 2번
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.05)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.05)
+        else:
+            # 짧은 문장은 그대로 입력
+            ActionChains(self.driver).send_keys(text).perform()
+            time.sleep(0.05)
+    
+    def write_post(self, title, content, thumbnail_path=None, wait_interval=0, is_first_post=True):
+        """블로그 글 작성"""
+        try:
+            # 첫 포스팅에만 페이지 이동
+            if is_first_post:
+                self._update_status("📝 블로그 페이지로 이동 중...")
+                
+                self.driver.get("https://section.blog.naver.com/BlogHome.naver?directoryNo=0&currentPage=1&groupId=0")
+                time.sleep(3)
+                
+                self._update_status("✍️ 글쓰기 버튼 찾는 중...")
+                
+                try:
+                    write_btn = WebDriverWait(self.driver, 10).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, ".sp_common.icon_write"))
+                    )
+                    self._update_status("👆 글쓰기 버튼 클릭...")
+                    write_btn.click()
+                    time.sleep(3)
+                except:
+                    self._update_status("📝 직접 글쓰기 페이지로 이동...")
+                    self.driver.get("https://blog.naver.com/my/post/write.naver")
+                    time.sleep(3)
+                
+                if len(self.driver.window_handles) > 1:
+                    self._update_status("🪟 새 창으로 전환 중...")
+                    self.driver.switch_to.window(self.driver.window_handles[-1])
+                    time.sleep(2)
+            else:
+                # 후속 포스팅: 발행 후 글쓰기 버튼이 이미 클릭되어 있음
+                self._update_status("📝 이미 글쓰기 페이지에 있습니다...")
+                time.sleep(2)
+            
+            # mainFrame으로 전환
+            self._update_status("🖼️ 에디터 프레임으로 전환 중...")
+            try:
+                mainframe = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.ID, "mainFrame"))
+                )
+                self.driver.switch_to.frame(mainframe)
+                time.sleep(1)
+                self._update_status("✅ 프레임 전환 완료")
+            except:
+                self._update_status("⚠️ 프레임 전환 실패 - 메인 페이지에서 진행")
+            
+            # 팝업창 확인 및 '취소' 버튼 클릭
+            self._update_status("🔍 팝업 확인 중...")
+            try:
+                popup_cancel = WebDriverWait(self.driver, 3).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".se-popup-button.se-popup-button-cancel"))
+                )
+                popup_cancel.click()
+                self._update_status("✅ 팝업 닫기 완료")
+                time.sleep(1)
+            except:
+                pass
+            
+            # 도움말 패널 닫기
+            self._update_status("📚 도움말 패널 확인 중...")
+            try:
+                help_close = WebDriverWait(self.driver, 3).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".se-help-panel-close-button"))
+                )
+                help_close.click()
+                self._update_status("✅ 도움말 닫기 완료")
+                time.sleep(1)
+            except:
+                pass
+            
+            # 제목 입력
+            self._update_status("📌 제목 입력 중...")
+            try:
+                title_elem = WebDriverWait(self.driver, 10).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".se-documentTitle"))
+                )
+                
+                actions = ActionChains(self.driver)
+                actions.move_to_element(title_elem).click().send_keys(title).perform()
+                time.sleep(1)
+                
+                self._update_status(f"✅ 제목 입력 완료: {title[:30]}...")
+            except Exception as e:
+                self._update_status(f"❌ 제목 입력 실패: {str(e)}")
+                return False
+            
+            # 본문 작성
+            self._update_status("📄 본문 작성 시작...")
+            
+            try:
+                content_elem = WebDriverWait(self.driver, 10).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".se-section-text"))
+                )
+                
+                actions = ActionChains(self.driver)
+                actions.move_to_element(content_elem).click().perform()
+                time.sleep(0.5)
+                
+                # 본문을 줄 단위로 분리
+                content_lines = content.split('\n')
+                
+                # 외부 링크 사용 여부 확인
+                use_external_link = self.external_link and self.external_link_text
+                
+                # 서론 줄만 분리 (첫 줄)
+                intro_lines = []
+                body_lines = []
+                
+                first_content_found = False
+                for line in content_lines:
+                    if line.strip():
+                        if not first_content_found:
+                            intro_lines.append(line)
+                            first_content_found = True
+                        else:
+                            body_lines.append(line)
+                
+                total_lines = len([l for l in intro_lines if l.strip()]) + len([l for l in body_lines if l.strip()])
+                self._update_status(f"📝 총 {total_lines}줄 작성 시작...")
+                
+                current_line = 0
+                
+                # 1. 서론 작성 (ActionChains로 직접 타이핑)
+                for line in intro_lines:
+                    if self.should_stop:
+                        self._update_status("⏹️ 사용자가 포스팅을 중지했습니다.")
+                        return False
+                    
+                    if line.strip():
+                        current_line += 1
+                        
+                        # ActionChains로 직접 타이핑
+                        ActionChains(self.driver).send_keys(line).perform()
+                        time.sleep(0.1)
+                        # 줄바꿈
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.1)
+                
+                # 서론 작성 후 Enter 한번 더
+                actions = ActionChains(self.driver)
+                actions.send_keys(Keys.ENTER).perform()
+                time.sleep(0.3)
+                
+                # 2. 외부 링크 삽입 (설정된 경우)
+                if use_external_link:
+                    self._update_status("🔗 외부 링크 삽입 중...")
+                    
+                    # 앵커 텍스트 클립보드로 복사
+                    pyperclip.copy(self.external_link_text)
+                    
+                    # Ctrl+V로 붙여넣기
+                    ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
+                    time.sleep(0.5)
+                    
+                    # 앵커 텍스트만 선택 (Home으로 이동 후 Shift+End로 줄 끝까지 선택)
+                    actions = ActionChains(self.driver)
+                    actions.send_keys(Keys.HOME).perform()
+                    time.sleep(0.1)
+                    actions.key_down(Keys.SHIFT).send_keys(Keys.END).key_up(Keys.SHIFT).perform()
+                    time.sleep(0.5)
+                    
+                    # 중앙 정렬 버튼 클릭
+                    try:
+                        align_dropdown = WebDriverWait(self.driver, 3).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-property-toolbar-drop-down-button.se-align-left-toolbar-button"))
+                        )
+                        align_dropdown.click()
+                        time.sleep(0.3)
+                        
+                        center_align_btn = WebDriverWait(self.driver, 3).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-toolbar-option-align-center-button"))
+                        )
+                        center_align_btn.click()
+                        time.sleep(0.3)
+                        self._update_status("✅ 중앙 정렬 완료")
+                    except Exception as e:
+                        self._update_status(f"⚠️ 중앙 정렬 실패: {str(e)}")
+                    
+                    # 앵커 텍스트 다시 선택
+                    actions = ActionChains(self.driver)
+                    actions.send_keys(Keys.HOME).perform()
+                    time.sleep(0.1)
+                    actions.key_down(Keys.SHIFT).send_keys(Keys.END).key_up(Keys.SHIFT).perform()
+                    time.sleep(0.3)
+                    
+                    # 폰트 크기 24 설정
+                    try:
+                        font_size_btn = WebDriverWait(self.driver, 3).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-font-size-code-toolbar-button.se-property-toolbar-label-select-button"))
+                        )
+                        font_size_btn.click()
+                        time.sleep(0.3)
+                        
+                        fs24_btn = WebDriverWait(self.driver, 3).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-toolbar-option-font-size-code-fs24-button"))
+                        )
+                        fs24_btn.click()
+                        time.sleep(0.3)
+                        self._update_status("✅ 폰트 크기 24 적용")
+                    except Exception as e:
+                        self._update_status(f"⚠️ 폰트 크기 변경 실패: {str(e)}")
+                    
+                    # 앵커 텍스트 다시 선택
+                    actions = ActionChains(self.driver)
+                    actions.send_keys(Keys.HOME).perform()
+                    time.sleep(0.1)
+                    actions.key_down(Keys.SHIFT).send_keys(Keys.END).key_up(Keys.SHIFT).perform()
+                    time.sleep(0.3)
+                    
+                    # 볼드체 적용 (Ctrl+B)
+                    actions = ActionChains(self.driver)
+                    actions.key_down(Keys.CONTROL).send_keys('b').key_up(Keys.CONTROL).perform()
+                    time.sleep(0.3)
+                    self._update_status("✅ 볼드체 적용")
+                    
+                    # 텍스트 끝으로 이동
+                    actions = ActionChains(self.driver)
+                    actions.send_keys(Keys.END).perform()
+                    time.sleep(0.3)
+                    
+                    # 앵커 텍스트 전체 선택 (링크 삽입을 위해)
+                    actions = ActionChains(self.driver)
+                    actions.send_keys(Keys.HOME).perform()
+                    time.sleep(0.1)
+                    actions.key_down(Keys.SHIFT).send_keys(Keys.END).key_up(Keys.SHIFT).perform()
+                    time.sleep(0.3)
+                    
+                    # 링크 버튼 클릭
+                    try:
+                        link_btn = WebDriverWait(self.driver, 5).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-link-toolbar-button.se-property-toolbar-custom-layer-button"))
+                        )
+                        link_btn.click()
+                        time.sleep(0.5)
+                        
+                        # URL 입력
+                        link_input = WebDriverWait(self.driver, 5).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "input.se-custom-layer-link-input"))
+                        )
+                        link_input.clear()
+                        link_input.send_keys(self.external_link)
+                        time.sleep(0.3)
+                        
+                        # Enter로 확인
+                        actions = ActionChains(self.driver)
+                        actions.send_keys(Keys.ENTER).perform()
+                        time.sleep(0.5)
+                        
+                        self._update_status(f"✅ 외부 링크 삽입 완료: {self.external_link_text}")
+                        
+                    except Exception as e:
+                        self._update_status(f"⚠️ 링크 삽입 실패: {str(e)}")
+                        actions = ActionChains(self.driver)
+                        actions.send_keys(Keys.ESCAPE).perform()
+                        time.sleep(0.3)
+                    
+                    # 링크 삽입 후 Enter
+                    actions = ActionChains(self.driver)
+                    actions.send_keys(Keys.END).perform()
+                    time.sleep(0.2)
+                    actions.send_keys(Keys.ENTER).perform()
+                    time.sleep(0.3)
+                    
+                    # 폰트 크기 16으로 변경
+                    try:
+                        font_size_btn = WebDriverWait(self.driver, 3).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-font-size-code-toolbar-button.se-property-toolbar-label-select-button"))
+                        )
+                        font_size_btn.click()
+                        time.sleep(0.3)
+                        
+                        fs16_btn = WebDriverWait(self.driver, 3).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-toolbar-option-font-size-code-fs16-button"))
+                        )
+                        fs16_btn.click()
+                        time.sleep(0.3)
+                        self._update_status("✅ 폰트 크기 16 적용")
+                    except Exception as e:
+                        self._update_status(f"⚠️ 폰트 크기 변경 실패: {str(e)}")
+                    
+                    # 왼쪽 정렬
+                    try:
+                        align_dropdown = WebDriverWait(self.driver, 3).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-property-toolbar-drop-down-button.se-align-center-toolbar-button"))
+                        )
+                        align_dropdown.click()
+                        time.sleep(0.3)
+                        
+                        left_align_btn = WebDriverWait(self.driver, 3).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-toolbar-option-align-left-button"))
+                        )
+                        left_align_btn.click()
+                        time.sleep(0.3)
+                        self._update_status("✅ 왼쪽 정렬 완료")
+                    except Exception as e:
+                        self._update_status(f"⚠️ 왼쪽 정렬 실패: {str(e)}")
+                    
+                    # Ctrl+B로 볼드체 해제
+                    actions = ActionChains(self.driver)
+                    actions.key_down(Keys.CONTROL).send_keys('b').key_up(Keys.CONTROL).perform()
+                    time.sleep(0.3)
+                    self._update_status("✅ 볼드체 해제")
+                
+                # 썸네일 삽입 (외부 링크 설정과 무관하게 항상 실행)
+                if thumbnail_path:
+                    self._update_status("🖼️ 썸네일 삽입 중...")
+                    try:
+                        # 외부 링크 없을 때만 중앙 정렬 먼저 수행
+                        if not use_external_link:
+                            try:
+                                self._update_status("⚙️ 중앙 정렬 설정 중...")
+                                align_dropdown = WebDriverWait(self.driver, 3).until(
+                                    EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-property-toolbar-drop-down-button.se-align-left-toolbar-button"))
+                                )
+                                align_dropdown.click()
+                                time.sleep(0.3)
+                                
+                                center_align_btn = WebDriverWait(self.driver, 3).until(
+                                    EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-toolbar-option-align-center-button"))
+                                )
+                                center_align_btn.click()
+                                time.sleep(0.3)
+                                self._update_status("✅ 중앙 정렬 완료")
+                            except Exception as e:
+                                self._update_status(f"⚠️ 중앙 정렬 실패: {str(e)}")
+                        
+                        # -----------------------------------------------------------
+                        # [수정됨] 사진 버튼 클릭 로직 삭제 (윈도우 탐색기 방지)
+                        # 바로 숨겨진 파일 입력창(input type='file')을 찾아 전송합니다.
+                        # -----------------------------------------------------------
+
+                        # 파일 입력 요소 찾기
+                        self._update_status("📂 파일 입력 요소 찾는 중...")
+                        file_input = None
+                        
+                        # 네이버 에디터의 파일 업로드 요소 후보군
+                        selectors = [
+                            "input[type='file']",
+                            "input[id*='file']",
+                            ".se-file-input", 
+                            "input[accept*='image']"
+                        ]
+                        
+                        for selector in selectors:
+                            try:
+                                # 숨겨진 요소일 수 있으므로 presence_of_element_located 사용
+                                file_input = WebDriverWait(self.driver, 3).until(
+                                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                                )
+                                if file_input:
+                                    self._update_status(f"✅ 파일 입력 요소 찾음: {selector}")
+                                    break
+                            except:
+                                continue
+                        
+                        # 파일 입력 요소를 못 찾았을 경우 폴백: 사진 버튼 클릭 시도
+                        if not file_input:
+                            self._update_status("⚠️ 파일 입력 요소를 못 찾음 - 사진 버튼 클릭 시도...")
+                            try:
+                                image_btn = WebDriverWait(self.driver, 5).until(
+                                    EC.presence_of_element_located((By.CSS_SELECTOR, "button.se-image-toolbar-button.se-document-toolbar-basic-button"))
+                                )
+                                self.driver.execute_script("arguments[0].click();", image_btn)
+                                time.sleep(2)
+                                
+                                # 버튼 클릭 후 다시 파일 입력 찾기
+                                for selector in selectors:
+                                    try:
+                                        file_input = WebDriverWait(self.driver, 3).until(
+                                            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                                        )
+                                        if file_input:
+                                            self._update_status(f"✅ 버튼 클릭 후 파일 입력 요소 찾음: {selector}")
+                                            break
+                                    except:
+                                        continue
+                            except Exception as e:
+                                self._update_status(f"⚠️ 사진 버튼 클릭 실패: {str(e)[:50]}")
+                        
+                        if not file_input:
+                            raise Exception("파일 입력 요소를 찾을 수 없습니다 (모든 방법 실패)")
+                        
+                        # 절대 경로로 파일 전송 (버튼 클릭 없이 바로 전송)
+                        abs_path = os.path.abspath(thumbnail_path)
+                        self._update_status(f"⏳ 썸네일 업로드 중: {os.path.basename(abs_path)}")
+                        
+                        # 파일 경로 전송
+                        file_input.send_keys(abs_path)
+                        
+                        # 업로드 대기
+                        time.sleep(5)
+                        self._update_status("✅ 썸네일 업로드 명령 전달 완료")
+                        
+                        # -----------------------------------------------------------
+                        # [후속 처리] 혹시 뜰 수 있는 웹 이미지 편집기 팝업 닫기
+                        # (윈도우 탐색기는 안 뜨지만, 네이버 웹 팝업이 뜰 경우 대비)
+                        # -----------------------------------------------------------
+                        try:
+                            # 팝업 닫기/확인 버튼 시도
+                            close_selectors = [
+                                "button.se-popup-button-close", 
+                                "button.se-popup-button-confirm",
+                                ".se-image-edit-close",
+                                "button[aria-label='닫기']"
+                            ]
+                            
+                            popup_handled = False
+                            for btn_sel in close_selectors:
+                                try:
+                                    btn = WebDriverWait(self.driver, 1).until(
+                                        EC.element_to_be_clickable((By.CSS_SELECTOR, btn_sel))
+                                    )
+                                    btn.click()
+                                    popup_handled = True
+                                    time.sleep(1)
+                                    break
+                                except:
+                                    continue
+                            
+                            # 버튼 처리가 안되었다면 ESC 키 한 번 전송 (안전장치)
+                            if not popup_handled:
+                                self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                                time.sleep(0.5)
+                                
+                        except Exception:
+                            pass # 팝업 없으면 통과
+
+                        self._update_status("✅ 썸네일 삽입 완료")
+                        
+                        # Enter 키 2번으로 다음 줄로 이동 (줄 간격 확보)
+                        time.sleep(1)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.3)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.5)
+                        self._update_status("✅ 썸네일 다음 줄로 이동 (Enter 2번)")
+                        
+                        # 외부 링크 없을 때만 왼쪽 정렬로 복구
+                        if not use_external_link:
+                            try:
+                                self._update_status("⚙️ 왼쪽 정렬로 복구 중...")
+                                
+                                # 여러 셀렉터로 정렬 드롭다운 버튼 찾기
+                                align_dropdown = None
+                                dropdown_selectors = [
+                                    "button.se-property-toolbar-drop-down-button.se-align-center-toolbar-button",
+                                    "button[data-name='align']",
+                                    "button.se-align-center-toolbar-button",
+                                    "button[aria-label*='정렬']"
+                                ]
+                                
+                                for selector in dropdown_selectors:
+                                    try:
+                                        align_dropdown = WebDriverWait(self.driver, 2).until(
+                                            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                                        )
+                                        break
+                                    except:
+                                        continue
+                                
+                                if align_dropdown:
+                                    align_dropdown.click()
+                                    time.sleep(0.3)
+                                    
+                                    # 여러 셀렉터로 왼쪽 정렬 버튼 찾기
+                                    left_align_btn = None
+                                    left_selectors = [
+                                        "button.se-toolbar-option-align-left-button",
+                                        "button[data-name='alignLeft']",
+                                        "button[aria-label*='왼쪽']"
+                                    ]
+                                    
+                                    for selector in left_selectors:
+                                        try:
+                                            left_align_btn = WebDriverWait(self.driver, 2).until(
+                                                EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                                            )
+                                            break
+                                        except:
+                                            continue
+                                    
+                                    if left_align_btn:
+                                        left_align_btn.click()
+                                        time.sleep(0.3)
+                                        self._update_status("✅ 왼쪽 정렬 완료")
+                                    else:
+                                        self._update_status("⚠️ 왼쪽 정렬 버튼을 찾을 수 없음 (계속 진행)")
+                                else:
+                                    self._update_status("⚠️ 정렬 드롭다운을 찾을 수 없음 (계속 진행)")
+                                    
+                            except Exception as e:
+                                self._update_status(f"⚠️ 왼쪽 정렬 실패 (계속 진행): {str(e)[:50]}")
+                        
+                    except Exception as e:
+                        self._update_status(f"⚠️ 썸네일 삽입 실패(진행 계속): {str(e)[:100]}")
+                        # 실패하더라도 멈추지 않고 다음 단계로 진행
+                        pass
+                
+                # 3. 소제목/본문 작성
+                # body_lines를 소제목과 본문으로 분리 (6줄씩: 소제목1, 본문1, 소제목2, 본문2, 소제목3, 본문3)
+                if len(body_lines) >= 6:
+                    # 빈 줄 제거하고 실제 내용만 추출
+                    content_lines = [line for line in body_lines if line.strip()]
+                    
+                    if len(content_lines) >= 6:
+                        # 첫 6줄은 소제목/본문 형식으로 작성
+                        subtitle1 = content_lines[0]
+                        body1 = content_lines[1]
+                        subtitle2 = content_lines[2]
+                        body2 = content_lines[3]
+                        subtitle3 = content_lines[4]
+                        body3 = content_lines[5]
+                        
+                        self._update_status("✍️ 소제목1 작성 중...")
+                        ActionChains(self.driver).send_keys(subtitle1).perform()
+                        time.sleep(0.1)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.1)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 소제목 후 ENTER 한 번 더
+                        time.sleep(0.1)
+                        
+                        self._update_status("✍️ 본문1 작성 중...")
+                        # 본문1을 문장 단위로 줄바꿈 (60자 이상이면)
+                        self._write_body_with_linebreaks(body1)
+                        time.sleep(0.1)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 본문 끝에 ENTER
+                        time.sleep(0.3)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.2)
+                        
+                        self._update_status("✍️ 소제목2 작성 중...")
+                        ActionChains(self.driver).send_keys(subtitle2).perform()
+                        time.sleep(0.1)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.1)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 소제목 후 ENTER 한 번 더
+                        time.sleep(0.1)
+                        
+                        self._update_status("✍️ 본문2 작성 중...")
+                        # 본문2를 문장 단위로 줄바꿈 (60자 이상이면)
+                        self._write_body_with_linebreaks(body2)
+                        time.sleep(0.1)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 본문 끝에 ENTER
+                        time.sleep(0.3)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.2)
+                        
+                        self._update_status("✍️ 소제목3 작성 중...")
+                        ActionChains(self.driver).send_keys(subtitle3).perform()
+                        time.sleep(0.1)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.1)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 소제목 후 ENTER 한 번 더
+                        time.sleep(0.2)
+                        
+                        self._update_status("✍️ 본문3 작성 중...")
+                        # 본문3을 문장 단위로 줄바꿈 (60자 이상이면)
+                        self._write_body_with_linebreaks(body3)
+                        time.sleep(0.1)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 본문 끝에 ENTER
+                        time.sleep(0.3)
+                        
+                        # 7줄 이후의 추가 내용이 있으면 모두 입력
+                        if len(content_lines) > 6:
+                            self._update_status(f"✍️ 추가 내용 작성 중... ({len(content_lines) - 6}줄 남음)")
+                            for i, line in enumerate(content_lines[6:], start=7):
+                                if self.should_stop:
+                                    self._update_status("⏹️ 사용자가 포스팅을 중지했습니다.")
+                                    return False
+                                
+                                if line.strip():
+                                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                    time.sleep(0.1)
+                                    self._write_body_with_linebreaks(line)
+                                    time.sleep(0.1)
+                                    
+                                    # 진행 상황 표시 (매 5줄마다)
+                                    if i % 5 == 0:
+                                        self._update_status(f"✍️ 추가 내용 작성 중... ({i}번째 줄)")
+                        
+                        self._update_status("✅ 소제목/본문 작성 완료!")
+                    else:
+                        self._update_status("⚠️ 내용이 6줄 미만입니다. 기본 방식으로 작성합니다.")
+                        for line in body_lines:
+                            if self.should_stop:
+                                self._update_status("⏹️ 사용자가 포스팅을 중지했습니다.")
+                                return False
+                            if line.strip():
+                                ActionChains(self.driver).send_keys(line).perform()
+                                time.sleep(0.1)
+                                ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                time.sleep(0.1)
+                else:
+                    self._update_status("⚠️ 본문 내용이 부족합니다. 기본 방식으로 작성합니다.")
+                    for line in body_lines:
+                        if self.should_stop:
+                            self._update_status("⏹️ 사용자가 포스팅을 중지했습니다.")
+                            return False
+                        if line.strip():
+                            ActionChains(self.driver).send_keys(line).perform()
+                            time.sleep(0.1)
+                            ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                            time.sleep(0.1)
+                
+                time.sleep(1)
+                self._update_status("✅ 본문 입력 완료!")
+                
+            except Exception as e:
+                self._update_status(f"❌ 본문 입력 실패: {str(e)}")
+                return False
+            
+            # 발행 간격 대기
+            if wait_interval > 0:
+                self._update_status(f"⏰ 발행 간격 대기 중: {wait_interval}분")
+                for remaining in range(wait_interval, 0, -1):
+                    if self.should_stop:
+                        self._update_status("⏹️ 사용자가 중지했습니다")
+                        return False
+                    self._update_status(f"⏰ 남은 시간: {remaining}분")
+                    time.sleep(60)
+                self._update_status("✅ 발행 간격 대기 완료!")
+            
+            # 발행 처리
+            self._update_status("🚀 발행 처리 중...")
+            success = self.publish_post()
+            
+            if success:
+                self._update_status("🎉 포스팅 발행 완료!")
+                return True
+            else:
+                self._update_status("⚠️ 발행 실패 - 수동으로 발행해주세요")
+                return False
+            
+        except Exception as e:
+            self._update_status(f"❌ 포스팅 오류: {str(e)}")
+            return False
+    
+    
+    def publish_post(self):
+        """발행 설정 및 발행"""
+        try:
+            time.sleep(2)
+            
+            # 발행 버튼 찾기
+            publish_selectors = [
+                "button.publish_btn__m9KHH",
+                "button[data-click-area='tpb.publish']",
+                "button.publish_btn",
+                "[class*='publish_btn']"
+            ]
+            
+            publish_btn = None
+            for selector in publish_selectors:
+                try:
+                    publish_btn = WebDriverWait(self.driver, 3).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                    )
+                    if publish_btn:
+                        break
+                except:
+                    continue
+            
+            if not publish_btn:
+                return False
+            
+            # 발행 버튼 클릭
+            self.driver.execute_script("arguments[0].scrollIntoView(true);", publish_btn)
+            time.sleep(0.5)
+            self.driver.execute_script("arguments[0].click();", publish_btn)
+            time.sleep(3)
+            
+            # 태그 입력
+            try:
+                tag_input = WebDriverWait(self.driver, 5).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".tag_input__rvUB5"))
+                )
+                
+                if self.current_keyword:
+                    main_tag = self.current_keyword.replace(" ", "")
+                    tag_input.send_keys(main_tag)
+                    time.sleep(0.2)
+                    tag_input.send_keys(Keys.ENTER)
+                    time.sleep(0.5)
+                    self._update_status(f"✅ 태그: #{main_tag}")
+            except:
+                pass
+            
+            # 발행 시간 설정
+            time.sleep(1)
+            if self.publish_time == "pre":
+                # 예약 발행
+                try:
+                    schedule_radio = WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "#radio_time2"))
+                    )
+                    self.driver.execute_script("arguments[0].click();", schedule_radio)
+                    time.sleep(1)
+                    
+                    # 시간 설정
+                    hour_select = WebDriverWait(self.driver, 3).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, ".hour_option__J_heO"))
+                    )
+                    hour_select.click()
+                    time.sleep(0.3)
+                    hour_option = self.driver.find_element(By.XPATH, f"//option[@value='{self.scheduled_hour}']")
+                    hour_option.click()
+                    time.sleep(0.3)
+                    
+                    # 분 설정
+                    minute_select = WebDriverWait(self.driver, 3).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, ".minute_option__Vb3xB"))
+                    )
+                    minute_select.click()
+                    time.sleep(0.3)
+                    minute_option = self.driver.find_element(By.XPATH, f"//option[@value='{self.scheduled_minute}']")
+                    minute_option.click()
+                    
+                    self._update_status(f"✅ 예약: {self.scheduled_hour}:{self.scheduled_minute}")
+                except:
+                    pass
+            
+            # 최종 발행
+            time.sleep(2)
+            final_publish_selectors = [
+                "button[data-testid='seOnePublishBtn']",
+                "button.confirm_btn__WEaBq",
+                "//button[contains(., '발행')]"
+            ]
+            
+            for selector in final_publish_selectors:
+                try:
+                    if selector.startswith("//"):
+                        final_btn = WebDriverWait(self.driver, 3).until(
+                            EC.element_to_be_clickable((By.XPATH, selector))
+                        )
+                    else:
+                        final_btn = WebDriverWait(self.driver, 3).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                        )
+                    
+                    self.driver.execute_script("arguments[0].click();", final_btn)
+                    time.sleep(3)
+                    
+                    # 발행 완료 후 글쓰기 버튼 클릭 (새 탭 열지 않고 기존 페이지에서 이동)
+                    try:
+                        self._update_status("📝 다음 글쓰기 준비 중...")
+                        write_link_selectors = [
+                            "a.col._checkBlock._rosRestrict[onclick*='prf.write']",
+                            "a[href*='postwrite'][onclick*='sendClickNlog']",
+                            "a.col._checkBlock[target='mainFrame']"
+                        ]
+                        
+                        for link_selector in write_link_selectors:
+                            try:
+                                write_link = WebDriverWait(self.driver, 3).until(
+                                    EC.presence_of_element_located((By.CSS_SELECTOR, link_selector))
+                                )
+                                if write_link:
+                                    self.driver.execute_script("arguments[0].click();", write_link)
+                                    time.sleep(2)
+                                    self._update_status("✅ 글쓰기 페이지로 이동 완료")
+                                    break
+                            except:
+                                continue
+                    except Exception as e:
+                        self._update_status(f"⚠️ 글쓰기 버튼 클릭 실패 (계속 진행): {str(e)[:50]}")
+                    
+                    return True
+                except:
+                    continue
+            
+            return False
+            
+        except Exception as e:
+            self._update_status(f"❌ 발행 오류: {str(e)}")
+            return False
     
     def setup_driver(self):
         """크롬 드라이버 설정"""
@@ -268,10 +1320,20 @@ class NaverBlogAutomation:
             options.add_experimental_option("prefs", prefs)
             
             self._update_status("⚙️ 크롬 드라이버 설치 중...")
-            service = Service(ChromeDriverManager().install())
+            try:
+                service = Service(ChromeDriverManager().install())
+                self._update_status("✅ 크롬 드라이버 설치 완료")
+            except Exception as e:
+                self._update_status(f"⚠️ 크롬 드라이버 설치 오류: {str(e)}")
+                self._update_status("🔄 기본 크롬 드라이버 사용 시도 중...")
+                service = Service()
             
             self._update_status("🚀 브라우저 시작 중...")
-            self.driver = webdriver.Chrome(service=service, options=options)
+            try:
+                self.driver = webdriver.Chrome(service=service, options=options)
+            except Exception as e:
+                self._update_status(f"❌ 브라우저 시작 오류: {str(e)}")
+                raise
             
             self._update_status("🎭 봇 탐지 우회 설정 적용 중...")
             # 🎭 User-Agent 위장 (최신 Chrome)
@@ -369,523 +1431,11 @@ class NaverBlogAutomation:
             self._update_status(f"❌ 로그인 오류: {str(e)}")
             return False
     
-    def apply_subtitle_format(self, subtitle_lines, content_lines):
-        """소제목에 서식 적용"""
-        try:
-            for line_num in subtitle_lines:
-                subtitle_with_marker = content_lines[line_num].strip()
-                subtitle_text = subtitle_with_marker.replace('!', '').strip()
-                
-                self._update_status(f"소제목 서식 적용: {subtitle_text[:20]}")
-                
-                # 1. Ctrl+F로 찾기
-                actions = ActionChains(self.driver)
-                actions.key_down(Keys.CONTROL).send_keys('f').key_up(Keys.CONTROL).perform()
-                time.sleep(0.5)
-                
-                # 2. 검색창에 입력
-                actions = ActionChains(self.driver)
-                actions.send_keys(subtitle_with_marker).perform()
-                time.sleep(0.5)
-                
-                # 3. ESC로 찾기 닫기
-                actions = ActionChains(self.driver)
-                actions.send_keys(Keys.ESCAPE).perform()
-                time.sleep(0.3)
-                
-                # 4. 트리플 클릭으로 줄 전체 선택
-                try:
-                    text_elem = self.driver.find_element(By.XPATH, f"//*[contains(text(), '{subtitle_with_marker[:15]}')]")
-                    actions = ActionChains(self.driver)
-                    actions.move_to_element(text_elem).click().click().click().perform()
-                    time.sleep(0.5)
-                    
-                    # 5. 서식 툴바 컨테이너 버튼 클릭
-                    format_dropdown = WebDriverWait(self.driver, 3).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-text-format-toolbar-button.se-property-toolbar-label-select-button"))
-                    )
-                    format_dropdown.click()
-                    time.sleep(0.5)
-                    
-                    # 6. 소제목 버튼 클릭
-                    section_title_btn = WebDriverWait(self.driver, 3).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-toolbar-option-text-button.se-toolbar-option-text-format-sectionTitle-button[data-value='sectionTitle']"))
-                    )
-                    section_title_btn.click()
-                    time.sleep(0.5)
-                    
-                    # 7. ! 기호 제거
-                    actions = ActionChains(self.driver)
-                    actions.move_to_element(text_elem).click().click().click().perform()
-                    time.sleep(0.3)
-                    
-                    actions = ActionChains(self.driver)
-                    actions.send_keys(subtitle_text).perform()
-                    time.sleep(0.3)
-                    
-                    self._update_status(f"소제목 완료: {subtitle_text[:20]}")
-                    
-                except Exception as e:
-                    self._update_status(f"소제목 서식 실패: {subtitle_text[:20]}")
-                    continue
-                    
-        except Exception as e:
-            self._update_status(f"소제목 처리 오류: {str(e)}")
+    # 소제목 서식 적용 로직 제거됨
     
-    def write_post(self, title, content, wait_interval=0):
-        """블로그 글 작성"""
-        try:
-            self._update_status("📝 블로그 페이지로 이동 중...")
-            
-            self.driver.get("https://section.blog.naver.com/BlogHome.naver?directoryNo=0&currentPage=1&groupId=0")
-            time.sleep(3)
-            
-            self._update_status("✍️ 글쓰기 버튼 찾는 중...")
-            
-            try:
-                write_btn = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".sp_common.icon_write"))
-                )
-                self._update_status("👆 글쓰기 버튼 클릭...")
-                write_btn.click()
-                time.sleep(3)
-            except:
-                self._update_status("📝 직접 글쓰기 페이지로 이동...")
-                self.driver.get("https://blog.naver.com/my/post/write.naver")
-                time.sleep(3)
-            
-            if len(self.driver.window_handles) > 1:
-                self._update_status("🪟 새 창으로 전환 중...")
-                self.driver.switch_to.window(self.driver.window_handles[-1])
-                time.sleep(2)
-            
-            # ⚠️ 1단계: mainFrame으로 먼저 전환
-            self._update_status("🖼️ 에디터 프레임으로 전환 중...")
-            try:
-                mainframe = WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.ID, "mainFrame"))
-                )
-                self.driver.switch_to.frame(mainframe)
-                time.sleep(1)
-                self._update_status("✅ 프레임 전환 완료")
-            except:
-                self._update_status("⚠️ 프레임 전환 실패 - 메인 페이지에서 진행")
-            
-            # ⚠️ 2단계: 팝업창 확인 및 '취소' 버튼 클릭
-            self._update_status("🔍 팝업 확인 중...")
-            try:
-                popup_container = WebDriverWait(self.driver, 3).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, ".se-popup-container.__se-pop-layer"))
-                )
-                time.sleep(0.5)
-                
-                popup_cancel = WebDriverWait(self.driver, 2).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".se-popup-button.se-popup-button-cancel"))
-                )
-                popup_cancel.click()
-                self._update_status("✅ 팝업 닫기 완료")
-                time.sleep(1)
-            except:
-                pass
-            
-            # 📚 3단계: 도움말 패널 존재 확인 및 처리
-            self._update_status("📚 도움말 패널 확인 중...")
-            try:
-                help_header = WebDriverWait(self.driver, 3).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, ".se-help-header.se-help-header-dark"))
-                )
-                
-                help_close = WebDriverWait(self.driver, 2).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".se-help-panel-close-button"))
-                )
-                help_close.click()
-                self._update_status("✅ 도움말 닫기 완료")
-                time.sleep(1)
-            except:
-                pass
-            
-            # 4단계: 제목 입력
-            self._update_status("📌 제목 입력 중...")
-            
-            try:
-                title_elem = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".se-documentTitle"))
-                )
-                
-                actions = ActionChains(self.driver)
-                actions.move_to_element(title_elem).click().send_keys(title).perform()
-                time.sleep(1)
-                
-                self._update_status(f"✅ 제목 입력 완료: {title[:30]}...")
-            except Exception as e:
-                self._update_status(f"❌ 제목 입력 실패: {str(e)}")
-            
-            self._update_status("📄 본문 작성 시작...")
-            
-            try:
-                content_elem = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".se-section-text"))
-                )
-                
-                actions = ActionChains(self.driver)
-                actions.move_to_element(content_elem).click().perform()
-                time.sleep(0.5)
-                
-                # 본문을 줄 단위로 분리
-                content_lines = content.split('\n')
-                subtitle_lines = []
-                total_lines = len([line for line in content_lines if line.strip()])
-                
-                self._update_status(f"📝 총 {total_lines}줄 작성 시작...")
-                
-                # 1단계: 먼저 모든 내용 입력
-                current_line = 0
-                for i, line in enumerate(content_lines):
-                    # 정지 요청 확인
-                    if self.should_stop:
-                        self._update_status("⏹️ 사용자가 포스팅을 중지했습니다.")
-                        return False
-                    
-                    if line.strip():
-                        current_line += 1
-                        is_subtitle = line.strip().startswith('!')
-                        
-                        if is_subtitle:
-                            subtitle_lines.append(i)
-                        
-                        # 진행률 표시 (10줄마다)
-                        if current_line % 10 == 0 or current_line == total_lines:
-                            self._update_status(f"✍️ 작성 중... ({current_line}/{total_lines}줄)")
-                        
-                        # 줄 내용 입력
-                        actions = ActionChains(self.driver)
-                        actions.send_keys(line).perform()
-                        time.sleep(0.3)
-                        
-                        # 본문의 긴 문장(50자 이상)인 경우에만 Enter 2번
-                        if not is_subtitle and len(line.strip()) >= 50:
-                            actions = ActionChains(self.driver)
-                            actions.send_keys(Keys.ENTER).perform()
-                            time.sleep(0.1)
-                            actions.send_keys(Keys.ENTER).perform()
-                            time.sleep(0.3)
-                
-                time.sleep(1)
-                self._update_status("✅ 본문 입력 완료!")
-                
-                # 2단계: 소제목 서식 적용
-                if subtitle_lines:
-                    self._update_status(f"🎨 소제목 서식 적용 중... ({len(subtitle_lines)}개)")
-                    self.apply_subtitle_format(subtitle_lines, content_lines)
-                
-            except Exception as e:
-                self._update_status(f"❌ 본문 입력 실패: {str(e)}")
-            
-            # mainFrame 안에서 계속 작업
-            self._update_status("⚙️ 발행 설정 준비 중...")
-            time.sleep(2)
-            
-            # 발행 버튼 클릭
-            self._update_status("🔍 발행 버튼 찾는 중...")
-            try:
-                # 1. 먼저 여러 셀렉터로 시도
-                publish_selectors = [
-                    "button.publish_btn__m9KHH",
-                    "button[data-click-area='tpb.publish']",
-                    "button.publish_btn",
-                    "[class*='publish_btn']",
-                    "//button[contains(@class, 'publish_btn')]"
-                ]
-                
-                publish_btn = None
-                found_selector = None
-                
-                for selector in publish_selectors:
-                    try:
-                        if selector.startswith("//"):
-                            publish_btn = WebDriverWait(self.driver, 3).until(
-                                EC.presence_of_element_located((By.XPATH, selector))
-                            )
-                        else:
-                            publish_btn = WebDriverWait(self.driver, 3).until(
-                                EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                            )
-                        
-                        if publish_btn:
-                            found_selector = selector
-                            break
-                    except:
-                        continue
-                
-                if not publish_btn:
-                    self._update_status("❌ 발행 버튼을 찾을 수 없습니다")
-                    return False
-                
-                # JavaScript로 클릭
-                self.driver.execute_script("arguments[0].scrollIntoView(true);", publish_btn)
-                time.sleep(0.5)
-                self.driver.execute_script("arguments[0].click();", publish_btn)
-                self._update_status("✅ 발행 설정 팝업 열림")
-                time.sleep(3)
-                
-                # 발행 팝업에서 설정
-                time.sleep(3)
-                
-                # 1. 태그 입력
-                try:
-                    self._update_status("🏷️ 태그 입력 중...")
-                    tag_input = WebDriverWait(self.driver, 5).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, ".tag_input__rvUB5"))
-                    )
-                    
-                    if self.current_keyword:
-                        # 키워드 하나만 태그로 입력
-                        main_tag = self.current_keyword.replace(" ", "")
-                        
-                        # 클립보드로 복사 후 붙여넣기
-                        try:
-                            import pyperclip
-                            pyperclip.copy(main_tag)
-                            time.sleep(0.2)
-                            
-                            # Ctrl+V로 붙여넣기
-                            tag_input.click()
-                            time.sleep(0.2)
-                            actions = ActionChains(self.driver)
-                            actions.key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
-                            time.sleep(0.3)
-                        except:
-                            # pyperclip 실패 시 직접 입력
-                            tag_input.send_keys(main_tag)
-                            time.sleep(0.2)
-                        
-                        # Enter로 태그 등록
-                        tag_input.send_keys(Keys.ENTER)
-                        time.sleep(0.5)
-                        
-                        self._update_status(f"✅ 태그 입력 완료: #{main_tag}")
-                except Exception as e:
-                    self._update_status(f"⚠️ 태그 입력 실패: {str(e)}")
-                
-                # 2. 발행 시간 설정
-                try:
-                    self._update_status(f"⏰ 발행 시간 설정: {'예약 발행' if self.publish_time == 'pre' else '즉시 발행'}")
-                    time.sleep(1)
-                    
-                    if self.publish_time == "pre":
-                        self._update_status("📅 예약 발행 옵션 선택 중...")
-                        schedule_selectors = [
-                            "#radio_time2",
-                            "input[value='pre'][name='radio_time']",
-                            "input[data-testid='preTimeRadioBtn']",
-                            "input.radio_item__PIBr7[value='pre']",
-                            "//input[@id='radio_time2']"
-                        ]
-                        
-                        schedule_clicked = False
-                        for selector in schedule_selectors:
-                            try:
-                                if selector.startswith("//"):
-                                    schedule_radio = WebDriverWait(self.driver, 5).until(
-                                        EC.presence_of_element_located((By.XPATH, selector))
-                                    )
-                                else:
-                                    schedule_radio = WebDriverWait(self.driver, 5).until(
-                                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                                    )
-                                
-                                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", schedule_radio)
-                                time.sleep(0.3)
-                                
-                                self.driver.execute_script("arguments[0].click();", schedule_radio)
-                                time.sleep(0.5)
-                                
-                                is_checked = self.driver.execute_script("return arguments[0].checked;", schedule_radio)
-                                if is_checked:
-                                    schedule_clicked = True
-                                    self._update_status("✅ 예약 발행 선택 완료")
-                                    time.sleep(1.5)
-                                    break
-                                    
-                            except:
-                                continue
-                        
-                        if not schedule_clicked:
-                            raise Exception("예약 라디오 버튼을 찾을 수 없습니다")
-                        
-                        # 시간 설정
-                        self._update_status(f"🕐 시간 설정 중: {self.scheduled_hour}시...")
-                        hour_selectors = [
-                            ".hour_option__J_heO",
-                            "select[name='hour']",
-                            "//select[contains(@class, 'hour')]"
-                        ]
-                        
-                        for selector in hour_selectors:
-                            try:
-                                if selector.startswith("//"):
-                                    hour_select = WebDriverWait(self.driver, 3).until(
-                                        EC.element_to_be_clickable((By.XPATH, selector))
-                                    )
-                                else:
-                                    hour_select = WebDriverWait(self.driver, 3).until(
-                                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                                    )
-                                hour_select.click()
-                                time.sleep(0.3)
-                                
-                                hour_option = self.driver.find_element(By.XPATH, f"//option[@value='{self.scheduled_hour}']")
-                                hour_option.click()
-                                time.sleep(0.3)
-                                break
-                            except:
-                                continue
-                        
-                        # 분 설정
-                        self._update_status(f"⏰ 분 설정 중: {self.scheduled_minute}분...")
-                        minute_selectors = [
-                            ".minute_option__Vb3xB",
-                            "select[name='minute']",
-                            "//select[contains(@class, 'minute')]"
-                        ]
-                        
-                        for selector in minute_selectors:
-                            try:
-                                if selector.startswith("//"):
-                                    minute_select = WebDriverWait(self.driver, 3).until(
-                                        EC.element_to_be_clickable((By.XPATH, selector))
-                                    )
-                                else:
-                                    minute_select = WebDriverWait(self.driver, 3).until(
-                                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                                    )
-                                minute_select.click()
-                                time.sleep(0.3)
-                                
-                                minute_option = self.driver.find_element(By.XPATH, f"//option[@value='{self.scheduled_minute}']")
-                                minute_option.click()
-                                break
-                            except:
-                                continue
-                        
-                        self._update_status(f"✅ 예약 시간 설정 완료: {self.scheduled_hour}시 {self.scheduled_minute}분")
-                    else:
-                        self._update_status("⚡ 즉시 발행 옵션 선택 중...")
-                        now_selectors = [
-                            "#radio_time1",
-                            "input[value='now'][name='radio_time']",
-                            "input[data-testid='nowTimeRadioBtn']",
-                            "input.radio_item__PIBr7[value='now']",
-                            "//input[@id='radio_time1']"
-                        ]
-                        
-                        now_clicked = False
-                        for selector in now_selectors:
-                            try:
-                                if selector.startswith("//"):
-                                    now_radio = WebDriverWait(self.driver, 5).until(
-                                        EC.presence_of_element_located((By.XPATH, selector))
-                                    )
-                                else:
-                                    now_radio = WebDriverWait(self.driver, 5).until(
-                                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                                    )
-                                
-                                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", now_radio)
-                                time.sleep(0.3)
-                                
-                                self.driver.execute_script("arguments[0].click();", now_radio)
-                                time.sleep(0.5)
-                                
-                                is_checked = self.driver.execute_script("return arguments[0].checked;", now_radio)
-                                if is_checked:
-                                    now_clicked = True
-                                    self._update_status("✅ 즉시 발행 선택 완료")
-                                    break
-                                    
-                            except:
-                                continue
-                        
-                        if not now_clicked:
-                            self._update_status("⚠️ 즉시 발행 선택 실패 (기본값 사용)")
-                    
-                    time.sleep(1)
-                except Exception as e:
-                    self._update_status(f"❌ 발행 시간 설정 실패: {str(e)}")
-                
-                # 2.5. 발행 간격 대기 (첫 포스팅이 아닌 경우에만)
-                if wait_interval > 0:
-                    self._update_status(f"⏰ 발행 간격 대기 중: {wait_interval}분")
-                    print(f"⏰ 발행 간격 대기 중: {wait_interval}분")
-                    
-                    # 1분 단위로 대기하면서 상태 업데이트
-                    for remaining in range(wait_interval, 0, -1):
-                        if self.should_stop:
-                            self._update_status("⏹️ 사용자가 중지했습니다")
-                            return False
-                        
-                        self._update_status(f"⏰ 남은 시간: {remaining}분")
-                        print(f"⏰ 남은 시간: {remaining}분")
-                        time.sleep(60)  # 1분 대기
-                    
-                    self._update_status("✅ 발행 간격 대기 완료!")
-                    print("✅ 발행 간격 대기 완료!")
-                
-                # 3. 최종 발행 버튼 클릭
-                self._update_status("🚀 최종 발행 버튼 찾는 중...")
-                time.sleep(2)
-                
-                # 여러 셀렉터 시도
-                final_publish_selectors = [
-                    "button.confirm_btn__WEaBq[data-testid='seOnePublishBtn']",
-                    "button[data-testid='seOnePublishBtn']",
-                    "button[data-click-area='tpb*i.publish']",
-                    ".confirm_btn__WEaBq",
-                    "//button[contains(@class, 'confirm_btn')]",
-                    "//button[contains(., '발행')]",
-                ]
-                
-                published = False
-                for selector in final_publish_selectors:
-                    try:
-                        if selector.startswith("//"):
-                            final_publish_btn = WebDriverWait(self.driver, 3).until(
-                                EC.element_to_be_clickable((By.XPATH, selector))
-                            )
-                        else:
-                            final_publish_btn = WebDriverWait(self.driver, 3).until(
-                                EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                            )
-                        
-                        # JavaScript로 클릭
-                        self.driver.execute_script("arguments[0].scrollIntoView(true);", final_publish_btn)
-                        time.sleep(0.5)
-                        self.driver.execute_script("arguments[0].click();", final_publish_btn)
-                        self._update_status("🎉 포스팅 발행 완료!")
-                        published = True
-                        time.sleep(3)
-                        break
-                    except:
-                        continue
-                
-                if published:
-                    return True
-                else:
-                    self._update_status("⚠️ 발행 버튼을 찾을 수 없습니다 - 수동으로 발행해주세요")
-                    time.sleep(10)
-                    return False
-                
-            except Exception as e:
-                self._update_status(f"❌ 발행 설정 오류: {str(e)[:100]}")
-                self._update_status("⏸️ 10초 대기 - 수동으로 발행해주세요")
-                time.sleep(10)
-                return False
-            
-        except Exception as e:
-            self._update_status(f"❌ 포스팅 오류: {str(e)}")
-            return False
+    # 블로그 글 작성 로직 제거됨
     
-    def run(self, wait_interval=0):
+    def run(self, wait_interval=0, is_first_run=True):
         """전체 프로세스 실행"""
         try:
             self._update_status("🚀 자동 포스팅 프로세스 시작!")
@@ -895,7 +1445,7 @@ class NaverBlogAutomation:
                 return False
             
             # 1단계: AI 글 생성
-            self._update_status("📝 [1/4] AI 글 생성 단계")
+            self._update_status("📝 [1/5] AI 글 생성 단계")
             title, content = self.generate_content_with_ai()
             if not title or not content:
                 self._update_status("❌ AI 글 생성 실패로 프로세스 중단")
@@ -905,34 +1455,55 @@ class NaverBlogAutomation:
                 self._update_status("⏹️ 프로세스가 정지되었습니다.")
                 return False
             
-            # 2단계: 브라우저 실행
-            self._update_status("🌐 [2/4] 브라우저 실행 단계")
-            if not self.setup_driver():
-                self._update_status("❌ 브라우저 실행 실패로 프로세스 중단")
-                return False
-            
-            if self.should_stop:
-                self._update_status("⏹️ 프로세스가 정지되었습니다.")
-                self.close()
-                return False
-            
-            # 3단계: 네이버 로그인
-            self._update_status("🔐 [3/4] 네이버 로그인 단계")
-            if not self.login():
-                self._update_status("❌ 로그인 실패 - 브라우저는 열린 상태로 유지됩니다")
-                return False
+            # 2단계: 썸네일 확인
+            self._update_status("🎨 [2/5] 썸네일 확인 단계")
+            thumbnail_path = self.create_thumbnail(title)
+            if thumbnail_path:
+                self._update_status(f"✅ 썸네일 확인 완료")
+            else:
+                self._update_status("⚠️ 썸네일 파일 없음 - 계속 진행")
             
             if self.should_stop:
                 self._update_status("⏹️ 프로세스가 정지되었습니다.")
                 return False
             
-            # 4단계: 블로그 포스팅 (발행 간격 전달)
-            self._update_status("✍️ [4/4] 블로그 포스팅 단계")
-            if not self.write_post(title, content, wait_interval):
+            # 3단계: 브라우저 실행 (첫 실행시에만)
+            if is_first_run:
+                self._update_status("🌐 [3/5] 브라우저 실행 단계")
+                if not self.setup_driver():
+                    self._update_status("❌ 브라우저 실행 실패로 프로세스 중단")
+                    return False
+                
+                if self.should_stop:
+                    self._update_status("⏹️ 프로세스가 정지되었습니다.")
+                    self.close()
+                    return False
+                
+                # 4단계: 네이버 로그인 (첫 실행시에만)
+                self._update_status("🔐 [4/5] 네이버 로그인 단계")
+                if not self.login():
+                    self._update_status("❌ 로그인 실패 - 브라우저는 열린 상태로 유지됩니다")
+                    return False
+                
+                if self.should_stop:
+                    self._update_status("⏹️ 프로세스가 정지되었습니다.")
+                    return False
+            else:
+                # 후속 포스팅: 기존 브라우저 재사용
+                self._update_status("🔄 [3/5] 기존 브라우저 세션 재사용")
+                self._update_status("🔄 [4/5] 로그인 세션 유지 중")
+                
+                if self.should_stop:
+                    self._update_status("⏹️ 프로세스가 정지되었습니다.")
+                    return False
+            
+            # 5단계: 블로그 포스팅
+            self._update_status("✍️ [5/5] 블로그 포스팅 단계")
+            if not self.write_post(title, content, thumbnail_path, wait_interval, is_first_post=is_first_run):
                 self._update_status("⚠️ 포스팅 실패 - 브라우저는 열린 상태로 유지됩니다")
                 return False
             
-            # 포스팅 성공 시에만 키워드를 used_keywords.txt로 이동
+            # 포스팅 성공 시 키워드 이동
             if self.current_keyword:
                 self.move_keyword_to_used(self.current_keyword)
             
@@ -976,7 +1547,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                               QHBoxLayout, QGridLayout, QPushButton, QLabel, 
                               QLineEdit, QTextEdit, QRadioButton, QCheckBox,
                               QComboBox, QGroupBox, QTabWidget, QMessageBox,
-                              QFrame, QScrollArea, QButtonGroup, QStackedWidget)
+                              QFrame, QScrollArea, QButtonGroup, QStackedWidget,
+                              QSizePolicy)
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt6.QtGui import QFont, QIcon, QPalette, QColor
 
@@ -991,32 +1563,7 @@ NAVER_TEXT_SUB = "#000000"  # 검정색으로 통일
 NAVER_RED = "#E84F33"
 NAVER_ORANGE = "#FF9500"
 NAVER_BLUE = "#007AFF"
-NAVER_BORDER = "#E5E8EB"
-
-
-# ===========================
-# GUI 부분
-# ===========================
-
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                              QHBoxLayout, QGridLayout, QPushButton, QLabel, 
-                              QLineEdit, QTextEdit, QRadioButton, QCheckBox,
-                              QComboBox, QGroupBox, QTabWidget, QMessageBox,
-                              QFrame, QScrollArea, QButtonGroup, QStackedWidget)
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
-from PyQt6.QtGui import QFont, QIcon, QPalette, QColor
-
-# 네이버 컬러 팔레트
-NAVER_GREEN = "#03C75A"
-NAVER_GREEN_HOVER = "#02B350"
-NAVER_GREEN_LIGHT = "#E8F8EF"
-NAVER_BG = "#F5F7FA"
-NAVER_CARD_BG = "#FFFFFF"
-NAVER_TEXT = "#000000"  # 검정색으로 통일
-NAVER_TEXT_SUB = "#000000"  # 검정색으로 통일
-NAVER_RED = "#E84F33"
-NAVER_ORANGE = "#FF9500"
-NAVER_BLUE = "#007AFF"
+NAVER_TEAL = "#00CEC9"  # 청록색
 NAVER_BORDER = "#E5E8EB"
 
 
@@ -1044,12 +1591,12 @@ class PremiumCard(QFrame):
                 background-color: transparent;
                 border: none;
                 border-bottom: 1px solid {NAVER_BORDER};
-                padding: 8px 20px;
+                padding: 6px 12px;
             }}
         """)
-        header_layout = QHBoxLayout(self.header)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(10)
+        self.header_layout = QHBoxLayout(self.header)
+        self.header_layout.setContentsMargins(0, 0, 0, 0)
+        self.header_layout.setSpacing(10)
         
         # 카드 제목 통일 설정
         title_label = QLabel(f"{icon} {title}")
@@ -1061,8 +1608,9 @@ class PremiumCard(QFrame):
             border-radius: 8px;
             padding: 6px 14px;
         """)
-        header_layout.addWidget(title_label)
-        header_layout.addStretch()
+        title_label.setFixedHeight(36)
+        self.header_layout.addWidget(title_label)
+        self.header_layout.addStretch()
         
         layout.addWidget(self.header)
         
@@ -1070,7 +1618,7 @@ class PremiumCard(QFrame):
         self.content = QWidget()
         self.content.setStyleSheet("QWidget { background-color: transparent; border: none; }")
         self.content_layout = QVBoxLayout(self.content)
-        self.content_layout.setContentsMargins(20, 10, 20, 20)
+        self.content_layout.setContentsMargins(12, 10, 12, 12)
         self.content_layout.setSpacing(10)
         
         layout.addWidget(self.content)
@@ -1079,11 +1627,11 @@ class PremiumCard(QFrame):
     def create_section_label(text, font_family="맑은 고딕"):
         """카드 내부의 섹션 라벨 생성"""
         label = QLabel(text)
-        label.setFont(QFont(font_family, 13, QFont.Weight.Bold))
+        label.setFont(QFont(font_family, 15, QFont.Weight.Bold))
         label.setStyleSheet(f"""
             color: {NAVER_TEXT}; 
             background-color: transparent;
-            padding: 2px 0px;
+            padding: 4px 0px;
         """)
         return label
 
@@ -1098,7 +1646,39 @@ class NaverBlogGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("NAVER 블로그 AI 자동 포스팅")
-        self.setGeometry(100, 100, 1100, 850)
+        
+        # 베이스 디렉토리 설정 (가장 먼저)
+        if getattr(sys, 'frozen', False):
+            # PyInstaller로 빌드된 경우
+            self.base_dir = sys._MEIPASS  # 임시 폴더 (읽기 전용 리소스)
+            exe_dir = os.path.dirname(sys.executable)  # exe 파일이 있는 실제 디렉토리
+            
+            # 쓰기 권한 테스트
+            try:
+                test_dir = os.path.join(exe_dir, "setting")
+                os.makedirs(test_dir, exist_ok=True)
+                # 테스트 파일 생성 시도
+                test_file = os.path.join(test_dir, ".write_test")
+                with open(test_file, 'w') as f:
+                    f.write('test')
+                os.remove(test_file)
+                self.data_dir = exe_dir  # 쓰기 가능
+            except (PermissionError, OSError):
+                # 쓰기 권한 없으면 사용자 문서 폴더 사용
+                import pathlib
+                self.data_dir = str(pathlib.Path.home() / "Documents" / "Auto_Naver")
+                os.makedirs(os.path.join(self.data_dir, "setting"), exist_ok=True)
+                print(f"⚠️ exe 위치에 쓰기 권한이 없어 설정 폴더를 사용합니다: {self.data_dir}")
+        else:
+            # 개발 환경
+            self.base_dir = os.path.dirname(os.path.abspath(__file__))
+            self.data_dir = self.base_dir
+        
+        # 초기 크기 및 위치 설정 (더 작고 컴팩트하게)
+        self.setGeometry(100, 100, 750, 600)
+        
+        # 리사이즈 가능하도록 설정 (기본값이지만 명시)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         # 드래그 관련 변수 초기화
         self.drag_position = None
@@ -1108,8 +1688,9 @@ class NaverBlogGUI(QMainWindow):
         self.progress_signal.connect(self._update_progress_status_safe)
         
         # 아이콘 설정 (모든 창에 적용)
-        if os.path.exists("david153.ico"):
-            icon = QIcon("david153.ico")
+        icon_path = os.path.join(self.base_dir, "setting", "david153.ico")
+        if os.path.exists(icon_path):
+            icon = QIcon(icon_path)
             self.setWindowIcon(icon)
             QApplication.setWindowIcon(icon)
         
@@ -1152,7 +1733,7 @@ class NaverBlogGUI(QMainWindow):
             QLineEdit, QTextEdit {{
                 border: 2px solid {NAVER_BORDER};
                 border-radius: 10px;
-                padding: 10px;
+                padding: 6px;
                 background-color: white;
                 color: {NAVER_TEXT};
                 font-size: 13px;
@@ -1169,7 +1750,7 @@ class NaverBlogGUI(QMainWindow):
             QComboBox {{
                 border: 2px solid {NAVER_BORDER};
                 border-radius: 8px;
-                padding: 8px;
+                padding: 6px;
                 background-color: white;
                 color: {NAVER_TEXT};
                 font-size: 13px;
@@ -1269,8 +1850,9 @@ class NaverBlogGUI(QMainWindow):
     def load_config(self):
         """설정 파일 로드 (UTF-8)"""
         try:
-            if os.path.exists("config.json"):
-                with open("config.json", "r", encoding="utf-8") as f:
+            config_path = os.path.join(self.data_dir, "setting", "config.json")
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
                     return json.load(f)
         except Exception as e:
             print(f"⚠️ 설정 로드 실패: {e}")
@@ -1279,7 +1861,10 @@ class NaverBlogGUI(QMainWindow):
     def save_config_file(self):
         """설정 파일 저장 (UTF-8)"""
         try:
-            with open("config.json", "w", encoding="utf-8") as f:
+            setting_dir = os.path.join(self.data_dir, "setting")
+            os.makedirs(setting_dir, exist_ok=True)
+            config_path = os.path.join(setting_dir, "config.json")
+            with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=4)
             self.show_message("✅ 저장 완료", "설정이 성공적으로 저장되었습니다!", "info")
         except Exception as e:
@@ -1299,15 +1884,15 @@ class NaverBlogGUI(QMainWindow):
         else:
             msg_box.setIcon(QMessageBox.Icon.Information)
         
-        # 네이버 스타일 적용
+        # 스타일 적용 (흰색 배경, 검은색 텍스트)
         msg_box.setStyleSheet(f"""
             QMessageBox {{
-                background-color: {NAVER_CARD_BG};
+                background-color: white;
             }}
             QMessageBox QLabel {{
                 color: {NAVER_TEXT};
                 font-size: 13px;
-                padding: 10px;
+                background-color: white;
             }}
             QMessageBox QPushButton {{
                 background-color: {NAVER_GREEN};
@@ -1324,6 +1909,45 @@ class NaverBlogGUI(QMainWindow):
             }}
         """)
         
+        msg_box.exec()
+    
+    def show_api_help(self):
+        """API 발급 방법 안내"""
+        help_text = """
+<h3>🔑 API 키 발급 방법</h3>
+
+<p><b>📌 GPT API 발급</b></p>
+<ol>
+<li>OpenAI 웹사이트 접속: <a href='https://platform.openai.com/api-keys'>https://platform.openai.com/api-keys</a></li>
+<li>로그인 또는 회원가입</li>
+<li>"Create new secret key" 버튼 클릭</li>
+<li>생성된 API 키 복사 (한 번만 표시됨!)</li>
+<li>위의 "GPT API" 입력란에 붙여넣기</li>
+</ol>
+
+<p><b>📌 Gemini API 발급</b></p>
+<ol>
+<li>Google AI Studio 접속: <a href='https://aistudio.google.com/app/apikey'>https://aistudio.google.com/app/apikey</a></li>
+<li>Google 계정으로 로그인</li>
+<li>"Create API Key" 버튼 클릭</li>
+<li>생성된 API 키 복사</li>
+<li>위의 "Gemini API" 입력란에 붙여넣기</li>
+</ol>
+
+<p><b>⚠️ 주의사항</b></p>
+<ul>
+<li>API 키는 절대 타인과 공유하지 마세요</li>
+<li>GPT API는 유료이며, 사용량에 따라 과금됩니다</li>
+<li>Gemini API는 무료 할당량이 있으며, 초과 시 과금될 수 있습니다</li>
+</ul>
+        """
+        
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("API 발급 방법 안내")
+        msg_box.setTextFormat(Qt.TextFormat.RichText)
+        msg_box.setText(help_text)
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
         msg_box.exec()
     
     def keyPressEvent(self, event):
@@ -1348,7 +1972,10 @@ class NaverBlogGUI(QMainWindow):
             self.config["external_link_text"] = self.link_text_entry.text()
             
             # 2. 설정 파일로 저장
-            with open("config.json", "w", encoding="utf-8") as f:
+            setting_dir = os.path.join(self.base_dir, "setting")
+            os.makedirs(setting_dir, exist_ok=True)
+            config_path = os.path.join(setting_dir, "config.json")
+            with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=4)
             
             # 3. UI 업데이트
@@ -1379,10 +2006,10 @@ class NaverBlogGUI(QMainWindow):
             QFrame {{
                 background-color: {NAVER_GREEN};
                 border: none;
-                padding: 15px 30px;
+                padding: 10px 30px;
             }}
         """)
-        header.setFixedHeight(90)
+        header.setFixedHeight(70)
         
         header_layout = QGridLayout(header)
         header_layout.setContentsMargins(30, 0, 30, 0)
@@ -1391,7 +2018,7 @@ class NaverBlogGUI(QMainWindow):
         header_layout.setColumnStretch(2, 1)
         
         # 왼쪽 제목
-        left_label = QLabel("Auto Naver Blog Program__V 5.0")
+        left_label = QLabel("Auto Naver Blog Program__V 5.1")
         left_label.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
         left_label.setStyleSheet("color: white; background-color: transparent; border: none;")
         left_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -1412,9 +2039,10 @@ class NaverBlogGUI(QMainWindow):
                 color: white;
                 border: 2px solid white;
                 border-radius: 10px;
-                padding: 10px 25px;
+                padding: 8px 20px;
                 font-size: 13px;
                 font-weight: bold;
+                outline: none;
             }}
             QPushButton:hover {{
                 background-color: rgba(255, 255, 255, 0.3);
@@ -1422,6 +2050,9 @@ class NaverBlogGUI(QMainWindow):
             QPushButton:checked {{
                 background-color: white;
                 color: {NAVER_GREEN};
+            }}
+            QPushButton:focus {{
+                outline: none;
             }}
         """)
         self.monitoring_tab_btn.setCheckable(True)
@@ -1437,9 +2068,10 @@ class NaverBlogGUI(QMainWindow):
                 color: white;
                 border: 2px solid white;
                 border-radius: 10px;
-                padding: 10px 25px;
+                padding: 8px 20px;
                 font-size: 13px;
                 font-weight: bold;
+                outline: none;
             }}
             QPushButton:hover {{
                 background-color: rgba(255, 255, 255, 0.3);
@@ -1447,6 +2079,9 @@ class NaverBlogGUI(QMainWindow):
             QPushButton:checked {{
                 background-color: white;
                 color: {NAVER_GREEN};
+            }}
+            QPushButton:focus {{
+                outline: none;
             }}
         """)
         self.settings_tab_btn.setCheckable(True)
@@ -1462,15 +2097,19 @@ class NaverBlogGUI(QMainWindow):
                 color: white;
                 border: 2px solid white;
                 border-radius: 10px;
-                padding: 10px 25px;
+                padding: 8px 20px;
                 font-size: 13px;
                 font-weight: bold;
+                outline: none;
             }}
             QPushButton:hover {{
                 background-color: rgba(255, 255, 255, 0.3);
             }}
             QPushButton:pressed {{
                 background-color: rgba(255, 255, 255, 0.4);
+            }}
+            QPushButton:focus {{
+                outline: none;
             }}
         """)
         self.refresh_btn.clicked.connect(self.refresh_settings)
@@ -1539,11 +2178,11 @@ class NaverBlogGUI(QMainWindow):
                 min-height: 28px;
                 font-size: 13px;
                 color: white;
-                border: 3px solid #018541;
+                border: none;
                 padding: 4px 12px;
             }}
             QPushButton:hover {{
-                border: 3px solid #016A34;
+                background-color: {NAVER_GREEN_HOVER};
             }}
         """)
         self.start_btn.clicked.connect(self.start_posting)
@@ -1568,10 +2207,10 @@ class NaverBlogGUI(QMainWindow):
                 opacity: 0.5;
             }}
             QPushButton:enabled {{
-                border: 3px solid #B71C1C;
+                opacity: 1.0;
             }}
             QPushButton:enabled:hover {{
-                border: 3px solid #A01818;
+                background-color: #D32F2F;
             }}
         """)
         self.stop_btn.setEnabled(False)
@@ -1597,10 +2236,10 @@ class NaverBlogGUI(QMainWindow):
                 opacity: 0.5;
             }}
             QPushButton:enabled {{
-                border: 3px solid #CC7A00;
+                opacity: 1.0;
             }}
             QPushButton:enabled:hover {{
-                border: 3px solid #B36A00;
+                background-color: #EF8A00;
             }}
         """)
         self.pause_btn.setEnabled(False)
@@ -1626,10 +2265,10 @@ class NaverBlogGUI(QMainWindow):
                 opacity: 0.5;
             }}
             QPushButton:enabled {{
-                border: 3px solid #0047A3;
+                opacity: 1.0;
             }}
             QPushButton:enabled:hover {{
-                border: 3px solid #003A85;
+                background-color: #0066CC;
             }}
         """)
         self.resume_btn.setEnabled(False)
@@ -1648,12 +2287,12 @@ class NaverBlogGUI(QMainWindow):
         self.login_status_label.setStyleSheet(f"color: #000000; border: none;")
         login_status_layout.addWidget(self.login_status_label)
         
-        self.login_setup_btn = QPushButton("➡️ 설정하기")
+        self.login_setup_btn = QPushButton("설정하기➡️")
         self.login_setup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.login_setup_btn.setFixedHeight(25)
+        self.login_setup_btn.setMinimumHeight(25)
         self.login_setup_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: {NAVER_ORANGE};
+                background-color: {NAVER_TEAL};
                 color: white;
                 border: none;
                 border-radius: 5px;
@@ -1662,7 +2301,7 @@ class NaverBlogGUI(QMainWindow):
                 font-weight: bold;
             }}
             QPushButton:hover {{
-                background-color: #E68900;
+                background-color: #00B8B3;
             }}
         """)
         self.login_setup_btn.clicked.connect(lambda: self._switch_tab(1))
@@ -1678,12 +2317,12 @@ class NaverBlogGUI(QMainWindow):
         self.api_status_label.setStyleSheet(f"color: #000000; border: none;")
         api_status_layout.addWidget(self.api_status_label)
         
-        self.api_setup_btn = QPushButton("➡️ 설정하기")
+        self.api_setup_btn = QPushButton("설정하기➡️")
         self.api_setup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.api_setup_btn.setFixedHeight(25)
+        self.api_setup_btn.setMinimumHeight(25)
         self.api_setup_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: {NAVER_ORANGE};
+                background-color: {NAVER_TEAL};
                 color: white;
                 border: none;
                 border-radius: 5px;
@@ -1692,7 +2331,7 @@ class NaverBlogGUI(QMainWindow):
                 font-weight: bold;
             }}
             QPushButton:hover {{
-                background-color: #E68900;
+                background-color: #00B8B3;
             }}
         """)
         self.api_setup_btn.clicked.connect(lambda: self._switch_tab(1))
@@ -1708,12 +2347,12 @@ class NaverBlogGUI(QMainWindow):
         self.keyword_count_label.setStyleSheet(f"color: #000000; border: none;")
         keyword_status_layout.addWidget(self.keyword_count_label)
         
-        self.keyword_setup_btn = QPushButton("➡️ 설정하기")
+        self.keyword_setup_btn = QPushButton("설정하기➡️")
         self.keyword_setup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.keyword_setup_btn.setFixedHeight(25)
+        self.keyword_setup_btn.setMinimumHeight(25)
         self.keyword_setup_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: {NAVER_ORANGE};
+                background-color: {NAVER_TEAL};
                 color: white;
                 border: none;
                 border-radius: 5px;
@@ -1722,7 +2361,7 @@ class NaverBlogGUI(QMainWindow):
                 font-weight: bold;
             }}
             QPushButton:hover {{
-                background-color: #E68900;
+                background-color: #00B8B3;
             }}
         """)
         self.keyword_setup_btn.clicked.connect(lambda: self._switch_tab(1))
@@ -1736,6 +2375,15 @@ class NaverBlogGUI(QMainWindow):
         self.interval_label.setStyleSheet(f"color: #000000; border: none;")
         status_card.content_layout.addWidget(self.interval_label)
         
+        # 사용기간 표시 (라이선스 정보)
+        self.license_period_label = QLabel("📅 사용기간: 확인 중...")
+        self.license_period_label.setFont(QFont(self.font_family, 13))
+        self.license_period_label.setStyleSheet(f"color: #000000; border: none;")
+        status_card.content_layout.addWidget(self.license_period_label)
+        
+        # 라이선스 정보 로드
+        self._update_license_info()
+        
         # 카드 크기 최소화
         status_card.setMaximumHeight(status_card.sizeHint().height())
         
@@ -1747,8 +2395,21 @@ class NaverBlogGUI(QMainWindow):
         # 우측: 현재 진행 현황 카드
         progress_card = PremiumCard("진행 현황", "📋")
         
-        # 로그 메시지 표시 영역 (스크롤 가능)
-        log_scroll = QScrollArea()
+        # 진행 현황 스크롤 영역 (Ctrl+휠로 크기 조절)
+        class ResizableScrollArea(QScrollArea):
+            def wheelEvent(self, event):
+                if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+                    current_height = self.height()
+                    delta = event.angleDelta().y()
+                    scale_factor = 1.1 if delta > 0 else 0.9
+                    new_height = max(100, min(int(current_height * scale_factor), 800))
+                    self.setMinimumHeight(new_height)
+                    self.setMaximumHeight(new_height)
+                    event.accept()
+                else:
+                    super().wheelEvent(event)
+        
+        log_scroll = ResizableScrollArea()
         log_scroll.setWidgetResizable(True)
         log_scroll.setMinimumHeight(300)
         log_scroll.setStyleSheet(f"""
@@ -1756,6 +2417,26 @@ class NaverBlogGUI(QMainWindow):
                 border: 2px solid {NAVER_BORDER};
                 border-radius: 8px;
                 background-color: {NAVER_BG};
+            }}
+            QScrollBar:vertical {{
+                border: none;
+                background: {NAVER_BG};
+                width: 12px;
+                border-radius: 6px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {NAVER_GREEN};
+                border-radius: 6px;
+                min-height: 30px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {NAVER_GREEN_HOVER};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
             }}
         """)
         
@@ -1766,8 +2447,12 @@ class NaverBlogGUI(QMainWindow):
         self.log_label = QLabel("⏸️ 대기 중...")
         self.log_label.setFont(QFont(self.font_family, 13))
         self.log_label.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; padding: 10px;")
-        self.log_label.setWordWrap(True)
+        self.log_label.setWordWrap(True)  # 자동 줄바꿈
         self.log_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.log_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard)  # 드래그/복사 가능
+        self.log_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)  # 너비 확장 가능
+        self.log_label.setMaximumWidth(9999)  # 최대 너비 제한 제거
+        self.log_label.setScaledContents(False)  # 콘텐츠 크기 조정 비활성화
         log_layout.addWidget(self.log_label)
         log_layout.addStretch()
         
@@ -1790,8 +2475,8 @@ class NaverBlogGUI(QMainWindow):
         content = QWidget()
         content.setStyleSheet("QWidget { background-color: transparent; }")
         layout = QGridLayout(content)
-        layout.setContentsMargins(30, 25, 30, 25)
-        layout.setSpacing(16)
+        layout.setContentsMargins(20, 15, 20, 15)
+        layout.setSpacing(12)
         
         # 균등 분할
         layout.setColumnStretch(0, 1)
@@ -1805,13 +2490,15 @@ class NaverBlogGUI(QMainWindow):
         warning_label.setStyleSheet(f"""
             background-color: {NAVER_ORANGE}; 
             color: white; 
-            padding: 4px 12px; 
-            border-radius: 12px;
+            padding: 6px 14px; 
+            border-radius: 8px;
             font-size: 13px;
-            font-weight: bold;
             border: none;
         """)
+        warning_label.setFixedHeight(36)
         login_card.header.layout().addWidget(warning_label)
+        
+        login_card.content_layout.addStretch()
         
         login_grid = QGridLayout()
         login_grid.setColumnStretch(0, 1)
@@ -1824,19 +2511,22 @@ class NaverBlogGUI(QMainWindow):
         id_layout.addWidget(id_label)
         self.naver_id_entry = QLineEdit()
         self.naver_id_entry.setPlaceholderText("네이버 아이디")
+        self.naver_id_entry.setCursorPosition(0)
         self.naver_id_entry.setStyleSheet(f"""
             QLineEdit {{
                 border: 2px solid {NAVER_BORDER};
                 border-radius: 10px;
-                padding: 10px;
+                padding: 6px;
                 background-color: white;
                 color: {NAVER_TEXT};
                 font-size: 13px;
+                min-height: 20px;
             }}
             QLineEdit:focus {{
                 border-color: {NAVER_GREEN};
             }}
         """)
+        self.naver_id_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
         id_layout.addWidget(self.naver_id_entry)
         login_grid.addWidget(id_widget, 0, 0)
         
@@ -1849,37 +2539,48 @@ class NaverBlogGUI(QMainWindow):
         self.naver_pw_entry = QLineEdit()
         self.naver_pw_entry.setPlaceholderText("비밀번호")
         self.naver_pw_entry.setEchoMode(QLineEdit.EchoMode.Password)
+        self.naver_pw_entry.setCursorPosition(0)
         self.naver_pw_entry.setStyleSheet(f"""
             QLineEdit {{
                 border: 2px solid {NAVER_BORDER};
                 border-radius: 10px;
-                padding: 10px;
+                padding: 6px;
                 background-color: white;
                 color: {NAVER_TEXT};
                 font-size: 13px;
+                min-height: 20px;
             }}
             QLineEdit:focus {{
                 border-color: {NAVER_GREEN};
             }}
         """)
+        self.naver_pw_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
         pw_container.addWidget(self.naver_pw_entry)
-        self.pw_toggle_btn = QPushButton("👁️")
+        
+        # 비밀번호 토글 버튼
+        pw_toggle_container = QHBoxLayout()
+        pw_toggle_container.setSpacing(5)
+        
+        self.pw_toggle_btn = QPushButton("비공개")
         self.pw_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.pw_toggle_btn.setFixedSize(46, 46)
+        self.pw_toggle_btn.setMinimumSize(70, 34)
         self.pw_toggle_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {NAVER_TEXT_SUB};
                 border: none;
-                border-radius: 10px;
+                border-radius: 8px;
                 color: white;
                 font-size: 13px;
+                font-weight: bold;
             }}
             QPushButton:hover {{
                 background-color: {NAVER_TEXT};
             }}
         """)
         self.pw_toggle_btn.clicked.connect(self.toggle_password)
-        pw_container.addWidget(self.pw_toggle_btn)
+        pw_toggle_container.addWidget(self.pw_toggle_btn)
+        
+        pw_container.addLayout(pw_toggle_container)
         pw_layout.addLayout(pw_container)
         login_grid.addWidget(pw_widget, 0, 1)
         
@@ -1887,17 +2588,19 @@ class NaverBlogGUI(QMainWindow):
         
         login_save_btn = QPushButton("💾 로그인 정보 저장")
         login_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        login_save_btn.setStyleSheet(f"background-color: {NAVER_GREEN}; padding: 8px 20px; font-size: 13px;")
+        login_save_btn.setStyleSheet(f"background-color: {NAVER_GREEN}; padding: 10px 24px; font-size: 13px; font-weight: bold;")
         login_save_btn.clicked.connect(self.save_login_info)
+        login_card.content_layout.addStretch()
         login_card.content_layout.addWidget(login_save_btn)
         
-        # 카드 크기 최소화
-        login_card.setMaximumHeight(login_card.sizeHint().height())
+        login_card.setMinimumHeight(240)
         
         layout.addWidget(login_card, 0, 0)
         
         # === Row 0, Col 1: 발행 간격 설정 ===
         time_card = PremiumCard("발행 간격 설정", "⏱️")
+        
+        time_card.content_layout.addStretch()
         
         # 발행 간격 입력 레이아웃
         time_input_layout = QVBoxLayout()
@@ -1914,12 +2617,13 @@ class NaverBlogGUI(QMainWindow):
         self.interval_entry = QLineEdit()
         self.interval_entry.setPlaceholderText("10")
         self.interval_entry.setText("10")
-        self.interval_entry.setFixedWidth(110)
+        self.interval_entry.setFixedWidth(80)
+        self.interval_entry.setCursorPosition(0)
         self.interval_entry.setStyleSheet(f"""
             QLineEdit {{
                 border: 2px solid {NAVER_BORDER};
                 border-radius: 10px;
-                padding: 10px;
+                padding: 6px;
                 background-color: white;
                 color: {NAVER_TEXT};
                 font-size: 13px;
@@ -1928,6 +2632,7 @@ class NaverBlogGUI(QMainWindow):
                 border-color: {NAVER_GREEN};
             }}
         """)
+        self.interval_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
         interval_input_layout.addWidget(self.interval_entry)
         
         interval_text_label = PremiumCard.create_section_label("분 간격", self.font_family)
@@ -1939,25 +2644,49 @@ class NaverBlogGUI(QMainWindow):
         
         time_save_btn = QPushButton("💾 발행 간격 저장")
         time_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        time_save_btn.setStyleSheet(f"background-color: {NAVER_GREEN}; padding: 8px 20px; font-size: 13px;")
+        time_save_btn.setStyleSheet(f"background-color: {NAVER_GREEN}; padding: 10px 24px; font-size: 13px; font-weight: bold;")
         time_save_btn.clicked.connect(self.save_time_settings)
+        time_card.content_layout.addStretch()
         time_card.content_layout.addWidget(time_save_btn)
         
-        # 카드 크기 최소화
-        time_card.setMaximumHeight(time_card.sizeHint().height())
+        time_card.setMinimumHeight(240)
         
         layout.addWidget(time_card, 0, 1)
         
         # === Row 1, Col 0: 외부 링크 설정 ===
         link_card = PremiumCard("외부 링크 설정", "🔗")
         
-        # 헤더에 체크박스 추가
+        # 헤더에 체크박스와 ON/OFF 상태 표시 추가
+        checkbox_container = QWidget()
+        checkbox_container.setStyleSheet("QWidget { background-color: transparent; border: none; }")
+        checkbox_layout = QHBoxLayout(checkbox_container)
+        checkbox_layout.setContentsMargins(0, 0, 0, 0)
+        checkbox_layout.setSpacing(10)
+        
         self.use_link_checkbox = QCheckBox("사용")
         self.use_link_checkbox.setChecked(False)
         self.use_link_checkbox.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
-        self.use_link_checkbox.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent; border: none; margin-left: 10px;")
+        self.use_link_checkbox.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent; border: none;")
         self.use_link_checkbox.stateChanged.connect(self.toggle_external_link)
-        link_card.header.layout().insertWidget(1, self.use_link_checkbox)
+        checkbox_layout.addWidget(self.use_link_checkbox)
+        
+        self.link_status_label = QLabel("OFF")
+        self.link_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.link_status_label.setMinimumWidth(40)
+        self.link_status_label.setMaximumHeight(22)
+        self.link_status_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: {NAVER_RED};
+                color: white;
+                border-radius: 6px;
+                padding: 2px 6px;
+                font-size: 13px;
+                font-weight: bold;
+            }}
+        """)
+        checkbox_layout.addWidget(self.link_status_label)
+        
+        link_card.header.layout().insertWidget(1, checkbox_container)
         
         # 공백 유지를 위한 더미 위젯 (항상 표시)
         link_card.header.layout().addStretch()
@@ -1975,11 +2704,12 @@ class NaverBlogGUI(QMainWindow):
         self.link_url_entry.setPlaceholderText("https://example.com")
         self.link_url_entry.setText("https://example.com")
         self.link_url_entry.setEnabled(False)
+        self.link_url_entry.setCursorPosition(0)
         self.link_url_entry.setStyleSheet(f"""
             QLineEdit {{
                 border: 2px solid {NAVER_BORDER};
                 border-radius: 10px;
-                padding: 10px;
+                padding: 6px;
                 background-color: {NAVER_BG};
                 color: {NAVER_TEXT_SUB};
                 font-size: 13px;
@@ -1992,6 +2722,7 @@ class NaverBlogGUI(QMainWindow):
                 border-color: {NAVER_GREEN};
             }}
         """)
+        self.link_url_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
         self.link_url_entry.focusInEvent = lambda e: self._clear_example_text(self.link_url_entry, "https://example.com") if self.link_url_entry.isEnabled() else None
         url_layout.addWidget(self.link_url_entry)
         link_grid.addWidget(url_widget, 0, 0)
@@ -2010,11 +2741,12 @@ class NaverBlogGUI(QMainWindow):
         emoji_font = QFont("Segoe UI Emoji, " + self.font_family, 13)
         self.link_text_entry.setFont(emoji_font)
         
+        self.link_text_entry.setCursorPosition(0)
         self.link_text_entry.setStyleSheet(f"""
             QLineEdit {{
                 border: 2px solid {NAVER_BORDER};
                 border-radius: 10px;
-                padding: 10px;
+                padding: 6px;
                 background-color: {NAVER_BG};
                 color: {NAVER_TEXT_SUB};
                 font-size: 13px;
@@ -2027,6 +2759,7 @@ class NaverBlogGUI(QMainWindow):
                 border-color: {NAVER_GREEN};
             }}
         """)
+        self.link_text_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
         self.link_text_entry.focusInEvent = lambda e: self._clear_example_text(self.link_text_entry, "더 알아보기") if self.link_text_entry.isEnabled() else None
         text_layout.addWidget(self.link_text_entry)
         link_grid.addWidget(text_widget, 0, 1)
@@ -2035,12 +2768,12 @@ class NaverBlogGUI(QMainWindow):
         
         link_save_btn = QPushButton("💾 링크 설정 저장")
         link_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        link_save_btn.setStyleSheet(f"background-color: {NAVER_GREEN}; padding: 8px 20px; font-size: 13px;")
+        link_save_btn.setStyleSheet(f"background-color: {NAVER_GREEN}; padding: 10px 24px; font-size: 13px; font-weight: bold;")
         link_save_btn.clicked.connect(self.save_link_settings)
+        link_card.content_layout.addStretch()
         link_card.content_layout.addWidget(link_save_btn)
         
-        # 카드 크기 최소화
-        link_card.setMaximumHeight(link_card.sizeHint().height())
+        link_card.setMinimumHeight(240)
         
         layout.addWidget(link_card, 1, 0)
         
@@ -2048,7 +2781,29 @@ class NaverBlogGUI(QMainWindow):
         self.toggle_external_link()
         
         # === Row 1, Col 1: API 키 설정 ===
-        api_card = PremiumCard("API 키 설정", "🔑")
+        api_card = PremiumCard("🔑 API 키 설정", "")
+        
+        # 카드 헤더에 API 발급 방법 버튼 추가
+        api_help_btn_header = QPushButton("❓ API 발급 방법")
+        api_help_btn_header.setCursor(Qt.CursorShape.PointingHandCursor)
+        api_help_btn_header.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {NAVER_BLUE};
+                border: none;
+                border-radius: 8px;
+                color: white;
+                font-size: 13px;
+                font-weight: bold;
+                padding: 6px 12px;
+            }}
+            QPushButton:hover {{
+                background-color: #0066E6;
+            }}
+        """)
+        api_help_btn_header.clicked.connect(self.show_api_help)
+        api_card.header_layout.addWidget(api_help_btn_header)
+        
+        api_card.content_layout.addStretch()
         
         api_grid = QGridLayout()
         api_grid.setColumnStretch(0, 1)
@@ -2067,6 +2822,7 @@ class NaverBlogGUI(QMainWindow):
         self.gpt_api_entry = QLineEdit()
         self.gpt_api_entry.setPlaceholderText("GPT API 키")
         self.gpt_api_entry.setEchoMode(QLineEdit.EchoMode.Password)
+        self.gpt_api_entry.setCursorPosition(0)
         self.gpt_api_entry.setStyleSheet(f"""
             QLineEdit {{
                 border: 2px solid {NAVER_BORDER};
@@ -2080,25 +2836,33 @@ class NaverBlogGUI(QMainWindow):
                 border-color: {NAVER_GREEN};
             }}
         """)
+        self.gpt_api_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
         gpt_api_input_layout.addWidget(self.gpt_api_entry)
         
-        self.gpt_toggle_btn = QPushButton("👁️")
+        # GPT 토글 버튼과 상태 라벨
+        gpt_toggle_container = QVBoxLayout()
+        gpt_toggle_container.setSpacing(2)
+        
+        self.gpt_toggle_btn = QPushButton("비공개")
         self.gpt_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.gpt_toggle_btn.setFixedSize(40, 35)
+        self.gpt_toggle_btn.setMinimumSize(70, 34)
         self.gpt_toggle_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {NAVER_TEXT_SUB};
                 border: none;
-                border-radius: 8px;
+                border-radius: 6px;
                 color: white;
                 font-size: 13px;
+                font-weight: bold;
             }}
             QPushButton:hover {{
                 background-color: {NAVER_TEXT};
             }}
         """)
         self.gpt_toggle_btn.clicked.connect(self.toggle_gpt_api_key)
-        gpt_api_input_layout.addWidget(self.gpt_toggle_btn)
+        gpt_toggle_container.addWidget(self.gpt_toggle_btn)
+        
+        gpt_api_input_layout.addLayout(gpt_toggle_container)
         gpt_api_layout.addLayout(gpt_api_input_layout)
         
         api_grid.addWidget(gpt_api_widget, 0, 0)
@@ -2116,6 +2880,7 @@ class NaverBlogGUI(QMainWindow):
         self.gemini_api_entry = QLineEdit()
         self.gemini_api_entry.setPlaceholderText("Gemini API 키")
         self.gemini_api_entry.setEchoMode(QLineEdit.EchoMode.Password)
+        self.gemini_api_entry.setCursorPosition(0)
         self.gemini_api_entry.setStyleSheet(f"""
             QLineEdit {{
                 border: 2px solid {NAVER_BORDER};
@@ -2129,25 +2894,33 @@ class NaverBlogGUI(QMainWindow):
                 border-color: {NAVER_GREEN};
             }}
         """)
+        self.gemini_api_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
         gemini_api_input_layout.addWidget(self.gemini_api_entry)
         
-        self.gemini_toggle_btn = QPushButton("👁️")
+        # Gemini 토글 버튼과 상태 라벨
+        gemini_toggle_container = QVBoxLayout()
+        gemini_toggle_container.setSpacing(2)
+        
+        self.gemini_toggle_btn = QPushButton("비공개")
         self.gemini_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.gemini_toggle_btn.setFixedSize(40, 35)
+        self.gemini_toggle_btn.setMinimumSize(70, 34)
         self.gemini_toggle_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {NAVER_TEXT_SUB};
                 border: none;
-                border-radius: 8px;
+                border-radius: 6px;
                 color: white;
                 font-size: 13px;
+                font-weight: bold;
             }}
             QPushButton:hover {{
                 background-color: {NAVER_TEXT};
             }}
         """)
         self.gemini_toggle_btn.clicked.connect(self.toggle_gemini_api_key)
-        gemini_api_input_layout.addWidget(self.gemini_toggle_btn)
+        gemini_toggle_container.addWidget(self.gemini_toggle_btn)
+        
+        gemini_api_input_layout.addLayout(gemini_toggle_container)
         gemini_api_layout.addLayout(gemini_api_input_layout)
         
         api_grid.addWidget(gemini_api_widget, 0, 1)
@@ -2159,25 +2932,27 @@ class NaverBlogGUI(QMainWindow):
         
         api_save_btn = QPushButton("💾 API 키 저장")
         api_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        api_save_btn.setStyleSheet(f"background-color: {NAVER_GREEN}; padding: 8px 20px; font-size: 13px;")
+        api_save_btn.setStyleSheet(f"background-color: {NAVER_GREEN}; padding: 10px 24px; font-size: 13px; font-weight: bold;")
         api_save_btn.clicked.connect(self.save_api_key)
         api_button_layout.addWidget(api_save_btn)
         
+        api_card.content_layout.addStretch()
         api_card.content_layout.addLayout(api_button_layout)
         
-        # 카드 크기 최소화
-        api_card.setMaximumHeight(api_card.sizeHint().height())
+        api_card.setMinimumHeight(240)
         
         layout.addWidget(api_card, 1, 1)
         
         # === Row 2, Col 0: 파일 관리 ===
         file_card = PremiumCard("파일 관리", "📁")
         
+        file_card.content_layout.addStretch()
+        
         file_grid = QGridLayout()
         file_grid.setColumnStretch(0, 1)
         file_grid.setColumnStretch(1, 1)
         
-        # 키워드 파일
+        # Row 0: 키워드 파일 | 프롬프트1 (제목+서론)
         keyword_widget = QWidget()
         keyword_widget.setStyleSheet("QWidget { background-color: transparent; }")
         keyword_layout = QHBoxLayout(keyword_widget)
@@ -2186,63 +2961,131 @@ class NaverBlogGUI(QMainWindow):
         
         keyword_label = PremiumCard.create_section_label("📝 키워드 파일", self.font_family)
         keyword_layout.addWidget(keyword_label)
+        keyword_layout.addStretch()
         
         keyword_open_btn = QPushButton("📂 열기")
         keyword_open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        keyword_open_btn.setFixedSize(75, 24)
         keyword_open_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {NAVER_BLUE};
                 border: none;
-                border-radius: 8px;
+                border-radius: 6px;
                 color: white;
                 font-size: 13px;
                 font-weight: bold;
-                padding: 6px 12px;
+                padding: 0px;
             }}
             QPushButton:hover {{
                 background-color: #0066E6;
             }}
         """)
-        keyword_open_btn.clicked.connect(lambda: self.open_file("keywords.txt"))
-        keyword_layout.addWidget(keyword_open_btn, 1)
+        keyword_open_btn.clicked.connect(lambda: self.open_file("setting/keywords.txt"))
+        keyword_layout.addWidget(keyword_open_btn)
         
         file_grid.addWidget(keyword_widget, 0, 0)
         
-        # 프롬프트 파일
-        prompt_widget = QWidget()
-        prompt_widget.setStyleSheet("QWidget { background-color: transparent; }")
-        prompt_layout = QHBoxLayout(prompt_widget)
-        prompt_layout.setContentsMargins(0, 0, 0, 0)
-        prompt_layout.setSpacing(10)
+        prompt1_widget = QWidget()
+        prompt1_widget.setStyleSheet("QWidget { background-color: transparent; }")
+        prompt1_layout = QHBoxLayout(prompt1_widget)
+        prompt1_layout.setContentsMargins(0, 0, 0, 0)
+        prompt1_layout.setSpacing(10)
         
-        prompt_label = PremiumCard.create_section_label("💬 프롬프트 파일", self.font_family)
-        prompt_layout.addWidget(prompt_label)
+        prompt1_label = PremiumCard.create_section_label("💬 프롬프트1 (제목+서론)", self.font_family)
+        prompt1_layout.addWidget(prompt1_label)
+        prompt1_layout.addStretch()
         
-        prompt_open_btn = QPushButton("📂 열기")
-        prompt_open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        prompt_open_btn.setStyleSheet(f"""
+        prompt1_open_btn = QPushButton("📂 열기")
+        prompt1_open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        prompt1_open_btn.setFixedSize(75, 24)
+        prompt1_open_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {NAVER_BLUE};
                 border: none;
-                border-radius: 8px;
+                border-radius: 6px;
                 color: white;
                 font-size: 13px;
                 font-weight: bold;
-                padding: 6px 12px;
+                padding: 0px;
             }}
             QPushButton:hover {{
                 background-color: #0066E6;
             }}
         """)
-        prompt_open_btn.clicked.connect(lambda: self.open_file("prompt.txt"))
-        prompt_layout.addWidget(prompt_open_btn, 1)
+        prompt1_open_btn.clicked.connect(lambda: self.open_file("setting/prompt1.txt"))
+        prompt1_layout.addWidget(prompt1_open_btn)
         
-        file_grid.addWidget(prompt_widget, 0, 1)
+        file_grid.addWidget(prompt1_widget, 0, 1)
+        
+        # Row 1: 썸네일 폴더 | 프롬프트2 (소제목+본문)
+        thumbnail_widget = QWidget()
+        thumbnail_widget.setStyleSheet("QWidget { background-color: transparent; }")
+        thumbnail_layout = QHBoxLayout(thumbnail_widget)
+        thumbnail_layout.setContentsMargins(0, 0, 0, 0)
+        thumbnail_layout.setSpacing(10)
+        
+        thumbnail_label = PremiumCard.create_section_label("🖼️ 썸네일 폴더", self.font_family)
+        thumbnail_layout.addWidget(thumbnail_label)
+        thumbnail_layout.addStretch()
+        
+        thumbnail_open_btn = QPushButton("📂 열기")
+        thumbnail_open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        thumbnail_open_btn.setFixedSize(75, 24)
+        thumbnail_open_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {NAVER_BLUE};
+                border: none;
+                border-radius: 6px;
+                color: white;
+                font-size: 13px;
+                font-weight: bold;
+                padding: 0px;
+            }}
+            QPushButton:hover {{
+                background-color: #0066E6;
+            }}
+        """)
+        thumbnail_open_btn.clicked.connect(lambda: self.open_file("setting/image"))
+        thumbnail_layout.addWidget(thumbnail_open_btn)
+        
+        file_grid.addWidget(thumbnail_widget, 1, 0)
+        
+        prompt2_widget = QWidget()
+        prompt2_widget.setStyleSheet("QWidget { background-color: transparent; }")
+        prompt2_layout = QHBoxLayout(prompt2_widget)
+        prompt2_layout.setContentsMargins(0, 0, 0, 0)
+        prompt2_layout.setSpacing(10)
+        
+        prompt2_label = PremiumCard.create_section_label("💬 프롬프트2 (소제목+본문)", self.font_family)
+        prompt2_layout.addWidget(prompt2_label)
+        prompt2_layout.addStretch()
+        
+        prompt2_open_btn = QPushButton("📂 열기")
+        prompt2_open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        prompt2_open_btn.setFixedSize(75, 24)
+        prompt2_open_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {NAVER_BLUE};
+                border: none;
+                border-radius: 6px;
+                color: white;
+                font-size: 13px;
+                font-weight: bold;
+                padding: 0px;
+            }}
+            QPushButton:hover {{
+                background-color: #0066E6;
+            }}
+        """)
+        prompt2_open_btn.clicked.connect(lambda: self.open_file("setting/prompt2.txt"))
+        prompt2_layout.addWidget(prompt2_open_btn)
+        
+        file_grid.addWidget(prompt2_widget, 1, 1)
         
         file_card.content_layout.addLayout(file_grid)
+        file_card.content_layout.addStretch()
         
-        # 카드 크기 최소화
-        file_card.setMaximumHeight(file_card.sizeHint().height())
+        file_card.setMinimumHeight(160)
         
         layout.addWidget(file_card, 2, 0)
         
@@ -2250,6 +3093,8 @@ class NaverBlogGUI(QMainWindow):
         ai_card = PremiumCard("AI 모델 선택", "🤖")
         
         from PyQt6.QtWidgets import QButtonGroup
+        
+        ai_card.content_layout.addStretch()
         
         ai_grid = QGridLayout()
         ai_grid.setColumnStretch(0, 1)
@@ -2290,9 +3135,9 @@ class NaverBlogGUI(QMainWindow):
         ai_grid.addWidget(gpt_widget, 0, 1)
         
         ai_card.content_layout.addLayout(ai_grid)
+        ai_card.content_layout.addStretch()
         
-        # 카드 크기 최소화
-        ai_card.setMaximumHeight(ai_card.sizeHint().height())
+        ai_card.setMinimumHeight(160)
         
         layout.addWidget(ai_card, 2, 1)
         
@@ -2386,12 +3231,51 @@ class NaverBlogGUI(QMainWindow):
         interval = self.interval_entry.text() or "10"
         self.interval_label.setText(f"⏱️ 발행 간격: {interval}분")
     
+    def _update_license_info(self):
+        """라이선스 정보 업데이트"""
+        try:
+            license_manager = LicenseManager()
+            license_info = license_manager.get_license_info()
+            
+            if license_info:
+                expire_date = license_info.get("expire_date", "")
+                if expire_date:
+                    # 날짜 파싱 및 포맷팅
+                    try:
+                        from datetime import datetime
+                        expire_dt = datetime.strptime(expire_date, "%Y-%m-%d")
+                        today = datetime.now()
+                        days_left = (expire_dt - today).days
+                        
+                        if days_left > 0:
+                            self.license_period_label.setText(f"📅 사용기간: ~ {expire_date} (D-{days_left})")
+                            self.license_period_label.setStyleSheet(f"color: #2E7D32; border: none;")
+                        elif days_left == 0:
+                            self.license_period_label.setText(f"📅 사용기간: 오늘까지")
+                            self.license_period_label.setStyleSheet(f"color: #F57C00; border: none;")
+                        else:
+                            self.license_period_label.setText(f"📅 사용기간: 만료됨")
+                            self.license_period_label.setStyleSheet(f"color: #D32F2F; border: none;")
+                    except:
+                        self.license_period_label.setText(f"📅 사용기간: ~ {expire_date}")
+                        self.license_period_label.setStyleSheet(f"color: #000000; border: none;")
+                else:
+                    self.license_period_label.setText("📅 사용기간: 무제한")
+                    self.license_period_label.setStyleSheet(f"color: #2E7D32; border: none;")
+            else:
+                self.license_period_label.setText("📅 사용기간: 확인 실패")
+                self.license_period_label.setStyleSheet(f"color: #D32F2F; border: none;")
+        except Exception as e:
+            self.license_period_label.setText("📅 사용기간: 확인 실패")
+            self.license_period_label.setStyleSheet(f"color: #D32F2F; border: none;")
+    
     def count_keywords(self):
         """키워드 개수 카운트"""
         try:
-            if os.path.exists("keywords.txt"):
-                with open("keywords.txt", "r", encoding="utf-8") as f:
-                    return len([line.strip() for line in f if line.strip()])
+            keywords_file = os.path.join("setting", "keywords.txt")
+            if os.path.exists(keywords_file):
+                with open(keywords_file, "r", encoding="utf-8") as f:
+                    return len([line.strip() for line in f if line.strip() and not line.strip().startswith('#')])
         except:
             pass
         return 0
@@ -2409,22 +3293,28 @@ class NaverBlogGUI(QMainWindow):
         """GPT API 키 표시/숨김"""
         if self.gpt_api_entry.echoMode() == QLineEdit.EchoMode.Password:
             self.gpt_api_entry.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.gpt_toggle_btn.setText("공개")
         else:
             self.gpt_api_entry.setEchoMode(QLineEdit.EchoMode.Password)
+            self.gpt_toggle_btn.setText("비공개")
     
     def toggle_gemini_api_key(self):
         """Gemini API 키 표시/숨김"""
         if self.gemini_api_entry.echoMode() == QLineEdit.EchoMode.Password:
             self.gemini_api_entry.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.gemini_toggle_btn.setText("공개")
         else:
             self.gemini_api_entry.setEchoMode(QLineEdit.EchoMode.Password)
+            self.gemini_toggle_btn.setText("비공개")
     
     def toggle_password(self):
         """비밀번호 표시/숨김"""
         if self.naver_pw_entry.echoMode() == QLineEdit.EchoMode.Password:
             self.naver_pw_entry.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.pw_toggle_btn.setText("공개")
         else:
             self.naver_pw_entry.setEchoMode(QLineEdit.EchoMode.Password)
+            self.pw_toggle_btn.setText("비공개")
     
     def toggle_external_link(self):
         """외부 링크 활성화/비활성화"""
@@ -2434,10 +3324,33 @@ class NaverBlogGUI(QMainWindow):
         self.link_url_entry.setEnabled(enabled)
         self.link_text_entry.setEnabled(enabled)
         
-        # 체크 시 링크 URL에 자동 포커스 및 텍스트 선택
+        # ON/OFF 라벨 업데이트
         if enabled:
+            self.link_status_label.setText("ON")
+            self.link_status_label.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {NAVER_GREEN};
+                    color: white;
+                    border-radius: 8px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                    font-weight: bold;
+                }}
+            """)
             self.link_url_entry.setFocus()
             self.link_url_entry.selectAll()
+        else:
+            self.link_status_label.setText("OFF")
+            self.link_status_label.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {NAVER_RED};
+                    color: white;
+                    border-radius: 8px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                    font-weight: bold;
+                }}
+            """)
     
     def _clear_example_text(self, widget, example_text):
         """예시 텍스트 삭제"""
@@ -2445,21 +3358,49 @@ class NaverBlogGUI(QMainWindow):
             widget.clear()
     
     def open_file(self, filename):
-        """파일 열기"""
+        """파일 또는 폴더 열기"""
         import subprocess
         import platform
         
-        file_path = os.path.join(os.getcwd(), filename)
+        file_path = os.path.join(self.data_dir, filename)
         
+        # 폴더인 경우
+        if filename.endswith(('image', 'result')) or os.path.isdir(file_path):
+            if not os.path.exists(file_path):
+                try:
+                    os.makedirs(file_path, exist_ok=True)
+                    self.show_message("폴더 생성", f"{filename} 폴더를 생성했습니다.", "info")
+                except Exception as e:
+                    self.show_message("오류", f"폴더 생성 실패: {str(e)}", "error")
+                    return
+            
+            # 폴더 열기
+            try:
+                if platform.system() == 'Windows':
+                    os.startfile(file_path)
+                elif platform.system() == 'Darwin':  # macOS
+                    subprocess.run(['open', file_path])
+                else:  # Linux
+                    subprocess.run(['xdg-open', file_path])
+            except Exception as e:
+                self.show_message("오류", f"폴더 열기 실패: {str(e)}", "error")
+            return
+        
+        # 파일인 경우
         if not os.path.exists(file_path):
             # 파일이 없으면 생성
             try:
+                # 디렉토리 생성
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                
                 with open(file_path, "w", encoding="utf-8") as f:
-                    if filename == "keywords.txt":
+                    if "keywords.txt" in filename:
                         f.write("# 키워드를 한 줄에 하나씩 입력하세요\n")
-                    elif filename == "prompt.txt":
-                        f.write("# AI 프롬프트를 입력하세요\n")
-                self.show_message("파일 생성", f"{filename} 파일을 생성했습니다.", "info")
+                    elif "prompt1.txt" in filename:
+                        f.write("# 제목과 서론 생성을 위한 AI 프롬프트를 입력하세요\n")
+                    elif "prompt2.txt" in filename:
+                        f.write("# 소제목과 본문 생성을 위한 AI 프롬프트를 입력하세요\n")
+                self.show_message("파일 생성", f"{os.path.basename(filename)} 파일을 생성했습니다.", "info")
             except Exception as e:
                 self.show_message("오류", f"파일 생성 실패: {str(e)}", "error")
                 return
@@ -2473,7 +3414,7 @@ class NaverBlogGUI(QMainWindow):
             else:  # Linux
                 subprocess.run(['xdg-open', file_path])
         except Exception as e:
-            QMessageBox.critical(self, "오류", f"파일 열기 실패: {str(e)}")
+            self.show_message("오류", f"파일 열기 실패: {str(e)}", "error")
     
     def save_api_key(self):
         """API 키 저장"""
@@ -2545,16 +3486,16 @@ class NaverBlogGUI(QMainWindow):
         except:
             interval = 10
         
-        # 첫 시작일 때는 발행 간격 0, 아니면 설정된 간격 사용
-        wait_interval = 0 if is_first_start else interval
+        # 모든 포스팅에 발행 간격 적용 (첫 포스팅도 대기)
+        wait_interval = interval
         
-        # 첫 시작일 때는 즉시 포스팅 시작 (발행 간격 대기 없음)
+        # 대기 안내 메시지
         if is_first_start:
-            self.update_progress_status("🚀 첫 포스팅을 즉시 시작합니다...")
-            print("🚀 첫 포스팅을 즉시 시작합니다...")
+            self.update_progress_status(f"⏰ 발행 간격 {interval}분 대기 후 첫 포스팅을 시작합니다...")
+            print(f"⏰ 발행 간격 {interval}분 대기 후 첫 포스팅을 시작합니다...")
         else:
-            self.update_progress_status(f"⏰ 발행 간격 {interval}분 대기 후 포스팅을 시작합니다...")
-            print(f"⏰ 발행 간격 {interval}분 대기 후 포스팅을 시작합니다...")
+            self.update_progress_status(f"⏰ 발행 간격 {interval}분 대기 후 다음 포스팅을 시작합니다...")
+            print(f"⏰ 발행 간격 {interval}분 대기 후 다음 포스팅을 시작합니다...")
         
         # 진행 상태 업데이트
         self.update_progress_status("🚀 포스팅 프로세스를 시작합니다...")
@@ -2566,24 +3507,48 @@ class NaverBlogGUI(QMainWindow):
                 external_link = self.link_url_entry.text() if self.use_link_checkbox.isChecked() else ""
                 external_link_text = self.link_text_entry.text() if self.use_link_checkbox.isChecked() else ""
                 
-                # 자동화 인스턴스 생성 및 저장
-                self.automation = NaverBlogAutomation(
-                    naver_id=self.naver_id_entry.text(),
-                    naver_pw=self.naver_pw_entry.text(),
-                    api_key=api_key,
-                    ai_model=ai_model,
-                    theme="",
-                    open_type="전체공개",
-                    external_link=external_link,
-                    external_link_text=external_link_text,
-                    publish_time="now",
-                    scheduled_hour="00",
-                    scheduled_minute="00",
-                    callback=self.log_message
-                )
+                # 첫 실행시에만 자동화 인스턴스 생성
+                if is_first_start:
+                    self.automation = NaverBlogAutomation(
+                        naver_id=self.naver_id_entry.text(),
+                        naver_pw=self.naver_pw_entry.text(),
+                        api_key=api_key,
+                        ai_model=ai_model,
+                        theme="",
+                        open_type="전체공개",
+                        external_link=external_link,
+                        external_link_text=external_link_text,
+                        publish_time="now",
+                        scheduled_hour="00",
+                        scheduled_minute="00",
+                        callback=self.log_message
+                    )
                 
-                # 자동화 실행
-                self.automation.run(wait_interval)
+                # 자동화 실행 (첫 실행 여부 전달)
+                result = self.automation.run(wait_interval, is_first_run=is_first_start)
+                
+                # 키워드 부족으로 중지된 경우 처리
+                if result is False:
+                    self.update_progress_status("⏹️ 키워드가 없어 프로그램을 중지합니다.")
+                    print("⏹️ 키워드 부족으로 자동 중지됨")
+                    
+                    # 중지 처리
+                    self.is_running = False
+                    self.start_btn.setEnabled(True)
+                    self.stop_btn.setEnabled(False)
+                    self.pause_btn.setEnabled(False)
+                    self.resume_btn.setEnabled(False)
+                    
+                    # 사용자에게 알림
+                    from PyQt6.QtWidgets import QMessageBox
+                    msg_box = QMessageBox()
+                    msg_box.setWindowTitle("⚠️ 키워드 부족")
+                    msg_box.setIcon(QMessageBox.Icon.Warning)
+                    msg_box.setText("더 이상 사용 가능한 키워드가 없습니다.")
+                    msg_box.setInformativeText("keywords.txt 파일에 새로운 키워드를 추가해주세요.")
+                    msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+                    msg_box.exec()
+                    return
                 
                 self.update_progress_status("✅ 포스팅이 완료되었습니다!")
                 print("✅ 포스팅이 완료되었습니다!")
@@ -2677,6 +3642,22 @@ class NaverBlogGUI(QMainWindow):
     
     def log_message(self, message):
         """로그 메시지 출력 및 진행 상태 업데이트 (중복 방지)"""
+        # 키워드 관련 특수 메시지 처리
+        if message.startswith("KEYWORD_"):
+            if message == "KEYWORD_EMPTY":
+                # 메인 스레드에서 메시지 박스 표시
+                QTimer.singleShot(0, lambda: self.show_keyword_empty_dialog())
+                return
+            elif message.startswith("KEYWORD_LOW:"):
+                keyword_count = message.split(":")[1]
+                # 메인 스레드에서 메시지 박스 표시
+                QTimer.singleShot(0, lambda: self.show_keyword_low_dialog(keyword_count))
+                return
+            elif message == "KEYWORD_FILE_MISSING":
+                # 메인 스레드에서 메시지 박스 표시
+                QTimer.singleShot(0, lambda: self.show_keyword_file_missing_dialog())
+                return
+        
         # 중복 메시지 방지
         if not hasattr(self, '_last_log_message') or self._last_log_message != message:
             self._last_log_message = message
@@ -2744,6 +3725,69 @@ class NaverBlogGUI(QMainWindow):
             print(f"로그 업데이트 오류: {e}")
             print(f"⚠️ 진행 상태 업데이트 오류: {e}")
     
+    def show_keyword_empty_dialog(self):
+        """키워드 없음 다이얼로그 표시 (메인 스레드)"""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Critical)
+        msg.setWindowTitle("키워드 없음")
+        msg.setText("키워드가 모두 소진되었습니다.")
+        msg.setInformativeText("setting/keywords.txt 파일에 키워드를 추가해주세요.\n\n프로그램을 종료합니다.")
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        
+        # 글자 크기 줄이기
+        msg.setStyleSheet("""
+            QMessageBox {
+                font-size: 11px;
+            }
+            QMessageBox QLabel {
+                font-size: 11px;
+            }
+        """)
+        
+        msg.exec()
+    
+    def show_keyword_low_dialog(self, keyword_count):
+        """키워드 부족 다이얼로그 표시 (메인 스레드)"""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setWindowTitle("키워드 부족 경고")
+        msg.setText(f"키워드가 {keyword_count}개 남았습니다!")
+        msg.setInformativeText("30개 미만으로 키워드가 부족합니다.\nsetting/keywords.txt 파일에 키워드를 추가해주세요.")
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        
+        # 글자 크기 줄이기
+        msg.setStyleSheet("""
+            QMessageBox {
+                font-size: 11px;
+            }
+            QMessageBox QLabel {
+                font-size: 11px;
+            }
+        """)
+        
+        msg.exec()
+    
+    def show_keyword_file_missing_dialog(self):
+        """키워드 파일 없음 다이얼로그 표시 (메인 스레드)"""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Critical)
+        msg.setWindowTitle("파일 없음")
+        msg.setText("keywords.txt 파일이 없습니다.")
+        msg.setInformativeText("setting/keywords.txt 파일을 만들고 키워드를 추가해주세요.")
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        
+        # 글자 크기 줄이기
+        msg.setStyleSheet("""
+            QMessageBox {
+                font-size: 11px;
+            }
+            QMessageBox QLabel {
+                font-size: 11px;
+            }
+        """)
+        
+        msg.exec()
+    
     def mousePressEvent(self, event):
         """마우스 클릭 시 드래그 시작"""
         if event.button() == Qt.MouseButton.LeftButton:
@@ -2763,11 +3807,227 @@ class NaverBlogGUI(QMainWindow):
 
 
 if __name__ == "__main__":
+    # 1. 라이선스 체크 (Google Spreadsheet 기반)
+    license_manager = LicenseManager()
+    is_valid, message = license_manager.verify_license()
+    
+    if not is_valid:
+        # GUI 없이 에러 메시지 표시
+        app = QApplication(sys.argv)
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QWidget, QHBoxLayout
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QFont
+        
+        # 커스텀 다이얼로그 생성
+        dialog = QDialog()
+        dialog.setWindowTitle("🔒 프로그램 사용 권한")
+        dialog.setMinimumWidth(500)
+        dialog.setMinimumHeight(350)
+        
+        layout = QVBoxLayout()
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+        
+        # 경고 아이콘과 제목
+        warning_container = QWidget()
+        warning_layout = QHBoxLayout(warning_container)
+        warning_layout.setContentsMargins(0, 0, 0, 0)
+        warning_layout.setSpacing(15)
+        
+        warning_icon = QLabel("⚠")
+        warning_icon.setFont(QFont("Segoe UI Emoji", 36))
+        warning_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        warning_layout.addWidget(warning_icon)
+        
+        warning_text = QLabel("등록되지 않은 사용자입니다.")
+        warning_text.setFont(QFont("맑은 고딕", 16, QFont.Weight.Bold))
+        warning_text.setStyleSheet("color: #D32F2F;")
+        warning_layout.addWidget(warning_text)
+        warning_layout.addStretch()
+        
+        layout.addWidget(warning_container)
+        
+        # IP 정보 카드
+        ip_card = QWidget()
+        ip_card.setStyleSheet("""
+            QWidget {
+                background-color: #FFF3E0;
+                border-radius: 12px;
+                padding: 20px;
+            }
+        """)
+        ip_layout = QVBoxLayout(ip_card)
+        ip_layout.setSpacing(10)
+        
+        ip_label = QLabel(f"현재 IP: {license_manager.get_local_ip()}")
+        ip_label.setFont(QFont("맑은 고딕", 14, QFont.Weight.Bold))
+        ip_label.setStyleSheet("color: #E65100; background: transparent; padding: 0;")
+        ip_layout.addWidget(ip_label)
+        
+        info_label = QLabel("판매자에게 위 IP를 알려주세요.")
+        info_label.setFont(QFont("맑은 고딕", 12))
+        info_label.setStyleSheet("color: #424242; background: transparent; padding: 0;")
+        ip_layout.addWidget(info_label)
+        
+        layout.addWidget(ip_card)
+        
+        # 안내 카드
+        guide_card = QWidget()
+        guide_card.setStyleSheet("""
+            QWidget {
+                background-color: #E3F2FD;
+                border-radius: 12px;
+                padding: 20px;
+            }
+        """)
+        guide_layout = QVBoxLayout(guide_card)
+        guide_layout.setSpacing(8)
+        
+        guide_title = QLabel("📋 판매자에게 다음 정보를 전달하세요")
+        guide_title.setFont(QFont("맑은 고딕", 11, QFont.Weight.Bold))
+        guide_title.setStyleSheet("color: #1565C0; background: transparent; padding: 0;")
+        guide_layout.addWidget(guide_title)
+        
+        # IP 주소와 복사 버튼
+        ip_row = QWidget()
+        ip_row.setStyleSheet("background: transparent;")
+        ip_row_layout = QHBoxLayout(ip_row)
+        ip_row_layout.setContentsMargins(0, 0, 0, 0)
+        ip_row_layout.setSpacing(15)
+        
+        ip_info = QLabel(f"🌐 IP 주소    {license_manager.get_local_ip()}")
+        ip_info.setFont(QFont("맑은 고딕", 10))
+        ip_info.setStyleSheet("color: #424242; background: transparent; padding: 0;")
+        ip_row_layout.addWidget(ip_info)
+        
+        copy_btn = QPushButton("📋 복사")
+        copy_btn.setFont(QFont("맑은 고딕", 9, QFont.Weight.Bold))
+        copy_btn.setMinimumHeight(28)
+        copy_btn.setMinimumWidth(70)
+        copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        copy_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1976D2;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background-color: #1565C0;
+            }
+            QPushButton:pressed {
+                background-color: #0D47A1;
+            }
+        """)
+        
+        def copy_ip():
+            from PyQt6.QtWidgets import QApplication
+            clipboard = QApplication.clipboard()
+            clipboard.setText(license_manager.get_local_ip())
+            copy_btn.setText("✓ 복사됨")
+            copy_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 5px 10px;
+                }
+            """)
+        
+        copy_btn.clicked.connect(copy_ip)
+        ip_row_layout.addWidget(copy_btn)
+        ip_row_layout.addStretch()
+        
+        guide_layout.addWidget(ip_row)
+        
+        layout.addWidget(guide_card)
+        
+        # 참고 메시지
+        note_label = QLabel("💡 참고: 위 IP 주소를 판매자에게 보내면 프로그램 사용 권한을 등록할 수 있습니다.")
+        note_label.setFont(QFont("맑은 고딕", 9))
+        note_label.setStyleSheet("color: #757575;")
+        note_label.setWordWrap(True)
+        layout.addWidget(note_label)
+        
+        layout.addStretch()
+        
+        # 확인 버튼
+        button_container = QWidget()
+        button_layout = QHBoxLayout(button_container)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.addStretch()
+        
+        ok_button = QPushButton("확인")
+        ok_button.setFont(QFont("맑은 고딕", 11, QFont.Weight.Bold))
+        ok_button.setMinimumWidth(120)
+        ok_button.setMinimumHeight(45)
+        ok_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        ok_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 30px;
+            }
+            QPushButton:hover {
+                background-color: #45A049;
+            }
+            QPushButton:pressed {
+                background-color: #3D8B40;
+            }
+        """)
+        ok_button.clicked.connect(dialog.close)
+        button_layout.addWidget(ok_button)
+        
+        layout.addWidget(button_container)
+        
+        dialog.setLayout(layout)
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: white;
+            }
+        """)
+        
+        dialog.exec()
+        
+        sys.exit(1)
+    
+    # Windows 작업 표시줄 아이콘 설정 (AppUserModelID)
+    if sys.platform == 'win32':
+        try:
+            # 고유한 AppUserModelID 설정하여 작업 표시줄 아이콘 그룹화
+            myappid = 'naver.autoblog.v5.1'
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except:
+            pass
+    
     app = QApplication(sys.argv)
+    
+    # 애플리케이션 아이콘 설정
+    if getattr(sys, 'frozen', False):
+        # PyInstaller로 빌드된 경우
+        base_dir = sys._MEIPASS
+    else:
+        # 개발 환경
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    icon_path = os.path.join(base_dir, "setting", "david153.ico")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
     
     # UTF-8 환경 확인
     print(f"✅ 시스템 인코딩: {sys.getdefaultencoding()}")
     print(f"✅ 파일 시스템 인코딩: {sys.getfilesystemencoding()}")
+    print(f"✅ {message}")
+    
+    # 라이선스 정보 출력
+    license_info = license_manager.get_license_info()
+    if license_info.get("name"):
+        print(f"✅ 구매자: {license_info['name']}")
+    print(f"✅ 등록 IP: {license_info['ip']}")
     
     window = NaverBlogGUI()
     window.show()

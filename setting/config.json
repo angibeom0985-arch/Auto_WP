@@ -1,0 +1,12 @@
+{
+    "gpt_api_key": "",
+    "gemini_api_key": "",
+    "ai_model": "gemini",
+    "naver_id": "",
+    "naver_pw": "",
+    "interval": 333,
+    "use_external_link": false,
+    "external_link": "",
+    "external_link_text": "",
+    "api_key": ""
+}
