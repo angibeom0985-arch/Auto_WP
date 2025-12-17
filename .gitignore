@@ -40,5 +40,9 @@ Thumbs.db
 # Logs
 *.log
 
+# Build artifacts
+*.zip
+*.exe
+
 # Personal files (사용자가 수정할 파일들은 예제로만 제공)
 # keywords.txt는 버전 관리에 포함 (예제 파일로 사용)

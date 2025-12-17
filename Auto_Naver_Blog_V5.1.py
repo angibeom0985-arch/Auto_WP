@@ -66,6 +66,8 @@ import google.generativeai as genai
 from openai import OpenAI
 import time
 import os
+import traceback
+import platform
 from datetime import datetime
 from license_check import LicenseManager
 from PIL import Image, ImageDraw, ImageFont
@@ -175,6 +177,30 @@ class NaverBlogAutomation:
                 self.callback(message)
             # 터미널에도 진행 현황 표시
             print(message)
+    
+    def _report_error(self, error_context, exception, show_traceback=True):
+        """오류 상세 정보를 로그에 표시"""
+        error_type = type(exception).__name__
+        error_msg = str(exception)
+        
+        # 기본 오류 메시지
+        self._update_status(f"❌ {error_context}: {error_type}")
+        self._update_status(f"📝 오류 내용: {error_msg[:100]}")
+        
+        # 상세 traceback (옵션)
+        if show_traceback:
+            tb_lines = traceback.format_exc().strip().split('\n')
+            # 마지막 5줄만 표시 (너무 길면 로그가 복잡해짐)
+            for line in tb_lines[-5:]:
+                if line.strip():
+                    self._update_status(f"  {line.strip()[:80]}")
+        
+        # 터미널에도 전체 traceback 출력
+        print(f"\n{'='*80}")
+        print(f"❌ 오류 발생: {error_context}")
+        print(f"{'='*80}")
+        print(traceback.format_exc())
+        print(f"{'='*80}\n")
     
     def load_keyword(self):
         """키워드를 keywords.txt 파일에서 로드 (개수 확인 및 경고)"""
@@ -433,7 +459,7 @@ class NaverBlogAutomation:
             return title, body
             
         except Exception as e:
-            self._update_status(f"❌ AI 글 생성 오류: {str(e)}")
+            self._report_error("AI 글 생성", e)
             return None, None
     
     def create_thumbnail(self, title):
@@ -551,7 +577,7 @@ class NaverBlogAutomation:
             return filepath
             
         except Exception as e:
-            self._update_status(f"⚠️ 썸네일 생성 실패: {str(e)}")
+            self._report_error("썸네일 생성", e, show_traceback=False)
             return None
     
     def create_video_from_thumbnail(self, thumbnail_path):
@@ -559,7 +585,9 @@ class NaverBlogAutomation:
         try:
             # moviepy가 설치되지 않은 경우
             if ImageClip is None:
-                self._update_status("⚠️ moviepy 라이브러리가 설치되지 않아 동영상 생성 불가")
+                self._update_status("❌ moviepy 라이브러리가 없어 동영상 생성 불가")
+                self._update_status("📦 moviepy 설치 필요: pip install moviepy")
+                print(f"ERROR: ImageClip is None - moviepy not imported properly")
                 return None
             
             # 썸네일 기능이 OFF인 경우 동영상도 생성하지 않음
@@ -571,7 +599,8 @@ class NaverBlogAutomation:
                 self._update_status("⚠️ 썸네일 이미지가 없어 동영상 생성 불가")
                 return None
             
-            self._update_status("🎬 동영상 생성 중...")
+            self._update_status("🎬 동영상 생성 시작...")
+            print(f"VIDEO: Creating video from {thumbnail_path}")
             
             # 썸네일 이미지로부터 3초 동영상 생성
             clip = ImageClip(thumbnail_path).set_duration(3)
@@ -585,14 +614,20 @@ class NaverBlogAutomation:
             video_filename = f"{base_name}.mp4"
             video_filepath = os.path.join(result_folder, video_filename)
             
+            print(f"VIDEO: Saving to {video_filepath}")
+            
             # 동영상 저장 (fps는 24로 설정)
             clip.write_videofile(video_filepath, fps=24, codec='libx264', audio=False, verbose=False, logger=None)
             
             self._update_status(f"✅ 동영상 생성 완료: {video_filename}")
+            print(f"VIDEO: Successfully created {video_filepath}")
             return video_filepath
             
         except Exception as e:
-            self._update_status(f"⚠️ 동영상 생성 실패: {str(e)}")
+            self._report_error("동영상 생성", e, show_traceback=True)
+            print(f"VIDEO ERROR: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def _write_body_with_linebreaks(self, text):
@@ -2232,9 +2267,9 @@ class NaverBlogGUI(QMainWindow):
             config_path = os.path.join(setting_dir, "config.json")
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=4)
-            self.show_message("✅ 저장 완료", "설정이 성공적으로 저장되었습니다!", "info")
+            self._update_settings_status("✅ 설정이 성공적으로 저장되었습니다")
         except Exception as e:
-            self.show_message("❌ 저장 실패", f"설정 저장 중 오류:\n{str(e)}", "error")
+            self._update_settings_status(f"❌ 설정 저장 실패: {str(e)}")
     
     def show_message(self, title, message, msg_type="info"):
         """스타일이 적용된 메시지 박스 표시"""
@@ -2347,9 +2382,9 @@ class NaverBlogGUI(QMainWindow):
             # 3. UI 업데이트
             self._apply_config()
             
-            self.show_message("✅ 새로고침 완료", "설정이 저장되고 업데이트되었습니다!", "info")
+            self._update_settings_status("✅ 설정이 저장되고 업데이트되었습니다")
         except Exception as e:
-            self.show_message("❌ 새로고침 실패", f"오류 발생:\n{str(e)}", "error")
+            self._update_settings_status(f"❌ 새로고침 실패: {str(e)}")
     
     def _create_gui(self):
         """GUI 생성"""
@@ -2848,7 +2883,121 @@ class NaverBlogGUI(QMainWindow):
         layout.setColumnStretch(0, 1)
         layout.setColumnStretch(1, 1)
         
-        # === Row 0, Col 0: 네이버 로그인 정보 ===
+        # === Row 0: 설정 상태 (가로로 길게) ===
+        settings_progress_card = PremiumCard("설정 상태", "📊")
+        
+        # 2단 레이아웃: 왼쪽(최근 로그) | 오른쪽(현재 상태 요약)
+        status_main_layout = QHBoxLayout()
+        status_main_layout.setSpacing(15)
+        
+        # 왼쪽: 최근 로그 (60% 너비)
+        log_container = QWidget()
+        log_container.setStyleSheet("QWidget { background-color: transparent; }")
+        log_container_layout = QVBoxLayout(log_container)
+        log_container_layout.setContentsMargins(0, 0, 0, 0)
+        log_container_layout.setSpacing(2)  # 5 -> 2로 축소
+        
+        log_title = QLabel("📝 최근 로그")
+        log_title.setFont(QFont(self.font_family, 11, QFont.Weight.Bold))  # 12 -> 11
+        log_title.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
+        log_container_layout.addWidget(log_title)
+        
+        self.settings_log_scroll = QScrollArea()
+        self.settings_log_scroll.setWidgetResizable(True)
+        self.settings_log_scroll.setMinimumHeight(100)  # 80 -> 100
+        self.settings_log_scroll.setMaximumHeight(140)  # 120 -> 140
+        self.settings_log_scroll.setStyleSheet(f"""
+            QScrollArea {{
+                border: 2px solid {NAVER_BORDER};
+                border-radius: 8px;
+                background-color: white;
+            }}
+            QScrollBar:vertical {{
+                border: none;
+                background: {NAVER_BG};
+                width: 10px;
+                border-radius: 5px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {NAVER_GREEN};
+                border-radius: 5px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {NAVER_GREEN_HOVER};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
+        """)
+        
+        settings_log_widget = QWidget()
+        settings_log_layout = QVBoxLayout(settings_log_widget)
+        settings_log_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        settings_log_layout.setContentsMargins(3, 3, 3, 3)  # 5 -> 3
+        settings_log_layout.setSpacing(0)  # 새로 추가
+        
+        self.settings_log_label = QLabel("⏸️ 대기 중...")
+        self.settings_log_label.setFont(QFont(self.font_family, 11))  # 12 -> 11
+        self.settings_log_label.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; padding: 3px;")  # 5px -> 3px
+        self.settings_log_label.setWordWrap(True)
+        self.settings_log_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.settings_log_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.settings_log_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        settings_log_layout.addWidget(self.settings_log_label)
+        # addStretch() 제거하여 공백 최소화
+        
+        self.settings_log_scroll.setWidget(settings_log_widget)
+        log_container_layout.addWidget(self.settings_log_scroll)
+        
+        # 오른쪽: 현재 상태 요약 (40% 너비)
+        summary_container = QWidget()
+        summary_container.setStyleSheet(f"QWidget {{ background-color: white; border: 2px solid {NAVER_BORDER}; border-radius: 8px; }}")
+        summary_layout = QVBoxLayout(summary_container)
+        summary_layout.setContentsMargins(10, 10, 10, 10)
+        summary_layout.setSpacing(8)
+        
+        summary_title = QLabel("📊 현재 상태")
+        summary_title.setFont(QFont(self.font_family, 12, QFont.Weight.Bold))
+        summary_title.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent; border: none;")
+        summary_layout.addWidget(summary_title)
+        
+        # 상태 라벨들
+        self.settings_api_status = QLabel("🔑 API: 미설정")
+        self.settings_api_status.setFont(QFont(self.font_family, 11))
+        self.settings_api_status.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; border: none;")
+        summary_layout.addWidget(self.settings_api_status)
+        
+        self.settings_login_status = QLabel("👤 로그인: 미설정")
+        self.settings_login_status.setFont(QFont(self.font_family, 11))
+        self.settings_login_status.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; border: none;")
+        summary_layout.addWidget(self.settings_login_status)
+        
+        self.settings_thumbnail_status = QLabel("🖼️ 썸네일: OFF")
+        self.settings_thumbnail_status.setFont(QFont(self.font_family, 11))
+        self.settings_thumbnail_status.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; border: none;")
+        summary_layout.addWidget(self.settings_thumbnail_status)
+        
+        self.settings_link_status_label = QLabel("🔗 외부링크: OFF")
+        self.settings_link_status_label.setFont(QFont(self.font_family, 11))
+        self.settings_link_status_label.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; border: none;")
+        summary_layout.addWidget(self.settings_link_status_label)
+        
+        summary_layout.addStretch()
+        
+        # 2단 레이아웃 추가 (60:40 비율)
+        status_main_layout.addWidget(log_container, 60)
+        status_main_layout.addWidget(summary_container, 40)
+        
+        settings_progress_card.content_layout.addLayout(status_main_layout)
+        
+        # Row 0에 가로로 길게 (2칸럼 통합)
+        layout.addWidget(settings_progress_card, 0, 0, 1, 2)
+        
+        # === Row 1, Col 0: 네이버 로그인 정보 ===
         login_card = PremiumCard("네이버 로그인 정보", "👤")
         
         # 경고 라벨
@@ -2961,9 +3110,9 @@ class NaverBlogGUI(QMainWindow):
         
         login_card.setMinimumHeight(240)
         
-        layout.addWidget(login_card, 0, 0)
+        layout.addWidget(login_card, 1, 0)
         
-        # === Row 0, Col 1: 발행 간격 설정 ===
+        # === Row 1, Col 1: 발행 간격 설정 ===
         time_card = PremiumCard("발행 간격 설정", "⏱️")
         
         time_card.content_layout.addStretch()
@@ -3017,9 +3166,9 @@ class NaverBlogGUI(QMainWindow):
         
         time_card.setMinimumHeight(240)
         
-        layout.addWidget(time_card, 0, 1)
+        layout.addWidget(time_card, 1, 1)
         
-        # === Row 1, Col 0: 외부 링크 설정 ===
+        # === Row 2, Col 0: 외부 링크 설정 ===
         link_card = PremiumCard("외부 링크 설정", "🔗")
         
         # 헤더에 체크박스와 ON/OFF 상태 표시 추가
@@ -3141,12 +3290,12 @@ class NaverBlogGUI(QMainWindow):
         
         link_card.setMinimumHeight(240)
         
-        layout.addWidget(link_card, 1, 0)
+        layout.addWidget(link_card, 2, 0)
         
         # 초기 취소선 적용 (체크 해제 상태이므로)
         self.toggle_external_link()
         
-        # === Row 1, Col 1: API 키 설정 ===
+        # === Row 2, Col 1: API 키 설정 ===
         api_card = PremiumCard("🔑 API 키 설정", "")
         
         # 카드 헤더에 API 발급 방법 버튼 추가
@@ -3307,9 +3456,9 @@ class NaverBlogGUI(QMainWindow):
         
         api_card.setMinimumHeight(240)
         
-        layout.addWidget(api_card, 1, 1)
+        layout.addWidget(api_card, 2, 1)
         
-        # === Row 2, Col 0: 파일 관리 ===
+        # === Row 3, Col 0: 파일 관리 ===
         file_card = PremiumCard("파일 관리", "📁")
         
         file_card.content_layout.addStretch()
@@ -3463,9 +3612,9 @@ class NaverBlogGUI(QMainWindow):
         
         file_card.setMinimumHeight(160)
         
-        layout.addWidget(file_card, 2, 0)
+        layout.addWidget(file_card, 3, 0)
         
-        # === Row 2, Col 1: AI 모델 선택 ===
+        # === Row 3, Col 1: AI 모델 선택 ===
         ai_card = PremiumCard("AI 모델 선택", "🤖")
         
         from PyQt6.QtWidgets import QButtonGroup
@@ -3515,7 +3664,7 @@ class NaverBlogGUI(QMainWindow):
         
         ai_card.setMinimumHeight(160)
         
-        layout.addWidget(ai_card, 2, 1)
+        layout.addWidget(ai_card, 3, 1)
         
         tab.setWidget(content)
         return tab
@@ -3567,11 +3716,11 @@ class NaverBlogGUI(QMainWindow):
         # 로그인 정보 상태
         if self.naver_id_entry.text() and self.naver_pw_entry.text():
             self.login_status_label.setText("👤 로그인 정보: 설정 완료")
-            self.login_status_label.setStyleSheet(f"color: #000000; border: none;")
+            self.login_status_label.setStyleSheet(f"color: {NAVER_GREEN}; border: none; font-weight: bold;")
             self.login_setup_btn.hide()
         else:
             self.login_status_label.setText("👤 로그인 정보: 미설정")
-            self.login_status_label.setStyleSheet(f"color: #000000; border: none;")
+            self.login_status_label.setStyleSheet(f"color: {NAVER_RED}; border: none; font-weight: bold;")
             self.login_setup_btn.show()
         
         # API 키 상태
@@ -3585,11 +3734,11 @@ class NaverBlogGUI(QMainWindow):
                 self.api_status_label.setText("🔑 API 키: GPT 설정")
             else:
                 self.api_status_label.setText("🔑 API 키: Gemini 설정")
-            self.api_status_label.setStyleSheet(f"color: #000000; border: none;")
+            self.api_status_label.setStyleSheet(f"color: {NAVER_GREEN}; border: none; font-weight: bold;")
             self.api_setup_btn.hide()
         else:
             self.api_status_label.setText("🔑 API 키: 미설정")
-            self.api_status_label.setStyleSheet(f"color: #000000; border: none;")
+            self.api_status_label.setStyleSheet(f"color: {NAVER_RED}; border: none; font-weight: bold;")
             self.api_setup_btn.show()
         
         # 키워드 개수
@@ -3597,10 +3746,10 @@ class NaverBlogGUI(QMainWindow):
         self.keyword_count_label.setText(f"📦 키워드 개수: {keyword_count}개")
         
         if keyword_count > 0:
-            self.keyword_count_label.setStyleSheet(f"color: #000000; border: none;")
+            self.keyword_count_label.setStyleSheet(f"color: {NAVER_GREEN}; border: none; font-weight: bold;")
             self.keyword_setup_btn.hide()
         else:
-            self.keyword_count_label.setStyleSheet(f"color: #000000; border: none;")
+            self.keyword_count_label.setStyleSheet(f"color: {NAVER_RED}; border: none; font-weight: bold;")
             self.keyword_setup_btn.show()
         
         # 발행 간격
@@ -3715,6 +3864,7 @@ class NaverBlogGUI(QMainWindow):
             """)
             self.link_url_entry.setFocus()
             self.link_url_entry.selectAll()
+            self._update_settings_status("🔗 외부 링크 기능 ON")
         else:
             self.link_status_label.setText("OFF")
             self.link_status_label.setStyleSheet(f"""
@@ -3727,11 +3877,117 @@ class NaverBlogGUI(QMainWindow):
                     font-weight: bold;
                 }}
             """)
+            self._update_settings_status("🔗 외부 링크 기능 OFF")
     
     def _clear_example_text(self, widget, example_text):
         """예시 텍스트 삭제"""
         if widget.text() == example_text:
             widget.clear()
+    
+    def _update_settings_status(self, message):
+        """설정 탭 진행 현황 업데이트"""
+        if not hasattr(self, 'settings_log_label'):
+            return
+        
+        try:
+            current_log = self.settings_log_label.text()
+            
+            # 초기 상태
+            if current_log == "⏸️ 대기 중...":
+                new_log = message
+            else:
+                lines = current_log.split("\n")
+                last_message = lines[-1].strip() if lines else ""
+                
+                # 완전히 동일한 메시지는 무시
+                if last_message == message.strip():
+                    return
+                
+                # 최근 10개 메시지만 유지
+                if len(lines) >= 10:
+                    lines = lines[-9:]
+                
+                new_log = "\n".join(lines) + "\n" + message
+            
+            self.settings_log_label.setText(new_log)
+            self.settings_log_label.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent; padding: 5px;")
+            
+            # 스크롤을 맨 하단으로 이동 (새 로그 메시지가 온전히 보이도록)
+            if hasattr(self, 'settings_log_scroll'):
+                scrollbar = self.settings_log_scroll.verticalScrollBar()
+                scrollbar.setValue(scrollbar.maximum())
+            
+            # 상태 요약 업데이트
+            self._update_settings_summary()
+        except Exception as e:
+            print(f"설정 로그 업데이트 오류: {e}")
+    
+    def _update_settings_summary(self):
+        """설정 상태 요약 업데이트"""
+        if not hasattr(self, 'settings_api_status'):
+            return
+        
+        try:
+            # API 키 상태
+            gpt_key = self.gpt_api_entry.text() if hasattr(self, 'gpt_api_entry') else ""
+            gemini_key = self.gemini_api_entry.text() if hasattr(self, 'gemini_api_entry') else ""
+            
+            if gpt_key and gemini_key:
+                api_text = "🔑 API: GPT + Gemini"
+                api_color = NAVER_GREEN
+            elif gpt_key:
+                api_text = "🔑 API: GPT"
+                api_color = NAVER_GREEN
+            elif gemini_key:
+                api_text = "🔑 API: Gemini"
+                api_color = NAVER_GREEN
+            else:
+                api_text = "🔑 API: 미설정"
+                api_color = NAVER_RED
+            
+            self.settings_api_status.setText(api_text)
+            self.settings_api_status.setStyleSheet(f"color: {api_color}; background-color: transparent; border: none; font-weight: bold;")
+            
+            # 로그인 상태
+            naver_id = self.naver_id_entry.text() if hasattr(self, 'naver_id_entry') else ""
+            naver_pw = self.naver_pw_entry.text() if hasattr(self, 'naver_pw_entry') else ""
+            
+            if naver_id and naver_pw:
+                login_text = "👤 로그인: 설정 완료"
+                login_color = NAVER_GREEN
+            else:
+                login_text = "👤 로그인: 미설정"
+                login_color = NAVER_RED
+            
+            self.settings_login_status.setText(login_text)
+            self.settings_login_status.setStyleSheet(f"color: {login_color}; background-color: transparent; border: none; font-weight: bold;")
+            
+            # 썸네일 상태
+            use_thumbnail = self.config.get("use_thumbnail", True)
+            if use_thumbnail:
+                thumb_text = "🖼️ 썸네일: ON (동영상 ON)"
+                thumb_color = NAVER_GREEN
+            else:
+                thumb_text = "🖼️ 썸네일: OFF (동영상 OFF)"
+                thumb_color = NAVER_TEXT_SUB
+            
+            self.settings_thumbnail_status.setText(thumb_text)
+            self.settings_thumbnail_status.setStyleSheet(f"color: {thumb_color}; background-color: transparent; border: none; font-weight: bold;")
+            
+            # 외부 링크 상태 (체크박스 상태를 직접 확인)
+            use_link = self.use_link_checkbox.isChecked() if hasattr(self, 'use_link_checkbox') else self.config.get("use_external_link", False)
+            if use_link:
+                link_text = "🔗 외부링크: ON"
+                link_color = NAVER_GREEN
+            else:
+                link_text = "🔗 외부링크: OFF"
+                link_color = NAVER_TEXT_SUB
+            
+            self.settings_link_status_label.setText(link_text)
+            self.settings_link_status_label.setStyleSheet(f"color: {link_color}; background-color: transparent; border: none; font-weight: bold;")
+            
+        except Exception as e:
+            print(f"설정 상태 요약 업데이트 오류: {e}")
     
     def open_file(self, filename):
         """파일 또는 폴더 열기"""
@@ -3745,9 +4001,9 @@ class NaverBlogGUI(QMainWindow):
             if not os.path.exists(file_path):
                 try:
                     os.makedirs(file_path, exist_ok=True)
-                    self.show_message("폴더 생성", f"{filename} 폴더를 생성했습니다.", "info")
+                    self._update_settings_status(f"📁 {filename} 폴더를 생성했습니다")
                 except Exception as e:
-                    self.show_message("오류", f"폴더 생성 실패: {str(e)}", "error")
+                    self._update_settings_status(f"❌ 폴더 생성 실패: {str(e)}")
                     return
             
             # 폴더 열기
@@ -3758,8 +4014,9 @@ class NaverBlogGUI(QMainWindow):
                     subprocess.run(['open', file_path])
                 else:  # Linux
                     subprocess.run(['xdg-open', file_path])
+                self._update_settings_status(f"📂 {filename} 폴더를 열었습니다")
             except Exception as e:
-                self.show_message("오류", f"폴더 열기 실패: {str(e)}", "error")
+                self._update_settings_status(f"❌ 폴더 열기 실패: {str(e)}")
             return
         
         # 파일인 경우
@@ -3776,9 +4033,9 @@ class NaverBlogGUI(QMainWindow):
                         f.write("# 제목과 서론 생성을 위한 AI 프롬프트를 입력하세요\n")
                     elif "prompt2.txt" in filename:
                         f.write("# 소제목과 본문 생성을 위한 AI 프롬프트를 입력하세요\n")
-                self.show_message("파일 생성", f"{os.path.basename(filename)} 파일을 생성했습니다.", "info")
+                self._update_settings_status(f"📝 {os.path.basename(filename)} 파일을 생성했습니다")
             except Exception as e:
-                self.show_message("오류", f"파일 생성 실패: {str(e)}", "error")
+                self._update_settings_status(f"❌ 파일 생성 실패: {str(e)}")
                 return
         
         # 파일 열기
@@ -3789,16 +4046,19 @@ class NaverBlogGUI(QMainWindow):
                 subprocess.run(['open', file_path])
             else:  # Linux
                 subprocess.run(['xdg-open', file_path])
+            self._update_settings_status(f"📂 {os.path.basename(filename)} 파일을 열었습니다")
         except Exception as e:
-            self.show_message("오류", f"파일 열기 실패: {str(e)}", "error")
+            self._update_settings_status(f"❌ 파일 열기 실패: {str(e)}")
     
     def save_api_key(self):
         """API 키 저장"""
+        ai_model = "GPT" if self.gpt_radio.isChecked() else "Gemini"
         self.config["gpt_api_key"] = self.gpt_api_entry.text()
         self.config["gemini_api_key"] = self.gemini_api_entry.text()
         # 구버전 호환성을 위해 api_key도 저장
         self.config["api_key"] = self.gpt_api_entry.text() if self.gpt_radio.isChecked() else self.gemini_api_entry.text()
         self.config["ai_model"] = "gpt" if self.gpt_radio.isChecked() else "gemini"
+        self._update_settings_status(f"🔑 {ai_model} API 키가 저장되었습니다")
         self.save_config_file()
         self.update_status_display()
     
@@ -3806,12 +4066,15 @@ class NaverBlogGUI(QMainWindow):
         """로그인 정보 저장"""
         self.config["naver_id"] = self.naver_id_entry.text()
         self.config["naver_pw"] = self.naver_pw_entry.text()
+        self._update_settings_status("👤 네이버 로그인 정보가 저장되었습니다")
         self.save_config_file()
         self.update_status_display()
     
     def save_time_settings(self):
         """발행 간격 저장"""
-        self.config["interval"] = int(self.interval_entry.text() or "10")
+        interval = int(self.interval_entry.text() or "10")
+        self.config["interval"] = interval
+        self._update_settings_status(f"⏱️ 발행 간격이 {interval}분으로 저장되었습니다")
         self.save_config_file()
         self.update_status_display()
     
@@ -3821,6 +4084,10 @@ class NaverBlogGUI(QMainWindow):
         self.config["use_thumbnail"] = is_on
         self.thumbnail_toggle_btn.setText("ON" if is_on else "OFF")
         self.update_thumbnail_button_style()
+        if is_on:
+            self._update_settings_status("🖼️ 썸네일 기능 ON, 🎬 동영상 기능 ON")
+        else:
+            self._update_settings_status("🖼️ 썸네일 기능 OFF, 🎬 동영상 기능 OFF")
         self.save_config_file()
         self.update_status_display()
     
@@ -3867,6 +4134,8 @@ class NaverBlogGUI(QMainWindow):
         self.config["use_external_link"] = self.use_link_checkbox.isChecked()
         self.config["external_link"] = self.link_url_entry.text()
         self.config["external_link_text"] = self.link_text_entry.text()
+        status = "ON" if self.use_link_checkbox.isChecked() else "OFF"
+        self._update_settings_status(f"🔗 외부 링크 설정이 저장되었습니다 (상태: {status})")
         self.save_config_file()
     
     def start_posting(self, is_first_start=True):
@@ -4421,6 +4690,139 @@ if __name__ == "__main__":
         dialog.exec()
         
         sys.exit(1)
+    
+    # 전역 예외 처리기 설정
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        """전역 예외 처리기"""
+        if issubclass(exc_type, KeyboardInterrupt):
+            # Ctrl+C 중단은 무시
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        
+        # 오류 상세 정보 수집
+        error_details = {
+            "type": exc_type.__name__,
+            "message": str(exc_value),
+            "traceback": "".join(traceback.format_exception(exc_type, exc_value, exc_traceback)),
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "python_version": platform.python_version(),
+            "os": platform.platform(),
+        }
+        
+        # 콘솔에 출력
+        print("\n" + "="*80)
+        print("❌ 심각한 오류 발생!")
+        print("="*80)
+        print(error_details["traceback"])
+        print("="*80)
+        
+        # GUI가 생성되어 있으면 다이얼로그 표시
+        try:
+            from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPushButton, QApplication
+            from PyQt6.QtCore import Qt
+            from PyQt6.QtGui import QFont
+            
+            # QApplication이 있는지 확인
+            if QApplication.instance() is not None:
+                error_dialog = QDialog()
+                error_dialog.setWindowTitle("❌ 심각한 오류 발생")
+                error_dialog.setMinimumSize(700, 500)
+                error_dialog.setStyleSheet("""
+                    QDialog {
+                        background-color: white;
+                    }
+                    QLabel {
+                        color: #1a1a1a;
+                    }
+                    QTextEdit {
+                        background-color: #f5f5f5;
+                        border: 2px solid #e0e0e0;
+                        border-radius: 8px;
+                        padding: 10px;
+                        font-family: 'Consolas', 'Courier New', monospace;
+                        font-size: 11px;
+                    }
+                    QPushButton {
+                        background-color: #03c75a;
+                        color: white;
+                        border: none;
+                        border-radius: 8px;
+                        padding: 10px 20px;
+                        font-size: 13px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #02b350;
+                    }
+                """)
+                
+                layout = QVBoxLayout(error_dialog)
+                layout.setSpacing(15)
+                layout.setContentsMargins(20, 20, 20, 20)
+                
+                # 제목
+                title_label = QLabel("🛑 프로그램 오류 발생")
+                title_label.setFont(QFont("Malgun Gothic", 14, QFont.Weight.Bold))
+                title_label.setStyleSheet("color: #d32f2f;")
+                layout.addWidget(title_label)
+                
+                # 오류 설명
+                desc_label = QLabel(
+                    f"🔴 오류 종류: {error_details['type']}\n"
+                    f"📝 메시지: {error_details['message']}\n"
+                    f"⏰ 발생 시간: {error_details['timestamp']}\n\n"
+                    f"👇 아래 내용을 복사하여 제작자에게 전달해주세요."
+                )
+                desc_label.setFont(QFont("Malgun Gothic", 11))
+                desc_label.setWordWrap(True)
+                layout.addWidget(desc_label)
+                
+                # 제작자 전달용 내용
+                report_content = (
+                    f"=" * 80 + "\n"
+                    f"🚨 NAVER BLOG AUTO POSTING ERROR REPORT\n"
+                    f"=" * 80 + "\n\n"
+                    f"📅 발생 시간: {error_details['timestamp']}\n"
+                    f"💻 프로그램 버전: v5.1\n"
+                    f"🐍 Python 버전: {error_details['python_version']}\n"
+                    f"💾 운영체제: {error_details['os']}\n\n"
+                    f"❌ 오류 종류: {error_details['type']}\n"
+                    f"📝 오류 메시지:\n{error_details['message']}\n\n"
+                    f"📄 상세 스택 트레이스:\n"
+                    f"{error_details['traceback']}\n"
+                    f"=" * 80
+                )
+                
+                report_text = QTextEdit()
+                report_text.setPlainText(report_content)
+                report_text.setReadOnly(True)
+                report_text.setMinimumHeight(250)
+                layout.addWidget(report_text)
+                
+                # 버튼 영역
+                button_layout = QHBoxLayout()
+                button_layout.setSpacing(10)
+                
+                copy_btn = QPushButton("📋 오류 내용 복사")
+                copy_btn.clicked.connect(lambda: pyperclip.copy(report_content))
+                copy_btn.clicked.connect(lambda: copy_btn.setText("✅ 복사 완료!"))
+                button_layout.addWidget(copy_btn)
+                
+                close_btn = QPushButton("프로그램 종료")
+                close_btn.clicked.connect(error_dialog.accept)
+                button_layout.addWidget(close_btn)
+                
+                layout.addLayout(button_layout)
+                
+                error_dialog.exec()
+        except Exception as e:
+            print(f"오류 다이얼로그 표시 실패: {e}")
+        
+        # 기본 예외 처리기 호출
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+    
+    # 전역 예외 처리기 등록
+    sys.excepthook = handle_exception
     
     # Windows 작업 표시줄 아이콘 설정 (AppUserModelID)
     if sys.platform == 'win32':

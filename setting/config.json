@@ -4,9 +4,11 @@
     "ai_model": "gemini",
     "naver_id": "",
     "naver_pw": "",
-    "interval": 333,
-    "use_external_link": false,
+    "interval": 1,
+    "use_external_link": true,
     "external_link": "",
     "external_link_text": "",
-    "api_key": ""
+    "api_key": "AIzaSyDQ0leisnYqAiV9nhKJw3-voOshewoGakY",
+    "use_thumbnail": true,
+    "use_video": true
 }

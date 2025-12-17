@@ -1,7 +1,9 @@
 {
     "license_key": "SPREADSHEET_VERIFIED",
-    "registered_ip": "192.168.0.101",
-    "machine_id": "a96c4c2eb3869f77",
-    "registered_date": "2025-12-02 16:49:43",
+    "registered_machine_id": "6c3b68f507002cd886ba906ed95eb836",
+    "mac_address": "f0:20:ff:c9:fa:26",
+    "windows_id": "04032420-20F0-C9FF-FA22-F020FFC9FA26",
+    "local_ip": "192.168.219.105",
+    "registered_date": "2025-12-17 12:48:48",
     "status": "active"
 }
