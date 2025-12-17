@@ -26,12 +26,12 @@ if sys.platform == 'win32':
         pass
     
     # 표준 입출력을 UTF-8로 재설정 (이미 래핑되어 있지 않은 경우에만)
-    if not isinstance(sys.stdout, io.TextIOWrapper) or sys.stdout.encoding != 'utf-8':
-        try:
+    try:
+        if hasattr(sys.stdout, 'buffer') and (not isinstance(sys.stdout, io.TextIOWrapper) or sys.stdout.encoding != 'utf-8'):
             sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
             sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
-        except:
-            pass
+    except Exception:
+        pass
 
 # 로케일 UTF-8 설정
 try:
@@ -70,6 +70,11 @@ from datetime import datetime
 from license_check import LicenseManager
 from PIL import Image, ImageDraw, ImageFont
 import random
+import pyautogui
+try:
+    from moviepy.editor import ImageClip
+except ImportError:
+    ImageClip = None
 
 
 class NaverBlogAutomation:
@@ -77,7 +82,7 @@ class NaverBlogAutomation:
     
     def __init__(self, naver_id, naver_pw, api_key, ai_model="gemini", theme="", 
                  open_type="전체공개", external_link="", external_link_text="", 
-                 publish_time="now", scheduled_hour="09", scheduled_minute="00", callback=None):
+                 publish_time="now", scheduled_hour="09", scheduled_minute="00", callback=None, config=None):
         """초기화 함수"""
         self.naver_id = naver_id
         self.naver_pw = naver_pw
@@ -91,6 +96,7 @@ class NaverBlogAutomation:
         self.scheduled_hour = scheduled_hour
         self.scheduled_minute = scheduled_minute
         self.callback = callback
+        self.config = config or {}  # config 저장
         self.driver: webdriver.Chrome | None = None
         self.should_stop = False  # 정지 플래그
         self.current_keyword = ""  # 현재 사용 중인 키워드
@@ -121,6 +127,43 @@ class NaverBlogAutomation:
         elif ai_model == "gpt":
             self.client = OpenAI(api_key=api_key)
             self.model = "gpt-4o"
+        
+        # 초기화 시 오래된 파일 정리
+        self.clean_old_files()
+    
+    def clean_old_files(self):
+        """result 폴더의 1주일 이상 된 파일 자동 삭제"""
+        try:
+            result_folder = os.path.join(self.data_dir, "setting", "result")
+            if not os.path.exists(result_folder):
+                return
+            
+            import time as time_module
+            current_time = time_module.time()
+            one_week_ago = current_time - (7 * 24 * 60 * 60)  # 7일 전
+            
+            deleted_count = 0
+            for filename in os.listdir(result_folder):
+                file_path = os.path.join(result_folder, filename)
+                
+                # 파일인지 확인 (폴더 제외)
+                if os.path.isfile(file_path):
+                    # 파일 수정 시간 확인
+                    file_mtime = os.path.getmtime(file_path)
+                    
+                    # 1주일 이상 지난 파일 삭제
+                    if file_mtime < one_week_ago:
+                        try:
+                            os.remove(file_path)
+                            deleted_count += 1
+                            self._update_status(f"🗑️ 오래된 파일 삭제: {filename}")
+                        except Exception as e:
+                            self._update_status(f"⚠️ 파일 삭제 실패: {filename} - {str(e)[:30]}")
+            
+            if deleted_count > 0:
+                self._update_status(f"✅ 1주일 이상 된 파일 {deleted_count}개 삭제 완료")
+        except Exception as e:
+            self._update_status(f"⚠️ 파일 정리 중 오류: {str(e)[:50]}")
     
     def _update_status(self, message):
         """상태 메시지 업데이트 (중복 방지)"""
@@ -135,51 +178,83 @@ class NaverBlogAutomation:
     
     def load_keyword(self):
         """키워드를 keywords.txt 파일에서 로드 (개수 확인 및 경고)"""
-        try:
-            keywords_file = os.path.join(self.data_dir, "setting", "keywords.txt")
-            
-            if os.path.exists(keywords_file):
+        keywords_file = os.path.join(self.data_dir, "setting", "keywords.txt")
+        
+        # 파일 읽기 재시도 로직 (파일 동시 접근 문제 해결)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if not os.path.exists(keywords_file):
+                    self._update_status("오류: keywords.txt 파일이 없습니다.")
+                    print(f"❌ keywords.txt 파일 경로: {keywords_file}")
+                    if self.callback:
+                        self.callback("KEYWORD_FILE_MISSING")
+                    return None
+                
+                # 파일 읽기
                 with open(keywords_file, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
                     keywords = [line.strip() for line in lines if line.strip() and not line.strip().startswith('#')]
                 
                 keyword_count = len(keywords)
+                print(f"📖 키워드 파일 읽기 성공: {keyword_count}개 발견")
                 
                 # 키워드 개수 확인 및 경고
                 if keyword_count == 0:
                     self._update_status("⚠️ 오류: 사용 가능한 키워드가 없습니다. 프로그램을 종료합니다.")
-                    # callback을 통해 메인 스레드에 메시지 전달
                     if self.callback:
                         self.callback("KEYWORD_EMPTY")
-                    return None  # None 반환으로 중지 신호
+                    return None
                     
                 elif keyword_count < 30:
                     self._update_status(f"⚠️ 경고: 키워드가 {keyword_count}개 남았습니다! 추가 등록이 필요합니다.")
-                    # callback을 통해 메인 스레드에 메시지 전달
-                    if self.callback:
-                        self.callback(f"KEYWORD_LOW:{keyword_count}")
+                    # 팝업 제거: 상태 메시지만 표시하고 프로그램은 계속 진행
                 
                 # 첫 번째 키워드 선택
                 selected_keyword = keywords[0]
                 self._update_status(f"선택된 키워드: {selected_keyword} (남은 개수: {keyword_count}개)")
                 return selected_keyword
-            else:
-                self._update_status("오류: keywords.txt 파일이 없습니다.")
-                # callback을 통해 메인 스레드에 메시지 전달
-                if self.callback:
-                    self.callback("KEYWORD_FILE_MISSING")
-                return None
-        except Exception as e:
-            self._update_status(f"키워드 로드 오류: {str(e)}")
-            return None
+                
+            except PermissionError as e:
+                print(f"⚠️ 파일 접근 권한 오류 (시도 {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)  # 잠시 대기 후 재시도
+                    continue
+                else:
+                    self._update_status(f"❌ 파일 접근 권한 오류: {str(e)}")
+                    print(f"❌ 키워드 파일 접근 실패 (3회 재시도 후)")
+                    return None
+            except Exception as e:
+                print(f"❌ 키워드 로드 예외 (시도 {attempt + 1}/{max_retries}): {type(e).__name__}: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)  # 잠시 대기 후 재시도
+                    continue
+                else:
+                    self._update_status(f"❌ 키워드 로드 중 예외 발생: {str(e)}")
+                    print(f"❌ 키워드 로드 예외 상세: {type(e).__name__}: {str(e)}")
+                    print(f"❌ keywords.txt 경로: {keywords_file}")
+                    import traceback
+                    traceback.print_exc()
+                    if os.path.exists(keywords_file):
+                        print(f"⚠️ 파일은 존재하지만 읽기 실패")
+                    return None
+        
+        return None
     
     def move_keyword_to_used(self, keyword):
         """키워드를 keywords.txt에서 제거하고 used_keywords.txt로 이동"""
-        try:
-            keywords_file = os.path.join(self.data_dir, "setting", "keywords.txt")
-            used_keywords_file = os.path.join(self.data_dir, "setting", "used_keywords.txt")
-            
-            if os.path.exists(keywords_file):
+        keywords_file = os.path.join(self.data_dir, "setting", "keywords.txt")
+        used_keywords_file = os.path.join(self.data_dir, "setting", "used_keywords.txt")
+        
+        # 파일 작업 재시도 로직
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if not os.path.exists(keywords_file):
+                    print(f"❌ keywords.txt 파일이 없습니다: {keywords_file}")
+                    return
+                
+                # 파일 읽기
                 with open(keywords_file, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
                     keywords = [line.strip() for line in lines if line.strip() and not line.strip().startswith('#')]
@@ -197,8 +272,27 @@ class NaverBlogAutomation:
                     f.write(keyword + '\n')
                 
                 self._update_status(f"✅ 키워드 '{keyword}'를 사용 완료 목록으로 이동")
-        except Exception as e:
-            self._update_status(f"키워드 이동 오류: {str(e)}")
+                print(f"✅ 키워드 이동 성공: '{keyword}' (남은 키워드: {len(remaining_keywords)}개)")
+                return  # 성공시 바로 리턴
+                
+            except PermissionError as e:
+                print(f"⚠️ 파일 접근 권한 오류 (시도 {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)  # 잠시 대기 후 재시도
+                    continue
+                else:
+                    self._update_status(f"❌ 키워드 이동 중 권한 오류: {str(e)}")
+                    print(f"❌ 키워드 이동 실패 (3회 재시도 후)")
+            except Exception as e:
+                print(f"❌ 키워드 이동 예외 (시도 {attempt + 1}/{max_retries}): {type(e).__name__}: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)
+                    continue
+                else:
+                    self._update_status(f"❌ 키워드 이동 중 예외 발생: {str(e)}")
+                    print(f"❌ 키워드 이동 예외 상세: {type(e).__name__}: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
     
     def generate_content_with_ai(self):
         """AI를 사용하여 블로그 글 생성 (Gemini 또는 GPT)"""
@@ -345,6 +439,11 @@ class NaverBlogAutomation:
     def create_thumbnail(self, title):
         """setting/image 폴더의 jpg를 배경으로 300x300 썸네일 생성"""
         try:
+            # 썸네일 기능이 OFF인 경우 None 반환
+            if not self.config.get("use_thumbnail", True):
+                self._update_status("⚪ 썸네일 기능 OFF - 스킵")
+                return None
+            
             self._update_status("🎨 썸네일 생성 중...")
             
             # setting/image 폴더의 jpg 파일 찾기
@@ -455,6 +554,47 @@ class NaverBlogAutomation:
             self._update_status(f"⚠️ 썸네일 생성 실패: {str(e)}")
             return None
     
+    def create_video_from_thumbnail(self, thumbnail_path):
+        """썸네일 이미지를 3초 동영상으로 변환"""
+        try:
+            # moviepy가 설치되지 않은 경우
+            if ImageClip is None:
+                self._update_status("⚠️ moviepy 라이브러리가 설치되지 않아 동영상 생성 불가")
+                return None
+            
+            # 썸네일 기능이 OFF인 경우 동영상도 생성하지 않음
+            if not self.config.get("use_thumbnail", True):
+                self._update_status("⚪ 썸네일 기능 OFF - 동영상도 스킵")
+                return None
+            
+            if not thumbnail_path or not os.path.exists(thumbnail_path):
+                self._update_status("⚠️ 썸네일 이미지가 없어 동영상 생성 불가")
+                return None
+            
+            self._update_status("🎬 동영상 생성 중...")
+            
+            # 썸네일 이미지로부터 3초 동영상 생성
+            clip = ImageClip(thumbnail_path).set_duration(3)
+            
+            # 결과 파일 경로 설정
+            result_folder = os.path.join("setting", "result")
+            os.makedirs(result_folder, exist_ok=True)
+            
+            # 파일명 생성 (썸네일과 동일한 이름으로)
+            base_name = os.path.splitext(os.path.basename(thumbnail_path))[0]
+            video_filename = f"{base_name}.mp4"
+            video_filepath = os.path.join(result_folder, video_filename)
+            
+            # 동영상 저장 (fps는 24로 설정)
+            clip.write_videofile(video_filepath, fps=24, codec='libx264', audio=False, verbose=False, logger=None)
+            
+            self._update_status(f"✅ 동영상 생성 완료: {video_filename}")
+            return video_filepath
+            
+        except Exception as e:
+            self._update_status(f"⚠️ 동영상 생성 실패: {str(e)}")
+            return None
+    
     def _write_body_with_linebreaks(self, text):
         """본문을 작성하면서 60자 이상이면 자동으로 줄바꿈"""
         max_length = 60
@@ -464,13 +604,15 @@ class NaverBlogAutomation:
             lines = text.split('\n')
             for i, line in enumerate(lines):
                 if line.strip():
+                    # 줄 길이에 비례한 지연시간 (최소 0.1초, 최대 0.3초)
+                    delay = max(0.1, min(0.3, len(line) / 200))
                     ActionChains(self.driver).send_keys(line).perform()
-                    time.sleep(0.05)
+                    time.sleep(delay)
                     if i < len(lines) - 1:  # 마지막 줄이 아니면 Enter 2번
                         ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                        time.sleep(0.05)
+                        time.sleep(0.15)  # Enter 후 더 긴 대기
                         ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                        time.sleep(0.05)
+                        time.sleep(0.15)
         # 줄바꿈이 없고 60자 이상이면 자동 줄바꿈
         elif len(text) > max_length:
             # 문장 단위로 분리 (마침표, 느낌표, 물음표 기준 - 단, 따옴표 안은 제외)
@@ -499,50 +641,68 @@ class NaverBlogAutomation:
             # 각 문장을 입력하고 줄바꿈 (Enter 2번)
             for i, sentence in enumerate(sentences):
                 if sentence:
+                    # 문장 길이에 비례한 지연시간 (최소 0.1초, 최대 0.3초)
+                    delay = max(0.1, min(0.3, len(sentence) / 200))
                     ActionChains(self.driver).send_keys(sentence).perform()
-                    time.sleep(0.05)
+                    time.sleep(delay)
                     if i < len(sentences) - 1:  # 마지막 문장이 아니면 Enter 2번
                         ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                        time.sleep(0.05)
+                        time.sleep(0.15)  # Enter 후 더 긴 대기
                         ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                        time.sleep(0.05)
+                        time.sleep(0.15)
         else:
             # 짧은 문장은 그대로 입력
             ActionChains(self.driver).send_keys(text).perform()
-            time.sleep(0.05)
+            time.sleep(0.1)  # 안정성을 위해 대기시간 증가
     
-    def write_post(self, title, content, thumbnail_path=None, wait_interval=0, is_first_post=True):
+    def write_post(self, title, content, thumbnail_path=None, video_path=None, wait_interval=0, is_first_post=True):
         """블로그 글 작성"""
         try:
-            # 첫 포스팅에만 페이지 이동
+            # 첫 포스팅인 경우 블로그 홈으로 바로 이동
             if is_first_post:
-                self._update_status("📝 블로그 페이지로 이동 중...")
-                
+                self._update_status("📝 첫 포스팅: 블로그 홈으로 이동 중...")
                 self.driver.get("https://section.blog.naver.com/BlogHome.naver?directoryNo=0&currentPage=1&groupId=0")
                 time.sleep(3)
                 
-                self._update_status("✍️ 글쓰기 버튼 찾는 중...")
+                # 글쓰기 버튼 찾기
+                write_btn_selectors = [
+                    "a.item[ng-href*='GoBlogWrite']",
+                    "a[href*='GoBlogWrite.naver']",
+                    ".sp_common.icon_write"
+                ]
                 
+                for selector in write_btn_selectors:
+                    try:
+                        write_btn = WebDriverWait(self.driver, 5).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                        )
+                        if write_btn:
+                            write_btn.click()
+                            time.sleep(3)
+                            self._update_status("✅ 블로그 홈에서 글쓰기 버튼 클릭 성공")
+                            
+                            # 새 창이 열렸다면 전환
+                            if len(self.driver.window_handles) > 1:
+                                self.driver.switch_to.window(self.driver.window_handles[-1])
+                                time.sleep(2)
+                            break
+                    except:
+                        continue
+            else:
+                # 두 번째 이후 포스팅: 페이지 확인만
+                self._update_status("📝 글쓰기 페이지 확인 중...")
+                
+                # 프레임에서 빠져나오기 (이전 포스팅에서 프레임 안에 있을 수 있음)
                 try:
-                    write_btn = WebDriverWait(self.driver, 10).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, ".sp_common.icon_write"))
-                    )
-                    self._update_status("👆 글쓰기 버튼 클릭...")
-                    write_btn.click()
-                    time.sleep(3)
+                    self.driver.switch_to.default_content()
                 except:
-                    self._update_status("📝 직접 글쓰기 페이지로 이동...")
-                    self.driver.get("https://blog.naver.com/my/post/write.naver")
-                    time.sleep(3)
+                    pass
                 
+                # 새 창이 열렸다면 전환
                 if len(self.driver.window_handles) > 1:
                     self._update_status("🪟 새 창으로 전환 중...")
                     self.driver.switch_to.window(self.driver.window_handles[-1])
                     time.sleep(2)
-            else:
-                # 후속 포스팅: 발행 후 글쓰기 버튼이 이미 클릭되어 있음
-                self._update_status("📝 이미 글쓰기 페이지에 있습니다...")
-                time.sleep(2)
             
             # mainFrame으로 전환
             self._update_status("🖼️ 에디터 프레임으로 전환 중...")
@@ -1117,6 +1277,172 @@ class NaverBlogAutomation:
                 time.sleep(1)
                 self._update_status("✅ 본문 입력 완료!")
                 
+                # 동영상 삽입 (본문 하단에 추가)
+                if video_path:
+                    self._update_status("🎬 동영상 삽입 중...")
+                    try:
+                        # Enter 2번으로 줄 띄우기
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.3)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.3)
+                        
+                        # 중앙 정렬 설정
+                        try:
+                            self._update_status("⚙️ 중앙 정렬 설정 중...")
+                            align_dropdown = WebDriverWait(self.driver, 3).until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-property-toolbar-drop-down-button.se-align-left-toolbar-button"))
+                            )
+                            align_dropdown.click()
+                            time.sleep(0.3)
+                            
+                            center_align_btn = WebDriverWait(self.driver, 3).until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-toolbar-option-align-center-button"))
+                            )
+                            center_align_btn.click()
+                            time.sleep(0.3)
+                            self._update_status("✅ 중앙 정렬 완료")
+                        except Exception as e:
+                            self._update_status(f"⚠️ 중앙 정렬 실패: {str(e)}")
+                        
+                        # 동영상 버튼 클릭
+                        self._update_status("🎬 동영상 버튼 클릭 중...")
+                        video_btn = WebDriverWait(self.driver, 5).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "button.se-video-toolbar-button.se-document-toolbar-basic-button"))
+                        )
+                        self.driver.execute_script("arguments[0].click();", video_btn)
+                        time.sleep(2)
+                        
+                        # "동영상 추가" 버튼 클릭
+                        self._update_status("📂 동영상 추가 버튼 클릭 중...")
+                        add_video_btn = WebDriverWait(self.driver, 5).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.nvu_btn_append.nvu_local[data-logcode='lmvup.attmv']"))
+                        )
+                        add_video_btn.click()
+                        time.sleep(2)
+                        
+                        # 파일 입력 요소 찾기 (모든 input[type='file'] 중에서)
+                        self._update_status("📂 파일 입력 요소 찾는 중...")
+                        file_input = WebDriverWait(self.driver, 5).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='file']"))
+                        )
+                        
+                        # 절대 경로로 동영상 파일 전송
+                        abs_path = os.path.abspath(video_path)
+                        self._update_status(f"⏳ 동영상 업로드 중: {os.path.basename(abs_path)}")
+                        file_input.send_keys(abs_path)
+                        
+                        # 동영상 업로드 대기 (동영상은 더 오래 걸릴 수 있음)
+                        time.sleep(10)
+                        self._update_status("✅ 동영상 업로드 명령 전달 완료")
+                        
+                        # Windows 탐색기 창 닫기 (pyautogui 사용 - OS 레벨 키보드 입력)
+                        self._update_status("🔘 Windows 탐색기 창 닫는 중...")
+                        try:
+                            # ESC 키로 Windows 탐색기 창 닫기
+                            self._update_status("⌨️ ESC 키로 탐색기 창 닫기 (pyautogui)")
+                            pyautogui.press('esc')
+                            time.sleep(1)
+                            self._update_status("✅ 탐색기 창 닫기 성공")
+                        except Exception as e:
+                            self._update_status(f"⚠️ ESC 실패, Alt+F4 시도: {str(e)[:30]}")
+                            try:
+                                # Alt+F4로 시도
+                                pyautogui.hotkey('alt', 'f4')
+                                time.sleep(1)
+                                self._update_status("✅ Alt+F4로 탐색기 창 닫기 성공")
+                            except Exception as e2:
+                                self._update_status(f"⚠️ 탐색기 창 닫기 실패: {str(e2)[:30]}")
+                        
+                        # 제목 입력란에 키워드 입력
+                        self._update_status("✍️ 동영상 제목 입력 중...")
+                        try:
+                            title_input = WebDriverWait(self.driver, 5).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "input#nvu_inp_box_title.nvu_inp[data-logcode='lmvup.subject']"))
+                            )
+                            title_input.clear()
+                            title_input.send_keys(self.current_keyword if self.current_keyword else "동영상")
+                            time.sleep(0.5)
+                            self._update_status(f"✅ 동영상 제목 입력 완료: {self.current_keyword if self.current_keyword else '동영상'}")
+                        except Exception as e:
+                            self._update_status(f"⚠️ 제목 입력 실패: {str(e)[:50]}")
+                        
+                        # 완료 버튼 클릭
+                        self._update_status("✅ 완료 버튼 클릭 중...")
+                        try:
+                            complete_btn = WebDriverWait(self.driver, 5).until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.nvu_btn_submit.nvu_btn_type2"))
+                            )
+                            complete_btn.click()
+                            time.sleep(2)
+                            self._update_status("✅ 동영상 완료 버튼 클릭 완료")
+                        except Exception as e:
+                            self._update_status(f"⚠️ 완료 버튼 클릭 실패: {str(e)[:50]}")
+                        
+                        # 팝업 닫기 버튼 찾아서 클릭
+                        self._update_status("🔘 팝업 닫기 버튼 찾는 중...")
+                        try:
+                            close_selectors = [
+                                "button.se-popup-button-close",
+                                "button[class*='close']",
+                                "button.se-dialog-button-close",
+                                ".layer_editor button[class*='close']",
+                                "button[title='닫기']",
+                                "a.btn_close"
+                            ]
+                            
+                            popup_closed = False
+                            for close_sel in close_selectors:
+                                try:
+                                    close_btn = WebDriverWait(self.driver, 2).until(
+                                        EC.element_to_be_clickable((By.CSS_SELECTOR, close_sel))
+                                    )
+                                    if close_btn:
+                                        close_btn.click()
+                                        popup_closed = True
+                                        self._update_status(f"✅ 팝업 닫기 성공: {close_sel[:30]}")
+                                        time.sleep(1)
+                                        break
+                                except:
+                                    continue
+                            
+                            if not popup_closed:
+                                # 모든 방법 실패 시 ESC 시도
+                                self._update_status("⚠️ 닫기 버튼 못 찾음 - ESC 시도")
+                                self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                                time.sleep(0.5)
+                        except Exception as e:
+                            self._update_status(f"⚠️ 팝업 닫기 실패: {str(e)[:50]}")
+                        
+                        self._update_status("✅ 동영상 삽입 완료")
+                        
+                        # Enter 키 2번으로 다음 줄로 이동
+                        time.sleep(1)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.3)
+                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        time.sleep(0.5)
+                        
+                        # 왼쪽 정렬로 복구
+                        try:
+                            align_dropdown = WebDriverWait(self.driver, 3).until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-property-toolbar-drop-down-button.se-align-center-toolbar-button"))
+                            )
+                            align_dropdown.click()
+                            time.sleep(0.3)
+                            
+                            left_align_btn = WebDriverWait(self.driver, 3).until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-toolbar-option-align-left-button"))
+                            )
+                            left_align_btn.click()
+                            time.sleep(0.3)
+                            self._update_status("✅ 왼쪽 정렬 완료")
+                        except:
+                            pass
+                            
+                    except Exception as e:
+                        self._update_status(f"⚠️ 동영상 삽입 실패(진행 계속): {str(e)[:100]}")
+                
             except Exception as e:
                 self._update_status(f"❌ 본문 입력 실패: {str(e)}")
                 return False
@@ -1253,29 +1579,60 @@ class NaverBlogAutomation:
                     self.driver.execute_script("arguments[0].click();", final_btn)
                     time.sleep(3)
                     
-                    # 발행 완료 후 글쓰기 버튼 클릭 (새 탭 열지 않고 기존 페이지에서 이동)
+                    # 발행 완료 후 다음 글쓰기 준비
                     try:
-                        self._update_status("📝 다음 글쓰기 준비 중...")
-                        write_link_selectors = [
-                            "a.col._checkBlock._rosRestrict[onclick*='prf.write']",
-                            "a[href*='postwrite'][onclick*='sendClickNlog']",
-                            "a.col._checkBlock[target='mainFrame']"
+                        # 프레임에서 빠져나오기
+                        self.driver.switch_to.default_content()
+                        time.sleep(2)
+                        
+                        # 현재 URL 확인
+                        current_url = self.driver.current_url
+                        self._update_status(f"📍 현재 URL: {current_url[:50]}...")
+                        
+                        # 현재 창 닫기 (새 탭에서 글쓰기 했던 경우)
+                        if len(self.driver.window_handles) > 1:
+                            self._update_status("🪟 발행 완료 - 글쓰기 창 닫는 중...")
+                            self.driver.close()
+                            self.driver.switch_to.window(self.driver.window_handles[0])
+                            time.sleep(2)
+                            self._update_status(f"🪟 메인 창으로 전환 완료")
+                        
+                        # 블로그 홈으로 이동 후 글쓰기 버튼 클릭
+                        self._update_status("📝 블로그 홈으로 이동 중...")
+                        self.driver.get("https://section.blog.naver.com/BlogHome.naver?directoryNo=0&currentPage=1&groupId=0")
+                        time.sleep(3)
+                        
+                        # 글쓰기 버튼 찾기
+                        write_btn_selectors = [
+                            "a.item[ng-href*='GoBlogWrite']",
+                            "a[href*='GoBlogWrite.naver']",
+                            ".sp_common.icon_write"
                         ]
                         
-                        for link_selector in write_link_selectors:
+                        for selector in write_btn_selectors:
                             try:
-                                write_link = WebDriverWait(self.driver, 3).until(
-                                    EC.presence_of_element_located((By.CSS_SELECTOR, link_selector))
+                                write_btn = WebDriverWait(self.driver, 5).until(
+                                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                                 )
-                                if write_link:
-                                    self.driver.execute_script("arguments[0].click();", write_link)
-                                    time.sleep(2)
-                                    self._update_status("✅ 글쓰기 페이지로 이동 완료")
+                                if write_btn:
+                                    self._update_status(f"✅ 글쓰기 버튼 발견 - 클릭 시도")
+                                    write_btn.click()
+                                    time.sleep(3)
+                                    self._update_status("✅ 블로그 홈에서 글쓰기 버튼 클릭 성공")
+                                    
+                                    # 새 창이 열렸다면 전환
+                                    if len(self.driver.window_handles) > 1:
+                                        self._update_status("🪟 새 창으로 전환 중...")
+                                        self.driver.switch_to.window(self.driver.window_handles[-1])
+                                        time.sleep(2)
                                     break
-                            except:
+                            except Exception as e:
+                                self._update_status(f"⚠️ 선택자 실패: {selector[:30]}...")
                                 continue
+                        
+                        self._update_status("✅ 발행 완료 - 다음 포스팅 준비 완료")
                     except Exception as e:
-                        self._update_status(f"⚠️ 글쓰기 버튼 클릭 실패 (계속 진행): {str(e)[:50]}")
+                        self._update_status(f"⚠️ 글쓰기 준비 중 오류 (계속 진행): {str(e)[:50]}")
                     
                     return True
                 except:
@@ -1463,6 +1820,16 @@ class NaverBlogAutomation:
             else:
                 self._update_status("⚠️ 썸네일 파일 없음 - 계속 진행")
             
+            # 2-1단계: 동영상 생성 (썸네일이 있을 경우)
+            video_path = None
+            if thumbnail_path:
+                self._update_status("🎬 [2-1/5] 동영상 생성 단계")
+                video_path = self.create_video_from_thumbnail(thumbnail_path)
+                if video_path:
+                    self._update_status(f"✅ 동영상 생성 완료")
+                else:
+                    self._update_status("⚠️ 동영상 생성 실패 - 계속 진행")
+            
             if self.should_stop:
                 self._update_status("⏹️ 프로세스가 정지되었습니다.")
                 return False
@@ -1499,7 +1866,7 @@ class NaverBlogAutomation:
             
             # 5단계: 블로그 포스팅
             self._update_status("✍️ [5/5] 블로그 포스팅 단계")
-            if not self.write_post(title, content, thumbnail_path, wait_interval, is_first_post=is_first_run):
+            if not self.write_post(title, content, thumbnail_path, video_path, wait_interval, is_first_post=is_first_run):
                 self._update_status("⚠️ 포스팅 실패 - 브라우저는 열린 상태로 유지됩니다")
                 return False
             
@@ -1517,11 +1884,10 @@ class NaverBlogAutomation:
             return False
     
     def close(self):
-        """브라우저 종료"""
+        """브라우저 종료 (프로그램 종료 시에도 브라우저 유지)"""
         if self.driver:
-            self._update_status("🔒 브라우저 종료 중...")
-            self.driver.quit()
-            self._update_status("✅ 모든 작업 완료")
+            self._update_status("✅ 프로그램 종료 (브라우저는 계속 실행됩니다)")
+            # self.driver.quit()  # 브라우저는 종료하지 않음
 
 
 def start_automation(naver_id, naver_pw, api_key, ai_model="gemini", theme="", 
@@ -3028,6 +3394,16 @@ class NaverBlogGUI(QMainWindow):
         thumbnail_layout.addWidget(thumbnail_label)
         thumbnail_layout.addStretch()
         
+        # 썸네일 ON/OFF 토글 버튼
+        self.thumbnail_toggle_btn = QPushButton("ON")
+        self.thumbnail_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.thumbnail_toggle_btn.setFixedSize(60, 24)
+        self.thumbnail_toggle_btn.setCheckable(True)
+        self.thumbnail_toggle_btn.setChecked(self.config.get("use_thumbnail", True))
+        self.thumbnail_toggle_btn.clicked.connect(self.toggle_thumbnail)
+        self.update_thumbnail_button_style()
+        thumbnail_layout.addWidget(self.thumbnail_toggle_btn)
+        
         thumbnail_open_btn = QPushButton("📂 열기")
         thumbnail_open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         thumbnail_open_btn.setFixedSize(75, 24)
@@ -3439,6 +3815,49 @@ class NaverBlogGUI(QMainWindow):
         self.save_config_file()
         self.update_status_display()
     
+    def toggle_thumbnail(self):
+        """썸네일 ON/OFF 토글"""
+        is_on = self.thumbnail_toggle_btn.isChecked()
+        self.config["use_thumbnail"] = is_on
+        self.thumbnail_toggle_btn.setText("ON" if is_on else "OFF")
+        self.update_thumbnail_button_style()
+        self.save_config_file()
+        self.update_status_display()
+    
+    def update_thumbnail_button_style(self):
+        """썸네일 토글 버튼 스타일 업데이트"""
+        is_on = self.thumbnail_toggle_btn.isChecked()
+        if is_on:
+            self.thumbnail_toggle_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {NAVER_GREEN};
+                    border: none;
+                    border-radius: 6px;
+                    color: white;
+                    font-size: 13px;
+                    font-weight: bold;
+                    padding: 0px;
+                }}
+                QPushButton:hover {{
+                    background-color: {NAVER_GREEN_HOVER};
+                }}
+            """)
+        else:
+            self.thumbnail_toggle_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: #CCCCCC;
+                    border: none;
+                    border-radius: 6px;
+                    color: white;
+                    font-size: 13px;
+                    font-weight: bold;
+                    padding: 0px;
+                }}
+                QPushButton:hover {{
+                    background-color: #BBBBBB;
+                }}
+            """)
+    
     def toggle_time_selection(self):
         """더 이상 사용하지 않는 함수 (호환성 유지)"""
         pass
@@ -3521,37 +3940,44 @@ class NaverBlogGUI(QMainWindow):
                         publish_time="now",
                         scheduled_hour="00",
                         scheduled_minute="00",
-                        callback=self.log_message
+                        callback=self.log_message,
+                        config=self.config
                     )
                 
                 # 자동화 실행 (첫 실행 여부 전달)
                 result = self.automation.run(wait_interval, is_first_run=is_first_start)
                 
-                # 키워드 부족으로 중지된 경우 처리
+                # 실패 시 원인 구분하여 처리
                 if result is False:
-                    self.update_progress_status("⏹️ 키워드가 없어 프로그램을 중지합니다.")
-                    print("⏹️ 키워드 부족으로 자동 중지됨")
-                    
-                    # 중지 처리
-                    self.is_running = False
-                    self.start_btn.setEnabled(True)
-                    self.stop_btn.setEnabled(False)
-                    self.pause_btn.setEnabled(False)
-                    self.resume_btn.setEnabled(False)
-                    
-                    # 사용자에게 알림
-                    from PyQt6.QtWidgets import QMessageBox
-                    msg_box = QMessageBox()
-                    msg_box.setWindowTitle("⚠️ 키워드 부족")
-                    msg_box.setIcon(QMessageBox.Icon.Warning)
-                    msg_box.setText("더 이상 사용 가능한 키워드가 없습니다.")
-                    msg_box.setInformativeText("keywords.txt 파일에 새로운 키워드를 추가해주세요.")
-                    msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
-                    msg_box.exec()
-                    return
+                    # 키워드가 없어서 실패한 경우
+                    if not self.automation.current_keyword:
+                        self.update_progress_status("⏹️ 키워드가 없어 프로그램을 중지합니다.")
+                        print("⏹️ 키워드 부족으로 자동 중지됨")
+                        
+                        # 중지 처리
+                        self.is_running = False
+                        self.start_btn.setEnabled(True)
+                        self.stop_btn.setEnabled(False)
+                        self.pause_btn.setEnabled(False)
+                        self.resume_btn.setEnabled(False)
+                        return
+                    else:
+                        # 키워드는 있지만 다른 이유로 실패 (발행 실패 등)
+                        self.update_progress_status("⚠️ 포스팅 중 오류가 발생했습니다. 재시도합니다...")
+                        print("⚠️ 포스팅 실패 - 키워드는 유지되고 다음 시도에서 재사용됩니다")
+                        
+                        # 실패한 경우에도 계속 진행 (다음 포스팅 시도)
+                        if self.is_running and not self.is_paused:
+                            self.update_progress_status("🔄 다음 포스팅을 준비합니다...")
+                            print("🔄 다음 포스팅을 준비합니다...")
+                            self.start_posting(is_first_start=False)
+                        return
                 
                 self.update_progress_status("✅ 포스팅이 완료되었습니다!")
                 print("✅ 포스팅이 완료되었습니다!")
+                
+                # UI 상태 갱신 (키워드 개수 등 실시간 업데이트)
+                QTimer.singleShot(0, lambda: self.update_status_display())
                 
                 # 포스팅 완료 후 다음 포스팅을 자동으로 시작
                 if self.is_running and not self.is_paused:
@@ -3581,6 +4007,13 @@ class NaverBlogGUI(QMainWindow):
             self.automation.should_stop = True
             self.update_progress_status("⏹️ 포스팅 중지 요청됨...")
             print("⏹️ 포스팅 중지 요청됨...")
+            # 브라우저 자원 해제 시도
+            try:
+                if self.automation.driver:
+                    self.automation.close()
+            except:
+                pass
+            self.automation = None  # 객체 초기화하여 다음 시작시 새로 생성되도록
         
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -3588,6 +4021,8 @@ class NaverBlogGUI(QMainWindow):
         self.resume_btn.setEnabled(False)
         self.update_progress_status("⏹️ 포스팅을 정지했습니다.")
         print("⏹️ 포스팅을 정지했습니다.")
+        # UI 상태 갱신 (키워드 개수 등)
+        self.update_status_display()
     
     def pause_posting(self):
         """포스팅 일시정지"""
@@ -3642,21 +4077,11 @@ class NaverBlogGUI(QMainWindow):
     
     def log_message(self, message):
         """로그 메시지 출력 및 진행 상태 업데이트 (중복 방지)"""
-        # 키워드 관련 특수 메시지 처리
+        # 키워드 관련 특수 메시지 처리 (알림창 없이 로그만 표시)
         if message.startswith("KEYWORD_"):
-            if message == "KEYWORD_EMPTY":
-                # 메인 스레드에서 메시지 박스 표시
-                QTimer.singleShot(0, lambda: self.show_keyword_empty_dialog())
-                return
-            elif message.startswith("KEYWORD_LOW:"):
-                keyword_count = message.split(":")[1]
-                # 메인 스레드에서 메시지 박스 표시
-                QTimer.singleShot(0, lambda: self.show_keyword_low_dialog(keyword_count))
-                return
-            elif message == "KEYWORD_FILE_MISSING":
-                # 메인 스레드에서 메시지 박스 표시
-                QTimer.singleShot(0, lambda: self.show_keyword_file_missing_dialog())
-                return
+            # KEYWORD_EMPTY, KEYWORD_LOW, KEYWORD_FILE_MISSING 등은 로그에만 표시
+            print(f"📋 키워드 상태: {message}")
+            return
         
         # 중복 메시지 방지
         if not hasattr(self, '_last_log_message') or self._last_log_message != message:
@@ -3859,12 +4284,13 @@ if __name__ == "__main__":
         ip_layout = QVBoxLayout(ip_card)
         ip_layout.setSpacing(10)
         
-        ip_label = QLabel(f"현재 IP: {license_manager.get_local_ip()}")
-        ip_label.setFont(QFont("맑은 고딕", 14, QFont.Weight.Bold))
-        ip_label.setStyleSheet("color: #E65100; background: transparent; padding: 0;")
-        ip_layout.addWidget(ip_label)
+        machine_id_label = QLabel(f"현재 머신 ID: {license_manager.get_machine_id()}")
+        machine_id_label.setFont(QFont("맑은 고딕", 14, QFont.Weight.Bold))
+        machine_id_label.setStyleSheet("color: #E65100; background: transparent; padding: 0;")
+        machine_id_label.setWordWrap(True)
+        ip_layout.addWidget(machine_id_label)
         
-        info_label = QLabel("판매자에게 위 IP를 알려주세요.")
+        info_label = QLabel("판매자에게 위 머신 ID를 알려주세요.")
         info_label.setFont(QFont("맑은 고딕", 12))
         info_label.setStyleSheet("color: #424242; background: transparent; padding: 0;")
         ip_layout.addWidget(info_label)
@@ -3888,17 +4314,18 @@ if __name__ == "__main__":
         guide_title.setStyleSheet("color: #1565C0; background: transparent; padding: 0;")
         guide_layout.addWidget(guide_title)
         
-        # IP 주소와 복사 버튼
-        ip_row = QWidget()
-        ip_row.setStyleSheet("background: transparent;")
-        ip_row_layout = QHBoxLayout(ip_row)
-        ip_row_layout.setContentsMargins(0, 0, 0, 0)
-        ip_row_layout.setSpacing(15)
+        # 머신 ID와 복사 버튼
+        machine_row = QWidget()
+        machine_row.setStyleSheet("background: transparent;")
+        machine_row_layout = QHBoxLayout(machine_row)
+        machine_row_layout.setContentsMargins(0, 0, 0, 0)
+        machine_row_layout.setSpacing(15)
         
-        ip_info = QLabel(f"🌐 IP 주소    {license_manager.get_local_ip()}")
-        ip_info.setFont(QFont("맑은 고딕", 10))
-        ip_info.setStyleSheet("color: #424242; background: transparent; padding: 0;")
-        ip_row_layout.addWidget(ip_info)
+        machine_info = QLabel(f"🔑 머신 ID    {license_manager.get_machine_id()}")
+        machine_info.setFont(QFont("맑은 고딕", 10))
+        machine_info.setStyleSheet("color: #424242; background: transparent; padding: 0;")
+        machine_info.setWordWrap(True)
+        machine_row_layout.addWidget(machine_info)
         
         copy_btn = QPushButton("📋 복사")
         copy_btn.setFont(QFont("맑은 고딕", 9, QFont.Weight.Bold))
@@ -3921,10 +4348,10 @@ if __name__ == "__main__":
             }
         """)
         
-        def copy_ip():
+        def copy_machine_id():
             from PyQt6.QtWidgets import QApplication
             clipboard = QApplication.clipboard()
-            clipboard.setText(license_manager.get_local_ip())
+            clipboard.setText(license_manager.get_machine_id())
             copy_btn.setText("✓ 복사됨")
             copy_btn.setStyleSheet("""
                 QPushButton {
@@ -3936,16 +4363,16 @@ if __name__ == "__main__":
                 }
             """)
         
-        copy_btn.clicked.connect(copy_ip)
-        ip_row_layout.addWidget(copy_btn)
-        ip_row_layout.addStretch()
+        copy_btn.clicked.connect(copy_machine_id)
+        machine_row_layout.addWidget(copy_btn)
+        machine_row_layout.addStretch()
         
-        guide_layout.addWidget(ip_row)
+        guide_layout.addWidget(machine_row)
         
         layout.addWidget(guide_card)
         
         # 참고 메시지
-        note_label = QLabel("💡 참고: 위 IP 주소를 판매자에게 보내면 프로그램 사용 권한을 등록할 수 있습니다.")
+        note_label = QLabel("💡 참고: 위 머신 ID를 판매자에게 보내면 프로그램 사용 권한을 등록할 수 있습니다.\n(와이파이 변경, 재부팅 시에도 머신 ID는 변경되지 않습니다)")
         note_label.setFont(QFont("맑은 고딕", 9))
         note_label.setStyleSheet("color: #757575;")
         note_label.setWordWrap(True)
@@ -4027,7 +4454,8 @@ if __name__ == "__main__":
     license_info = license_manager.get_license_info()
     if license_info.get("name"):
         print(f"✅ 구매자: {license_info['name']}")
-    print(f"✅ 등록 IP: {license_info['ip']}")
+    print(f"✅ 머신 ID: {license_info['machine_id'][:32]}...")
+    print(f"✅ MAC 주소: {license_info.get('mac_address', 'N/A')}")
     
     window = NaverBlogGUI()
     window.show()
