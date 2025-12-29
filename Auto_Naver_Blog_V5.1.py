@@ -73,18 +73,30 @@ from license_check import LicenseManager
 from PIL import Image, ImageDraw, ImageFont
 import random
 import pyautogui
+
+# moviepy import (PyInstaller 감지용 - moviepy 2.x 호환)
 try:
-    from moviepy.editor import ImageClip
-except ImportError:
+    # moviepy 2.x 방식
+    from moviepy import ImageClip
+    import moviepy
+    import moviepy.video.io.VideoFileClip
+    import moviepy.video.VideoClip
+    import imageio
+    import imageio_ffmpeg
+    print("✅ moviepy 로드 성공")
+except ImportError as e:
+    print(f"⚠️ moviepy 로드 실패: {e}")
     ImageClip = None
 
 
 class NaverBlogAutomation:
     """네이버 블로그 자동 포스팅 클래스"""
     
-    def __init__(self, naver_id, naver_pw, api_key, ai_model="gemini", theme="", 
-                 open_type="전체공개", external_link="", external_link_text="", 
-                 publish_time="now", scheduled_hour="09", scheduled_minute="00", callback=None, config=None):
+    def __init__(self, naver_id, naver_pw, api_key, ai_model="gemini", theme="일상", 
+                 open_type="전체공개", external_link=None, external_link_text="더 알아보기",
+                 publish_time="즉시발행", scheduled_hour=12, scheduled_minute=0, 
+                 related_posts_title="함께 보면 좋은 글", blog_address="",
+                 callback=None, config=None):
         """초기화 함수"""
         self.naver_id = naver_id
         self.naver_pw = naver_pw
@@ -97,6 +109,8 @@ class NaverBlogAutomation:
         self.publish_time = publish_time
         self.scheduled_hour = scheduled_hour
         self.scheduled_minute = scheduled_minute
+        self.related_posts_title = related_posts_title
+        self.blog_address = blog_address
         self.callback = callback
         self.config = config or {}  # config 저장
         self.driver: webdriver.Chrome | None = None
@@ -497,8 +511,9 @@ class NaverBlogAutomation:
             draw = ImageDraw.Draw(img)
             
             # 제목을 줄바꿈 처리 (글자 수 제한)
-            max_chars_per_line = 12  # 한 줄당 최대 12자
-            max_lines = 4  # 최대 4줄
+            max_chars_per_line = 10  # 한 줄당 최대 10자 (공백 포함)
+            max_lines = 5  # 최대 5줄
+            margin = 30  # 테두리 여백 (좌우상하)
             
             if ',' in title:
                 # 쉼표가 있으면 쉼표 기준으로 먼저 분리
@@ -507,7 +522,7 @@ class NaverBlogAutomation:
                 for part in parts:
                     part = part.strip()
                     if part:
-                        # 각 파트가 12자를 넘으면 추가로 분할
+                        # 각 파트가 8자를 넘으면 추가로 분할
                         if len(part) > max_chars_per_line:
                             for i in range(0, len(part), max_chars_per_line):
                                 lines.append(part[i:i+max_chars_per_line])
@@ -522,7 +537,7 @@ class NaverBlogAutomation:
                 title_text = '\n'.join(lines[:max_lines])
             
             # 폰트 설정 (고정 크기)
-            font_size = 26
+            font_size = 24  # 폰트 크기 약간 줄임
             
             try:
                 # 맑은 고딕 폰트 사용
@@ -533,13 +548,15 @@ class NaverBlogAutomation:
                 font = ImageFont.load_default()
             
             # 텍스트 바운딩 박스 계산
-            bbox = draw.multiline_textbbox((0, 0), title_text, font=font, align='center')
+            bbox = draw.multiline_textbbox((0, 0), title_text, font=font, align='center', spacing=4)
             text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
             
-            # 중앙 위치 계산
-            x = (300 - text_width) // 2
-            y = (300 - text_height) // 2
+            # 중앙 위치 계산 (여백 고려)
+            available_width = 300 - (margin * 2)
+            available_height = 300 - (margin * 2)
+            x = margin + (available_width - text_width) // 2
+            y = margin + (available_height - text_height) // 2
             
             # 텍스트 그림자 (검정색)
             shadow_offset = 2
@@ -548,7 +565,8 @@ class NaverBlogAutomation:
                 title_text, 
                 fill=(50, 50, 50), 
                 font=font, 
-                align='center'
+                align='center',
+                spacing=4
             )
             
             # 텍스트 그리기 (흰색)
@@ -557,7 +575,8 @@ class NaverBlogAutomation:
                 title_text, 
                 fill=(255, 255, 255), 
                 font=font, 
-                align='center'
+                align='center',
+                spacing=4
             )
             
             # 이미지 저장
@@ -581,29 +600,40 @@ class NaverBlogAutomation:
             return None
     
     def create_video_from_thumbnail(self, thumbnail_path):
-        """썸네일 이미지를 3초 동영상으로 변환"""
+        """썸네일 이미지를 3초 동영상으로 변환 (mp4 생성)"""
         try:
-            # moviepy가 설치되지 않은 경우
-            if ImageClip is None:
-                self._update_status("❌ moviepy 라이브러리가 없어 동영상 생성 불가")
-                self._update_status("📦 moviepy 설치 필요: pip install moviepy")
-                print(f"ERROR: ImageClip is None - moviepy not imported properly")
+            # 동영상 기능이 OFF인 경우 생성하지 않음
+            if not self.config.get("use_video", True):
+                self._update_status("⚪ 동영상 기능 OFF - 스킵")
                 return None
             
-            # 썸네일 기능이 OFF인 경우 동영상도 생성하지 않음
-            if not self.config.get("use_thumbnail", True):
-                self._update_status("⚪ 썸네일 기능 OFF - 동영상도 스킵")
-                return None
+            # [추가] EXE 환경에서 FFmpeg 경로 강제 지정 로직
+            import sys
+            if getattr(sys, 'frozen', False):
+                # PyInstaller가 파일을 푸는 임시 경로(_MEIPASS) 확인
+                base_path = sys._MEIPASS
+                ffmpeg_dir = os.path.join(base_path, "imageio_ffmpeg", "binaries")
+                if os.path.exists(ffmpeg_dir):
+                    # 해당 폴더 내의 ffmpeg-win64...exe 파일을 찾아서 경로 설정
+                    for f in os.listdir(ffmpeg_dir):
+                        if f.startswith("ffmpeg") and f.endswith(".exe"):
+                            ffmpeg_path = os.path.join(ffmpeg_dir, f)
+                            os.environ["IMAGEIO_FFMPEG_EXE"] = ffmpeg_path
+                            print(f"✅ EXE 내부 FFmpeg 경로 설정: {ffmpeg_path}")
+                            self._update_status(f"✅ FFmpeg 경로 설정 완료")
+                            break
+            
+            # moviepy 동적 import (실행 시점에 체크)
+            try:
+                from moviepy import ImageClip
+            except ImportError as import_error:
+                raise ImportError(f"moviepy 라이브러리를 import할 수 없습니다: {str(import_error)}")
             
             if not thumbnail_path or not os.path.exists(thumbnail_path):
-                self._update_status("⚠️ 썸네일 이미지가 없어 동영상 생성 불가")
-                return None
+                raise FileNotFoundError(f"썸네일 이미지를 찾을 수 없습니다: {thumbnail_path}")
             
             self._update_status("🎬 동영상 생성 시작...")
             print(f"VIDEO: Creating video from {thumbnail_path}")
-            
-            # 썸네일 이미지로부터 3초 동영상 생성
-            clip = ImageClip(thumbnail_path).set_duration(3)
             
             # 결과 파일 경로 설정
             result_folder = os.path.join("setting", "result")
@@ -616,8 +646,43 @@ class NaverBlogAutomation:
             
             print(f"VIDEO: Saving to {video_filepath}")
             
-            # 동영상 저장 (fps는 24로 설정)
-            clip.write_videofile(video_filepath, fps=24, codec='libx264', audio=False, verbose=False, logger=None)
+            # exe 환경에서 stdout/stderr가 None일 때 처리
+            import sys
+            original_stdout = sys.stdout
+            original_stderr = sys.stderr
+            
+            class DummyFile:
+                def write(self, x): pass
+                def flush(self): pass
+            
+            if sys.stdout is None:
+                sys.stdout = DummyFile()
+            if sys.stderr is None:
+                sys.stderr = DummyFile()
+            
+            try:
+                # 썸네일 이미지로부터 3초 동영상 생성 (moviepy 2.x: duration을 생성자에 전달)
+                clip = ImageClip(thumbnail_path, duration=3)
+                
+                # 동영상 저장 (moviepy 2.x)
+                clip.write_videofile(
+                    video_filepath, 
+                    fps=24, 
+                    codec='libx264', 
+                    audio=False,
+                    logger=None  # exe에서 안전하게 로깅 비활성화
+                )
+                
+                # clip 리소스 해제
+                clip.close()
+            finally:
+                # stdout/stderr 복원
+                sys.stdout = original_stdout
+                sys.stderr = original_stderr
+            
+            # 동영상 파일 생성 확인
+            if not os.path.exists(video_filepath):
+                raise FileNotFoundError(f"동영상 파일 생성 실패: {video_filepath}")
             
             self._update_status(f"✅ 동영상 생성 완료: {video_filename}")
             print(f"VIDEO: Successfully created {video_filepath}")
@@ -628,8 +693,128 @@ class NaverBlogAutomation:
             print(f"VIDEO ERROR: {type(e).__name__}: {str(e)}")
             import traceback
             traceback.print_exc()
-            return None
+            raise  # 에러를 상위로 전달하여 명확히 실패 처리
     
+    def crawl_latest_blog_posts(self):
+        """네이버 블로그에서 최신글 3개의 URL과 제목을 크롤링"""
+        try:
+            if not self.blog_address:
+                self._update_status("⚠️ 블로그 주소가 설정되지 않았습니다")
+                return []
+            
+            self._update_status(f"🔍 블로그 크롤링 시작: {self.blog_address}")
+            
+            posts = []
+            
+            # 현재 창 핸들 저장
+            original_window = self.driver.current_window_handle
+            
+            # 새 탭에서 블로그 열기
+            self.driver.execute_script("window.open('');")
+            self.driver.switch_to.window(self.driver.window_handles[-1])
+            
+            try:
+                # 블로그 접속
+                self.driver.get(self.blog_address)
+                time.sleep(3)
+                
+                # 최신글 목록에서 링크 찾기 (여러 선택자 시도)
+                post_selectors = [
+                    "a.post_tit",  # 일반적인 포스트 제목 링크
+                    "a.pcol1",  # 다른 스타일의 블로그
+                    ".blog2_series a",  # 시리즈형 블로그
+                    "a[href*='PostView']",  # PostView가 포함된 모든 링크
+                    "a[href*='logNo=']",  # logNo가 포함된 모든 링크
+                ]
+                
+                post_elements = []
+                for selector in post_selectors:
+                    try:
+                        elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        if elements and len(elements) >= 1:
+                            self._update_status(f"🔍 셀렉터 '{selector}'로 {len(elements)}개 발견")
+                            # 충분한 개수가 발견되면 사용
+                            post_elements = elements[:10]  # 여유있게 10개까지 찾음
+                            break
+                    except Exception as e:
+                        self._update_status(f"⚠️ 셀렉터 '{selector}' 실패: {str(e)[:30]}")
+                        continue
+                
+                if not post_elements:
+                    self._update_status("⚠️ 블로그 포스트를 찾을 수 없습니다")
+                    return []
+                
+                self._update_status(f"📋 총 {len(post_elements)}개 요소 발견, 최신 3개 추출 시작")
+                
+                # 각 포스트의 URL과 제목 수집
+                for idx, element in enumerate(post_elements):
+                    if len(posts) >= 3:  # 3개 수집하면 중단
+                        break
+                        
+                    try:
+                        post_title = element.text.strip()
+                        post_url = element.get_attribute("href")
+                        
+                        # 제목과 URL이 유효한지 확인
+                        if not post_title or not post_url:
+                            self._update_status(f"⚠️ 요소 {idx+1}: 제목 또는 URL 없음 - 스킵")
+                            continue
+                        
+                        # 이미 추가된 URL인지 확인 (중복 방지)
+                        if any(p['url'] == post_url for p in posts):
+                            self._update_status(f"⚠️ 요소 {idx+1}: 중복 URL - 스킵")
+                            continue
+                        
+                        posts.append({
+                            'title': post_title,
+                            'url': post_url,
+                            'description': post_title  # 설명은 제목과 동일하게
+                        })
+                        
+                        self._update_status(f"✅ 포스트 {len(posts)} 수집: {post_title[:30]}...")
+                    except Exception as e:
+                        self._update_status(f"⚠️ 요소 {idx+1} 처리 실패: {str(e)[:30]}")
+                        continue
+                
+            except Exception as e:
+                self._update_status(f"⚠️ 블로그 크롤링 중 오류: {str(e)[:50]}")
+            
+            finally:
+                # 탭 닫고 원래 창으로 돌아가기
+                self.driver.close()
+                self.driver.switch_to.window(original_window)
+            
+            self._update_status(f"✅ 총 {len(posts)}개의 최신글 수집 완료")
+            return posts[:3]  # 최대 3개만 반환
+            
+        except Exception as e:
+            self._report_error("블로그 크롤링", e, show_traceback=False)
+            return []
+    
+    def save_latest_posts_to_file(self, posts):
+        """수집한 최신글 정보를 latest_posts.txt 파일에 저장"""
+        try:
+            if not posts:
+                self._update_status("⚠️ 저장할 포스트가 없습니다")
+                return False
+            
+            latest_posts_file = os.path.join(self.data_dir, "setting", "latest_posts.txt")
+            
+            # 파일에 저장 (제목|||링크|||설명 형식)
+            with open(latest_posts_file, 'w', encoding='utf-8') as f:
+                for post in posts:
+                    # 제목|||링크|||설명 형식으로 저장
+                    line = f"{post['title']}|||{post['url']}|||{post['description']}\n"
+                    f.write(line)
+            
+            self._update_status(f"✅ latest_posts.txt 파일 저장 완료 ({len(posts)}개)")
+            return True
+            
+        except Exception as e:
+            self._report_error("최신글 파일 저장", e, show_traceback=False)
+            return False
+    
+
     def _write_body_with_linebreaks(self, text):
         """본문을 작성하면서 60자 이상이면 자동으로 줄바꿈"""
         max_length = 60
@@ -690,7 +875,7 @@ class NaverBlogAutomation:
             ActionChains(self.driver).send_keys(text).perform()
             time.sleep(0.1)  # 안정성을 위해 대기시간 증가
     
-    def write_post(self, title, content, thumbnail_path=None, video_path=None, wait_interval=0, is_first_post=True):
+    def write_post(self, title, content, thumbnail_path=None, video_path=None, is_first_post=True):
         """블로그 글 작성"""
         try:
             # 첫 포스팅인 경우 블로그 홈으로 바로 이동
@@ -699,6 +884,17 @@ class NaverBlogAutomation:
                 self.driver.get("https://section.blog.naver.com/BlogHome.naver?directoryNo=0&currentPage=1&groupId=0")
                 time.sleep(3)
                 
+                # 블로그 주소가 설정되어 있으면 최신글 크롤링
+                if self.blog_address:
+                    self._update_status("🔍 블로그 최신글 크롤링 시작...")
+                    latest_posts = self.crawl_latest_blog_posts()
+                    if latest_posts:
+                        self.save_latest_posts_to_file(latest_posts)
+                        self._update_status(f"✅ {len(latest_posts)}개 최신글 저장 완료")
+                    else:
+                        self._update_status("⚠️ 최신글 크롤링 실패 - '함께 보면 좋은 글' 섹션 생략")
+                
+
                 # 글쓰기 버튼 찾기
                 write_btn_selectors = [
                     "a.item[ng-href*='GoBlogWrite']",
@@ -985,28 +1181,116 @@ class NaverBlogAutomation:
                     except Exception as e:
                         self._update_status(f"⚠️ 폰트 크기 변경 실패: {str(e)}")
                     
-                    # 왼쪽 정렬
-                    try:
-                        align_dropdown = WebDriverWait(self.driver, 3).until(
-                            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-property-toolbar-drop-down-button.se-align-center-toolbar-button"))
-                        )
-                        align_dropdown.click()
-                        time.sleep(0.3)
-                        
-                        left_align_btn = WebDriverWait(self.driver, 3).until(
-                            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-toolbar-option-align-left-button"))
-                        )
-                        left_align_btn.click()
-                        time.sleep(0.3)
-                        self._update_status("✅ 왼쪽 정렬 완료")
-                    except Exception as e:
-                        self._update_status(f"⚠️ 왼쪽 정렬 실패: {str(e)}")
-                    
                     # Ctrl+B로 볼드체 해제
                     actions = ActionChains(self.driver)
                     actions.key_down(Keys.CONTROL).send_keys('b').key_up(Keys.CONTROL).perform()
                     time.sleep(0.3)
                     self._update_status("✅ 볼드체 해제")
+                
+                # '함께 보면 좋은 글' 섹션 추가
+                self._update_status("📚 '함께 보면 좋은 글' 섹션 확인 중...")
+                try:
+                    latest_posts_file = os.path.join(self.data_dir, "setting", "latest_posts.txt")
+                    
+                    # 파일이 존재하는지 확인
+                    if os.path.exists(latest_posts_file):
+                        with open(latest_posts_file, 'r', encoding='utf-8') as f:
+                            lines = f.readlines()
+                            posts = []
+                            
+                            # 각 줄을 파싱 (제목|||링크|||설명)
+                            for line in lines:
+                                line = line.strip()
+                                if line and '|||' in line:
+                                    parts = line.split('|||')
+                                    if len(parts) >= 3:
+                                        post_title = parts[0].strip()
+                                        post_link = parts[1].strip()
+                                        post_desc = parts[2].strip()
+                                        posts.append({
+                                            'title': post_title,
+                                            'link': post_link,
+                                            'description': post_desc
+                                        })
+                            
+                            # 최대 3개까지만 사용
+                            posts = posts[:3]
+                            
+                            if posts:
+                                self._update_status(f"📚 {len(posts)}개의 관련 글 추가 중...")
+                                
+                                # 줄 띄우기 (Enter 2번)
+                                ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                time.sleep(0.3)
+                                ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                time.sleep(0.3)
+                                
+                                # 사용자 지정 제목 추가 (기본값: "함께 보면 좋은 글")
+                                title_text = self.related_posts_title if self.related_posts_title else "함께 보면 좋은 글"
+                                ActionChains(self.driver).send_keys(title_text).perform()
+                                time.sleep(0.2)
+                                ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                time.sleep(0.2)
+                                ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                time.sleep(0.2)
+                                
+                                # 각 글 정보 추가 (제목에 링크 앵커로 삽입)
+                                for i, post in enumerate(posts, 1):
+                                    self._update_status(f"📝 관련 글 {i} 추가 중...")
+                                    
+                                    # 제목 작성
+                                    post_title = post['title']
+                                    ActionChains(self.driver).send_keys(post_title).perform()
+                                    time.sleep(0.3)
+                                    
+                                    # 제목 전체 드래그 (Shift + Home으로 왼쪽 끝까지 선택)
+                                    ActionChains(self.driver).key_down(Keys.SHIFT).send_keys(Keys.HOME).key_up(Keys.SHIFT).perform()
+                                    time.sleep(0.3)
+                                    
+                                    # 링크 버튼 클릭 (Ctrl+K 단축키 사용)
+                                    ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('k').key_up(Keys.CONTROL).perform()
+                                    time.sleep(0.5)
+                                    
+                                    # 링크 URL 입력
+                                    try:
+                                        # 링크 입력 필드 찾기
+                                        link_input = WebDriverWait(self.driver, 3).until(
+                                            EC.presence_of_element_located((By.CSS_SELECTOR, "input.se-custom-layer-link-input"))
+                                        )
+                                        link_input.clear()
+                                        link_input.send_keys(post['link'])
+                                        time.sleep(0.2)
+                                        
+                                        # 확인 버튼 클릭 (Enter)
+                                        link_input.send_keys(Keys.ENTER)
+                                        time.sleep(0.3)
+                                    except Exception as e:
+                                        self._update_status(f"⚠️ 링크 삽입 실패, 수동 입력: {str(e)[:30]}")
+                                        # 실패 시 ESC로 대화상자 닫고 계속 진행
+                                        ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
+                                        time.sleep(0.2)
+                                    
+                                    # 커서를 줄 끝으로 이동
+                                    ActionChains(self.driver).send_keys(Keys.END).perform()
+                                    time.sleep(0.1)
+                                    
+                                    # 줄바꿈
+                                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                    time.sleep(0.1)
+                                    
+                                    # 마지막 글이 아니면 추가 줄바꿈
+                                    if i < len(posts):
+                                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                        time.sleep(0.2)
+                                
+                                self._update_status("✅ '함께 보면 좋은 글' 섹션 추가 완료")
+                            else:
+                                self._update_status("⚠️ latest_posts.txt 파일에 유효한 데이터가 없습니다")
+                    else:
+                        self._update_status("⚪ latest_posts.txt 파일 없음 - '함께 보면 좋은 글' 섹션 스킵")
+                        
+                except Exception as e:
+                    self._update_status(f"⚠️ '함께 보면 좋은 글' 섹션 추가 실패(진행 계속): {str(e)[:100]}")
                 
                 # 썸네일 삽입 (외부 링크 설정과 무관하게 항상 실행)
                 if thumbnail_path:
@@ -1136,67 +1420,30 @@ class NaverBlogAutomation:
                         
                         # Enter 키 2번으로 다음 줄로 이동 (줄 간격 확보)
                         time.sleep(1)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                        time.sleep(0.3)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                        pyautogui.press('enter')
+                        time.sleep(0.5)
+                        pyautogui.press('enter')
                         time.sleep(0.5)
                         self._update_status("✅ 썸네일 다음 줄로 이동 (Enter 2번)")
                         
-                        # 외부 링크 없을 때만 왼쪽 정렬로 복구
-                        if not use_external_link:
-                            try:
-                                self._update_status("⚙️ 왼쪽 정렬로 복구 중...")
-                                
-                                # 여러 셀렉터로 정렬 드롭다운 버튼 찾기
-                                align_dropdown = None
-                                dropdown_selectors = [
-                                    "button.se-property-toolbar-drop-down-button.se-align-center-toolbar-button",
-                                    "button[data-name='align']",
-                                    "button.se-align-center-toolbar-button",
-                                    "button[aria-label*='정렬']"
-                                ]
-                                
-                                for selector in dropdown_selectors:
-                                    try:
-                                        align_dropdown = WebDriverWait(self.driver, 2).until(
-                                            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                                        )
-                                        break
-                                    except:
-                                        continue
-                                
-                                if align_dropdown:
-                                    align_dropdown.click()
-                                    time.sleep(0.3)
-                                    
-                                    # 여러 셀렉터로 왼쪽 정렬 버튼 찾기
-                                    left_align_btn = None
-                                    left_selectors = [
-                                        "button.se-toolbar-option-align-left-button",
-                                        "button[data-name='alignLeft']",
-                                        "button[aria-label*='왼쪽']"
-                                    ]
-                                    
-                                    for selector in left_selectors:
-                                        try:
-                                            left_align_btn = WebDriverWait(self.driver, 2).until(
-                                                EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                                            )
-                                            break
-                                        except:
-                                            continue
-                                    
-                                    if left_align_btn:
-                                        left_align_btn.click()
-                                        time.sleep(0.3)
-                                        self._update_status("✅ 왼쪽 정렬 완료")
-                                    else:
-                                        self._update_status("⚠️ 왼쪽 정렬 버튼을 찾을 수 없음 (계속 진행)")
-                                else:
-                                    self._update_status("⚠️ 정렬 드롭다운을 찾을 수 없음 (계속 진행)")
-                                    
-                            except Exception as e:
-                                self._update_status(f"⚠️ 왼쪽 정렬 실패 (계속 진행): {str(e)[:50]}")
+                        # 왼쪽 정렬로 복구
+                        try:
+                            self._update_status("⚙️ 왼쪽 정렬로 복구 중...")
+                            
+                            align_dropdown = WebDriverWait(self.driver, 3).until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-property-toolbar-drop-down-button.se-align-center-toolbar-button"))
+                            )
+                            align_dropdown.click()
+                            time.sleep(0.3)
+                            
+                            left_align_btn = WebDriverWait(self.driver, 3).until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-toolbar-option-align-left-button"))
+                            )
+                            left_align_btn.click()
+                            time.sleep(0.3)
+                            self._update_status("✅ 왼쪽 정렬 완료")
+                        except Exception as e:
+                            self._update_status(f"⚠️ 왼쪽 정렬 실패 (계속 진행): {str(e)[:50]}")
                         
                     except Exception as e:
                         self._update_status(f"⚠️ 썸네일 삽입 실패(진행 계속): {str(e)[:100]}")
@@ -1205,101 +1452,93 @@ class NaverBlogAutomation:
                 
                 # 3. 소제목/본문 작성
                 # body_lines를 소제목과 본문으로 분리 (6줄씩: 소제목1, 본문1, 소제목2, 본문2, 소제목3, 본문3)
-                if len(body_lines) >= 6:
-                    # 빈 줄 제거하고 실제 내용만 추출
-                    content_lines = [line for line in body_lines if line.strip()]
+                
+                # 먼저 빈 줄 제거하고 실제 내용만 추출
+                content_lines = [line for line in body_lines if line.strip()]
+                self._update_status(f"📋 본문 내용: {len(content_lines)}줄 (원본: {len(body_lines)}줄)")
+                
+                if len(content_lines) >= 6:
+                    self._update_status("✅ 소제목/본문 형식으로 작성 시작...")
+                    # 첫 6줄은 소제목/본문 형식으로 작성
+                    subtitle1 = content_lines[0]
+                    body1 = content_lines[1]
+                    subtitle2 = content_lines[2]
+                    body2 = content_lines[3]
+                    subtitle3 = content_lines[4]
+                    body3 = content_lines[5]
                     
-                    if len(content_lines) >= 6:
-                        # 첫 6줄은 소제목/본문 형식으로 작성
-                        subtitle1 = content_lines[0]
-                        body1 = content_lines[1]
-                        subtitle2 = content_lines[2]
-                        body2 = content_lines[3]
-                        subtitle3 = content_lines[4]
-                        body3 = content_lines[5]
-                        
-                        self._update_status("✍️ 소제목1 작성 중...")
-                        ActionChains(self.driver).send_keys(subtitle1).perform()
-                        time.sleep(0.1)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                        time.sleep(0.1)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 소제목 후 ENTER 한 번 더
-                        time.sleep(0.1)
-                        
-                        self._update_status("✍️ 본문1 작성 중...")
-                        # 본문1을 문장 단위로 줄바꿈 (60자 이상이면)
-                        self._write_body_with_linebreaks(body1)
-                        time.sleep(0.1)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 본문 끝에 ENTER
-                        time.sleep(0.3)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                        time.sleep(0.2)
-                        
-                        self._update_status("✍️ 소제목2 작성 중...")
-                        ActionChains(self.driver).send_keys(subtitle2).perform()
-                        time.sleep(0.1)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                        time.sleep(0.1)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 소제목 후 ENTER 한 번 더
-                        time.sleep(0.1)
-                        
-                        self._update_status("✍️ 본문2 작성 중...")
-                        # 본문2를 문장 단위로 줄바꿈 (60자 이상이면)
-                        self._write_body_with_linebreaks(body2)
-                        time.sleep(0.1)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 본문 끝에 ENTER
-                        time.sleep(0.3)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                        time.sleep(0.2)
-                        
-                        self._update_status("✍️ 소제목3 작성 중...")
-                        ActionChains(self.driver).send_keys(subtitle3).perform()
-                        time.sleep(0.1)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                        time.sleep(0.1)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 소제목 후 ENTER 한 번 더
-                        time.sleep(0.2)
-                        
-                        self._update_status("✍️ 본문3 작성 중...")
-                        # 본문3을 문장 단위로 줄바꿈 (60자 이상이면)
-                        self._write_body_with_linebreaks(body3)
-                        time.sleep(0.1)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 본문 끝에 ENTER
-                        time.sleep(0.3)
-                        
-                        # 7줄 이후의 추가 내용이 있으면 모두 입력
-                        if len(content_lines) > 6:
-                            self._update_status(f"✍️ 추가 내용 작성 중... ({len(content_lines) - 6}줄 남음)")
-                            for i, line in enumerate(content_lines[6:], start=7):
-                                if self.should_stop:
-                                    self._update_status("⏹️ 사용자가 포스팅을 중지했습니다.")
-                                    return False
-                                
-                                if line.strip():
-                                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                                    time.sleep(0.1)
-                                    self._write_body_with_linebreaks(line)
-                                    time.sleep(0.1)
-                                    
-                                    # 진행 상황 표시 (매 5줄마다)
-                                    if i % 5 == 0:
-                                        self._update_status(f"✍️ 추가 내용 작성 중... ({i}번째 줄)")
-                        
-                        self._update_status("✅ 소제목/본문 작성 완료!")
-                    else:
-                        self._update_status("⚠️ 내용이 6줄 미만입니다. 기본 방식으로 작성합니다.")
-                        for line in body_lines:
+                    self._update_status("✍️ 소제목1 작성 중...")
+                    ActionChains(self.driver).send_keys(subtitle1).perform()
+                    time.sleep(0.1)
+                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                    time.sleep(0.1)
+                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 소제목 후 ENTER 한 번 더
+                    time.sleep(0.1)
+                    
+                    self._update_status("✍️ 본문1 작성 중...")
+                    # 본문1을 문장 단위로 줄바꿈 (60자 이상이면)
+                    self._write_body_with_linebreaks(body1)
+                    time.sleep(0.1)
+                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 본문 끝에 ENTER
+                    time.sleep(0.3)
+                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                    time.sleep(0.2)
+                    
+                    self._update_status("✍️ 소제목2 작성 중...")
+                    ActionChains(self.driver).send_keys(subtitle2).perform()
+                    time.sleep(0.1)
+                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                    time.sleep(0.1)
+                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 소제목 후 ENTER 한 번 더
+                    time.sleep(0.1)
+                    
+                    self._update_status("✍️ 본문2 작성 중...")
+                    # 본문2를 문장 단위로 줄바꿈 (60자 이상이면)
+                    self._write_body_with_linebreaks(body2)
+                    time.sleep(0.1)
+                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 본문 끝에 ENTER
+                    time.sleep(0.3)
+                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                    time.sleep(0.2)
+                    
+                    self._update_status("✍️ 소제목3 작성 중...")
+                    ActionChains(self.driver).send_keys(subtitle3).perform()
+                    time.sleep(0.1)
+                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                    time.sleep(0.1)
+                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 소제목 후 ENTER 한 번 더
+                    time.sleep(0.2)
+                    
+                    self._update_status("✍️ 본문3 작성 중...")
+                    # 본문3을 문장 단위로 줄바꿈 (60자 이상이면)
+                    self._write_body_with_linebreaks(body3)
+                    time.sleep(0.1)
+                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()  # 본문 끝에 ENTER
+                    time.sleep(0.3)
+                    
+                    # 7줄 이후의 추가 내용이 있으면 모두 입력
+                    if len(content_lines) > 6:
+                        self._update_status(f"✍️ 추가 내용 작성 중... ({len(content_lines) - 6}줄 남음)")
+                        for i, line in enumerate(content_lines[6:], start=7):
                             if self.should_stop:
                                 self._update_status("⏹️ 사용자가 포스팅을 중지했습니다.")
                                 return False
+                            
                             if line.strip():
-                                ActionChains(self.driver).send_keys(line).perform()
-                                time.sleep(0.1)
                                 ActionChains(self.driver).send_keys(Keys.ENTER).perform()
                                 time.sleep(0.1)
+                                self._write_body_with_linebreaks(line)
+                                time.sleep(0.1)
+                                
+                                # 진행 상황 표시 (매 5줄마다)
+                                if i % 5 == 0:
+                                    self._update_status(f"✍️ 추가 내용 작성 중... ({i}번째 줄)")
+                    
+                    self._update_status("✅ 소제목/본문 작성 완료!")
                 else:
-                    self._update_status("⚠️ 본문 내용이 부족합니다. 기본 방식으로 작성합니다.")
-                    for line in body_lines:
+                    # 6줄 미만일 때 기본 방식으로 작성
+                    self._update_status(f"⚠️ 내용이 6줄 미만입니다 ({len(content_lines)}줄). 기본 방식으로 작성합니다.")
+                    for line in content_lines:
                         if self.should_stop:
                             self._update_status("⏹️ 사용자가 포스팅을 중지했습니다.")
                             return False
@@ -1414,66 +1653,53 @@ class NaverBlogAutomation:
                         except Exception as e:
                             self._update_status(f"⚠️ 완료 버튼 클릭 실패: {str(e)[:50]}")
                         
-                        # 팝업 닫기 버튼 찾아서 클릭
-                        self._update_status("🔘 팝업 닫기 버튼 찾는 중...")
+                        # Win32 API로 동영상 업로드 대화상자 강제 닫기
+                        self._update_status("🔘 동영상 대화상자 닫는 중...")
                         try:
-                            close_selectors = [
-                                "button.se-popup-button-close",
-                                "button[class*='close']",
-                                "button.se-dialog-button-close",
-                                ".layer_editor button[class*='close']",
-                                "button[title='닫기']",
-                                "a.btn_close"
-                            ]
+                            import win32gui
+                            import win32con
                             
-                            popup_closed = False
-                            for close_sel in close_selectors:
-                                try:
-                                    close_btn = WebDriverWait(self.driver, 2).until(
-                                        EC.element_to_be_clickable((By.CSS_SELECTOR, close_sel))
-                                    )
-                                    if close_btn:
-                                        close_btn.click()
-                                        popup_closed = True
-                                        self._update_status(f"✅ 팝업 닫기 성공: {close_sel[:30]}")
-                                        time.sleep(1)
-                                        break
-                                except:
-                                    continue
+                            def close_dialog_windows():
+                                """동영상 업로드 관련 창 모두 닫기"""
+                                def enum_callback(hwnd, results):
+                                    window_text = win32gui.GetWindowText(hwnd)
+                                    class_name = win32gui.GetClassName(hwnd)
+                                    
+                                    # 네이버 동영상 업로드 관련 창 찾기
+                                    if any(keyword in window_text.lower() for keyword in ['동영상', 'video', '업로드', 'upload']) or \
+                                       any(keyword in class_name.lower() for keyword in ['dialog', 'popup', '#32770']):
+                                        try:
+                                            # WM_CLOSE 메시지 전송
+                                            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+                                            results.append(window_text or class_name)
+                                        except:
+                                            pass
+                                
+                                closed_windows = []
+                                win32gui.EnumWindows(enum_callback, closed_windows)
+                                return closed_windows
                             
-                            if not popup_closed:
-                                # 모든 방법 실패 시 ESC 시도
-                                self._update_status("⚠️ 닫기 버튼 못 찾음 - ESC 시도")
-                                self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-                                time.sleep(0.5)
+                            # 대화상자 닫기 시도 (3번)
+                            for attempt in range(3):
+                                closed = close_dialog_windows()
+                                if closed:
+                                    self._update_status(f"✅ Win32 API로 창 닫기 성공 ({len(closed)}개)")
+                                    time.sleep(0.5)
+                                    break
+                                time.sleep(0.3)
+                            
+                            # 추가로 ESC 키도 전송
+                            pyautogui.press('esc')
+                            time.sleep(0.5)
+                            
+                        except ImportError:
+                            self._update_status("⚠️ pywin32 없음, ESC로 시도")
+                            pyautogui.press('esc')
+                            time.sleep(0.5)
                         except Exception as e:
-                            self._update_status(f"⚠️ 팝업 닫기 실패: {str(e)[:50]}")
+                            self._update_status(f"⚠️ 대화상자 닫기 실패: {str(e)[:50]}")
                         
                         self._update_status("✅ 동영상 삽입 완료")
-                        
-                        # Enter 키 2번으로 다음 줄로 이동
-                        time.sleep(1)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                        time.sleep(0.3)
-                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                        time.sleep(0.5)
-                        
-                        # 왼쪽 정렬로 복구
-                        try:
-                            align_dropdown = WebDriverWait(self.driver, 3).until(
-                                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-property-toolbar-drop-down-button.se-align-center-toolbar-button"))
-                            )
-                            align_dropdown.click()
-                            time.sleep(0.3)
-                            
-                            left_align_btn = WebDriverWait(self.driver, 3).until(
-                                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-toolbar-option-align-left-button"))
-                            )
-                            left_align_btn.click()
-                            time.sleep(0.3)
-                            self._update_status("✅ 왼쪽 정렬 완료")
-                        except:
-                            pass
                             
                     except Exception as e:
                         self._update_status(f"⚠️ 동영상 삽입 실패(진행 계속): {str(e)[:100]}")
@@ -1482,15 +1708,19 @@ class NaverBlogAutomation:
                 self._update_status(f"❌ 본문 입력 실패: {str(e)}")
                 return False
             
-            # 발행 간격 대기
-            if wait_interval > 0:
-                self._update_status(f"⏰ 발행 간격 대기 중: {wait_interval}분")
-                for remaining in range(wait_interval, 0, -1):
+            # 발행 간격만큼 대기
+            interval = self.config.get("interval", 0)
+            if interval > 0:
+                self._update_status(f"⏰ 발행 전 {interval}분 대기 중...")
+                
+                for remaining in range(interval, 0, -1):
                     if self.should_stop:
-                        self._update_status("⏹️ 사용자가 중지했습니다")
+                        self._update_status("⏹️ 대기 중 중지되었습니다")
                         return False
+                    
                     self._update_status(f"⏰ 남은 시간: {remaining}분")
-                    time.sleep(60)
+                    time.sleep(60)  # 1분 대기
+                
                 self._update_status("✅ 발행 간격 대기 완료!")
             
             # 발행 처리
@@ -1827,7 +2057,7 @@ class NaverBlogAutomation:
     
     # 블로그 글 작성 로직 제거됨
     
-    def run(self, wait_interval=0, is_first_run=True):
+    def run(self, is_first_run=True):
         """전체 프로세스 실행"""
         try:
             self._update_status("🚀 자동 포스팅 프로세스 시작!")
@@ -1855,15 +2085,19 @@ class NaverBlogAutomation:
             else:
                 self._update_status("⚠️ 썸네일 파일 없음 - 계속 진행")
             
-            # 2-1단계: 동영상 생성 (썸네일이 있을 경우)
+            # 2-1단계: 동영상 생성 (use_video가 ON이고 썸네일이 있을 경우)
             video_path = None
-            if thumbnail_path:
-                self._update_status("🎬 [2-1/5] 동영상 생성 단계")
-                video_path = self.create_video_from_thumbnail(thumbnail_path)
-                if video_path:
-                    self._update_status(f"✅ 동영상 생성 완료")
-                else:
-                    self._update_status("⚠️ 동영상 생성 실패 - 계속 진행")
+            if self.config.get("use_video", True) and thumbnail_path:
+                try:
+                    self._update_status("🎬 [2-1/5] 동영상 생성 단계")
+                    video_path = self.create_video_from_thumbnail(thumbnail_path)
+                    self._update_status(f"✅ 동영상 생성 완료: {os.path.basename(video_path)}")
+                except Exception as e:
+                    # 동영상 생성 실패 시 명확한 에러 표시 후 중단
+                    self._update_status(f"❌ 동영상 생성 실패: {str(e)}")
+                    return False
+            elif not self.config.get("use_video", True):
+                self._update_status("⚪ 동영상 기능 OFF - 동영상 생성 스킵")
             
             if self.should_stop:
                 self._update_status("⏹️ 프로세스가 정지되었습니다.")
@@ -1901,7 +2135,7 @@ class NaverBlogAutomation:
             
             # 5단계: 블로그 포스팅
             self._update_status("✍️ [5/5] 블로그 포스팅 단계")
-            if not self.write_post(title, content, thumbnail_path, video_path, wait_interval, is_first_post=is_first_run):
+            if not self.write_post(title, content, thumbnail_path, video_path, is_first_post=is_first_run):
                 self._update_status("⚠️ 포스팅 실패 - 브라우저는 열린 상태로 유지됩니다")
                 return False
             
@@ -1928,15 +2162,15 @@ class NaverBlogAutomation:
 def start_automation(naver_id, naver_pw, api_key, ai_model="gemini", theme="", 
                      open_type="전체공개", external_link="", external_link_text="", 
                      publish_time="now", scheduled_hour="09", scheduled_minute="00", 
-                     wait_interval=0, callback=None):
+                     callback=None):
     """자동화 시작 함수"""
     automation = NaverBlogAutomation(
         naver_id, naver_pw, api_key, ai_model,
         theme, open_type, external_link, external_link_text, 
         publish_time, scheduled_hour, scheduled_minute, callback
     )
-    # 자동화 실행 (발행 간격 전달)
-    automation.run(wait_interval)
+    # 자동화 실행
+    automation.run()
     return automation
 
 
@@ -1949,9 +2183,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                               QLineEdit, QTextEdit, QRadioButton, QCheckBox,
                               QComboBox, QGroupBox, QTabWidget, QMessageBox,
                               QFrame, QScrollArea, QButtonGroup, QStackedWidget,
-                              QSizePolicy)
+                              QSizePolicy, QSplashScreen)
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
-from PyQt6.QtGui import QFont, QIcon, QPalette, QColor
+from PyQt6.QtGui import QFont, QIcon, QPalette, QColor, QPixmap, QPainter
 
 # 네이버 컬러 팔레트
 NAVER_GREEN = "#03C75A"
@@ -2688,26 +2922,12 @@ class NaverBlogGUI(QMainWindow):
         self.login_status_label.setStyleSheet(f"color: #000000; border: none;")
         login_status_layout.addWidget(self.login_status_label)
         
-        self.login_setup_btn = QPushButton("설정하기➡️")
+        self.login_setup_btn = QPushButton("설정하기")
         self.login_setup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.login_setup_btn.setMinimumHeight(25)
-        self.login_setup_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {NAVER_TEAL};
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 3px 10px;
-                font-size: 13px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: #00B8B3;
-            }}
-        """)
         self.login_setup_btn.clicked.connect(lambda: self._switch_tab(1))
-        login_status_layout.addWidget(self.login_setup_btn)
         login_status_layout.addStretch()
+        login_status_layout.addWidget(self.login_setup_btn)
         
         status_card.content_layout.addLayout(login_status_layout)
         
@@ -2718,26 +2938,12 @@ class NaverBlogGUI(QMainWindow):
         self.api_status_label.setStyleSheet(f"color: #000000; border: none;")
         api_status_layout.addWidget(self.api_status_label)
         
-        self.api_setup_btn = QPushButton("설정하기➡️")
+        self.api_setup_btn = QPushButton("설정하기")
         self.api_setup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.api_setup_btn.setMinimumHeight(25)
-        self.api_setup_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {NAVER_TEAL};
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 3px 10px;
-                font-size: 13px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: #00B8B3;
-            }}
-        """)
         self.api_setup_btn.clicked.connect(lambda: self._switch_tab(1))
-        api_status_layout.addWidget(self.api_setup_btn)
         api_status_layout.addStretch()
+        api_status_layout.addWidget(self.api_setup_btn)
         
         status_card.content_layout.addLayout(api_status_layout)
         
@@ -2748,33 +2954,43 @@ class NaverBlogGUI(QMainWindow):
         self.keyword_count_label.setStyleSheet(f"color: #000000; border: none;")
         keyword_status_layout.addWidget(self.keyword_count_label)
         
-        self.keyword_setup_btn = QPushButton("설정하기➡️")
+        self.keyword_setup_btn = QPushButton("설정하기")
         self.keyword_setup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.keyword_setup_btn.setMinimumHeight(25)
-        self.keyword_setup_btn.setStyleSheet(f"""
+        self.keyword_setup_btn.clicked.connect(lambda: self._switch_tab(1))
+        keyword_status_layout.addStretch()
+        keyword_status_layout.addWidget(self.keyword_setup_btn)
+        
+        status_card.content_layout.addLayout(keyword_status_layout)
+        
+        # 발행 간격 상태
+        interval_status_layout = QHBoxLayout()
+        self.interval_label = QLabel("⏱️ 발행 간격: 10분")
+        self.interval_label.setFont(QFont(self.font_family, 13))
+        self.interval_label.setStyleSheet(f"color: #000000; border: none;")
+        interval_status_layout.addWidget(self.interval_label)
+        
+        self.interval_setup_btn = QPushButton("변경하기")
+        self.interval_setup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.interval_setup_btn.setMinimumHeight(25)
+        self.interval_setup_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: {NAVER_TEAL};
+                background-color: {NAVER_GREEN};
                 color: white;
                 border: none;
                 border-radius: 5px;
                 padding: 3px 10px;
                 font-size: 13px;
-                font-weight: bold;
             }}
             QPushButton:hover {{
-                background-color: #00B8B3;
+                background-color: #00C73C;
             }}
         """)
-        self.keyword_setup_btn.clicked.connect(lambda: self._switch_tab(1))
-        keyword_status_layout.addWidget(self.keyword_setup_btn)
-        keyword_status_layout.addStretch()
+        self.interval_setup_btn.clicked.connect(lambda: self._switch_tab(1))
+        interval_status_layout.addStretch()
+        interval_status_layout.addWidget(self.interval_setup_btn)
         
-        status_card.content_layout.addLayout(keyword_status_layout)
-        
-        self.interval_label = QLabel("⏱️ 발행 간격: 10분")
-        self.interval_label.setFont(QFont(self.font_family, 13))
-        self.interval_label.setStyleSheet(f"color: #000000; border: none;")
-        status_card.content_layout.addWidget(self.interval_label)
+        status_card.content_layout.addLayout(interval_status_layout)
         
         # 사용기간 표시 (라이선스 정보)
         self.license_period_label = QLabel("📅 사용기간: 확인 중...")
@@ -2886,26 +3102,21 @@ class NaverBlogGUI(QMainWindow):
         # === Row 0: 설정 상태 (가로로 길게) ===
         settings_progress_card = PremiumCard("설정 상태", "📊")
         
-        # 2단 레이아웃: 왼쪽(최근 로그) | 오른쪽(현재 상태 요약)
+        # 2단 레이아웃: 왼쪽(로그) | 오른쪽(상태)
         status_main_layout = QHBoxLayout()
         status_main_layout.setSpacing(15)
         
-        # 왼쪽: 최근 로그 (60% 너비)
+        # 왼쪽: 로그 메시지 (50% 너비)
         log_container = QWidget()
         log_container.setStyleSheet("QWidget { background-color: transparent; }")
         log_container_layout = QVBoxLayout(log_container)
         log_container_layout.setContentsMargins(0, 0, 0, 0)
-        log_container_layout.setSpacing(2)  # 5 -> 2로 축소
-        
-        log_title = QLabel("📝 최근 로그")
-        log_title.setFont(QFont(self.font_family, 11, QFont.Weight.Bold))  # 12 -> 11
-        log_title.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
-        log_container_layout.addWidget(log_title)
+        log_container_layout.setSpacing(5)
         
         self.settings_log_scroll = QScrollArea()
         self.settings_log_scroll.setWidgetResizable(True)
-        self.settings_log_scroll.setMinimumHeight(100)  # 80 -> 100
-        self.settings_log_scroll.setMaximumHeight(140)  # 120 -> 140
+        self.settings_log_scroll.setMinimumHeight(120)
+        self.settings_log_scroll.setMaximumHeight(180)
         self.settings_log_scroll.setStyleSheet(f"""
             QScrollArea {{
                 border: 2px solid {NAVER_BORDER};
@@ -2937,60 +3148,60 @@ class NaverBlogGUI(QMainWindow):
         settings_log_widget = QWidget()
         settings_log_layout = QVBoxLayout(settings_log_widget)
         settings_log_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        settings_log_layout.setContentsMargins(3, 3, 3, 3)  # 5 -> 3
-        settings_log_layout.setSpacing(0)  # 새로 추가
+        settings_log_layout.setContentsMargins(10, 10, 10, 10)
+        settings_log_layout.setSpacing(3)
         
         self.settings_log_label = QLabel("⏸️ 대기 중...")
-        self.settings_log_label.setFont(QFont(self.font_family, 11))  # 12 -> 11
-        self.settings_log_label.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; padding: 3px;")  # 5px -> 3px
+        self.settings_log_label.setFont(QFont(self.font_family, 11))
+        self.settings_log_label.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; padding: 5px;")
         self.settings_log_label.setWordWrap(True)
         self.settings_log_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.settings_log_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.settings_log_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         settings_log_layout.addWidget(self.settings_log_label)
-        # addStretch() 제거하여 공백 최소화
         
         self.settings_log_scroll.setWidget(settings_log_widget)
         log_container_layout.addWidget(self.settings_log_scroll)
         
-        # 오른쪽: 현재 상태 요약 (40% 너비)
-        summary_container = QWidget()
-        summary_container.setStyleSheet(f"QWidget {{ background-color: white; border: 2px solid {NAVER_BORDER}; border-radius: 8px; }}")
-        summary_layout = QVBoxLayout(summary_container)
-        summary_layout.setContentsMargins(10, 10, 10, 10)
-        summary_layout.setSpacing(8)
+        # 오른쪽: 모든 설정 상태 (50% 너비) - 2x2 그리드
+        status_container = QWidget()
+        status_container.setStyleSheet(f"QWidget {{ background-color: white; border: 2px solid {NAVER_BORDER}; border-radius: 8px; }}")
+        status_layout = QGridLayout(status_container)
+        status_layout.setContentsMargins(15, 15, 15, 15)
+        status_layout.setHorizontalSpacing(15)
+        status_layout.setVerticalSpacing(15)
         
-        summary_title = QLabel("📊 현재 상태")
-        summary_title.setFont(QFont(self.font_family, 12, QFont.Weight.Bold))
-        summary_title.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent; border: none;")
-        summary_layout.addWidget(summary_title)
-        
-        # 상태 라벨들
+        # API 상태 (0, 0)
         self.settings_api_status = QLabel("🔑 API: 미설정")
-        self.settings_api_status.setFont(QFont(self.font_family, 11))
-        self.settings_api_status.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; border: none;")
-        summary_layout.addWidget(self.settings_api_status)
+        self.settings_api_status.setFont(QFont(self.font_family, 12))
+        self.settings_api_status.setStyleSheet(f"color: {NAVER_RED}; background-color: transparent; border: none; font-weight: bold;")
+        self.settings_api_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        status_layout.addWidget(self.settings_api_status, 0, 0)
         
+        # 로그인 상태 (0, 1)
         self.settings_login_status = QLabel("👤 로그인: 미설정")
-        self.settings_login_status.setFont(QFont(self.font_family, 11))
-        self.settings_login_status.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; border: none;")
-        summary_layout.addWidget(self.settings_login_status)
+        self.settings_login_status.setFont(QFont(self.font_family, 12))
+        self.settings_login_status.setStyleSheet(f"color: {NAVER_RED}; background-color: transparent; border: none; font-weight: bold;")
+        self.settings_login_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        status_layout.addWidget(self.settings_login_status, 0, 1)
         
+        # 썸네일 상태 (1, 0)
         self.settings_thumbnail_status = QLabel("🖼️ 썸네일: OFF")
-        self.settings_thumbnail_status.setFont(QFont(self.font_family, 11))
-        self.settings_thumbnail_status.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; border: none;")
-        summary_layout.addWidget(self.settings_thumbnail_status)
+        self.settings_thumbnail_status.setFont(QFont(self.font_family, 12))
+        self.settings_thumbnail_status.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; border: none; font-weight: bold;")
+        self.settings_thumbnail_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        status_layout.addWidget(self.settings_thumbnail_status, 1, 0)
         
+        # 외부링크 상태 (1, 1)
         self.settings_link_status_label = QLabel("🔗 외부링크: OFF")
-        self.settings_link_status_label.setFont(QFont(self.font_family, 11))
-        self.settings_link_status_label.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; border: none;")
-        summary_layout.addWidget(self.settings_link_status_label)
+        self.settings_link_status_label.setFont(QFont(self.font_family, 12))
+        self.settings_link_status_label.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; border: none; font-weight: bold;")
+        self.settings_link_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        status_layout.addWidget(self.settings_link_status_label, 1, 1)
         
-        summary_layout.addStretch()
-        
-        # 2단 레이아웃 추가 (60:40 비율)
-        status_main_layout.addWidget(log_container, 60)
-        status_main_layout.addWidget(summary_container, 40)
+        # 2단 레이아웃 추가 (50:50 비율)
+        status_main_layout.addWidget(log_container, 50)
+        status_main_layout.addWidget(status_container, 50)
         
         settings_progress_card.content_layout.addLayout(status_main_layout)
         
@@ -3001,7 +3212,7 @@ class NaverBlogGUI(QMainWindow):
         login_card = PremiumCard("네이버 로그인 정보", "👤")
         
         # 경고 라벨
-        warning_label = QLabel("⚠️ 2차 인증 해제 필수")
+        warning_label = QLabel("⚠️ 2차 인증 해제 권장")
         warning_label.setStyleSheet(f"""
             background-color: {NAVER_ORANGE}; 
             color: white; 
@@ -3666,6 +3877,91 @@ class NaverBlogGUI(QMainWindow):
         
         layout.addWidget(ai_card, 3, 1)
         
+        # ===== 함께 보면 좋은 글 제목 설정 카드 =====
+        related_posts_card = PremiumCard("📚 함께 보면 좋은 글 제목 설정", "📚", self)
+        
+        # 섹션 제목 라벨
+        section_label = QLabel("📚 섹션 제목")
+        section_label.setFont(QFont(self.font_family, 12))
+        section_label.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
+        related_posts_card.content_layout.addWidget(section_label)
+        
+        # 섹션 제목 입력 필드 (기본값: "함께 보면 좋은 글")
+        self.related_posts_title_entry = QLineEdit()
+        self.related_posts_title_entry.setPlaceholderText("함께 보면 좋은 글")
+        self.related_posts_title_entry.setFont(QFont(self.font_family, 12))
+        self.related_posts_title_entry.setStyleSheet(f"""
+            QLineEdit {{
+                padding: 8px 10px;
+                border: 2px solid {NAVER_BORDER};
+                border-radius: 5px;
+                background-color: white;
+                color: {NAVER_TEXT};
+            }}
+            QLineEdit:focus {{
+                border-color: {NAVER_GREEN};
+            }}
+        """)
+        related_posts_card.content_layout.addWidget(self.related_posts_title_entry)
+        
+        # 블로그 주소 라벨
+        blog_addr_label = QLabel("🌐 블로그 주소")
+        blog_addr_label.setFont(QFont(self.font_family, 12))
+        blog_addr_label.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
+        related_posts_card.content_layout.addWidget(blog_addr_label)
+        
+        # 블로그 주소 입력 필드
+        self.blog_address_entry = QLineEdit()
+        self.blog_address_entry.setPlaceholderText("yourname (예: david153official-ctrl)")
+        self.blog_address_entry.setFont(QFont(self.font_family, 12))
+        self.blog_address_entry.setStyleSheet(f"""
+            QLineEdit {{
+                padding: 8px 10px;
+                border: 2px solid {NAVER_BORDER};
+                border-radius: 5px;
+                background-color: white;
+                color: {NAVER_TEXT};
+            }}
+            QLineEdit:focus {{
+                border-color: {NAVER_GREEN};
+            }}
+        """)
+        related_posts_card.content_layout.addWidget(self.blog_address_entry)
+        
+        # 설명 라벨
+        desc_label = QLabel("💡 블로그 주소를 입력하면 최신글 3개를 자동으로 가져와 포스팅 하단에 추가합니다")
+        desc_label.setFont(QFont(self.font_family, 11))
+        desc_label.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent;")
+        desc_label.setWordWrap(True)
+        related_posts_card.content_layout.addWidget(desc_label)
+        
+        # 저장 버튼
+        related_posts_save_btn = QPushButton("💾 설정 저장")
+        related_posts_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        related_posts_save_btn.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
+        related_posts_save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {NAVER_GREEN};
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 10px 20px;
+                margin-top: 10px;
+            }}
+            QPushButton:hover {{
+                background-color: #00C73C;
+            }}
+            QPushButton:pressed {{
+                background-color: #009632;
+            }}
+        """)
+        related_posts_save_btn.clicked.connect(self.save_related_posts_settings)
+        related_posts_card.content_layout.addWidget(related_posts_save_btn)
+        
+        related_posts_card.setMinimumHeight(300)
+        
+        layout.addWidget(related_posts_card, 4, 0)
+        
         tab.setWidget(content)
         return tab
     
@@ -3709,36 +4005,111 @@ class NaverBlogGUI(QMainWindow):
         if "external_link_text" in self.config:
             self.link_text_entry.setText(self.config["external_link_text"])
         
-        self.update_status_display()
+        # 함께 보면 좋은 글 설정
+        if "blog_address" in self.config:
+            blog_address = self.config["blog_address"]
+            # 전체 URL에서 아이디만 추출해서 표시
+            if blog_address.startswith("https://blog.naver.com/"):
+                blog_id = blog_address.replace("https://blog.naver.com/", "")
+                self.blog_address_entry.setText(blog_id)
+            else:
+                self.blog_address_entry.setText(blog_address)
+        if "related_posts_title" in self.config:
+            self.related_posts_title_entry.setText(self.config["related_posts_title"])
+        
+
+        # Qt 이벤트 루프가 텍스트를 완전히 반영한 후 상태 업데이트
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self.update_status_display)
+        QTimer.singleShot(0, self._update_settings_summary)
     
     def update_status_display(self):
         """상태 표시 업데이트"""
-        # 로그인 정보 상태
-        if self.naver_id_entry.text() and self.naver_pw_entry.text():
-            self.login_status_label.setText("👤 로그인 정보: 설정 완료")
-            self.login_status_label.setStyleSheet(f"color: {NAVER_GREEN}; border: none; font-weight: bold;")
-            self.login_setup_btn.hide()
+        # 로그인 정보 상태 (UI 입력창에서 직접 읽기)
+        naver_id = self.naver_id_entry.text().strip()
+        naver_pw = self.naver_pw_entry.text().strip()
+        
+        if naver_id and naver_pw:
+            self.login_status_label.setText("👤 로그인: 설정 완료")
+            self.login_status_label.setStyleSheet(f"color: #000000; border: none;")
+            self.login_setup_btn.setText("변경하기")
+            self.login_setup_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {NAVER_GREEN};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 3px 10px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: #00C73C;
+                }}
+            """)
+            self.login_setup_btn.show()
         else:
-            self.login_status_label.setText("👤 로그인 정보: 미설정")
-            self.login_status_label.setStyleSheet(f"color: {NAVER_RED}; border: none; font-weight: bold;")
+            self.login_status_label.setText("👤 로그인: 미설정")
+            self.login_status_label.setStyleSheet(f"color: #000000; border: none;")
+            self.login_setup_btn.setText("설정하기")
+            self.login_setup_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {NAVER_RED};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 3px 10px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: #D32F2F;
+                }}
+            """)
             self.login_setup_btn.show()
         
-        # API 키 상태
-        gpt_key = self.gpt_api_entry.text() if hasattr(self, 'gpt_api_entry') else ""
-        gemini_key = self.gemini_api_entry.text() if hasattr(self, 'gemini_api_entry') else ""
+        # API 키 상태 (UI 입력창에서 직접 읽기)
+        gpt_key = self.gpt_api_entry.text().strip() if hasattr(self, 'gpt_api_entry') else ""
+        gemini_key = self.gemini_api_entry.text().strip() if hasattr(self, 'gemini_api_entry') else ""
         
         if gpt_key or gemini_key:
             if gpt_key and gemini_key:
-                self.api_status_label.setText("🔑 API 키: GPT + Gemini 설정")
+                self.api_status_label.setText("🔑 API: GPT + Gemini")
             elif gpt_key:
-                self.api_status_label.setText("🔑 API 키: GPT 설정")
+                self.api_status_label.setText("🔑 API: GPT")
             else:
-                self.api_status_label.setText("🔑 API 키: Gemini 설정")
-            self.api_status_label.setStyleSheet(f"color: {NAVER_GREEN}; border: none; font-weight: bold;")
-            self.api_setup_btn.hide()
+                self.api_status_label.setText("🔑 API: Gemini")
+            self.api_status_label.setStyleSheet(f"color: #000000; border: none;")
+            self.api_setup_btn.setText("변경하기")
+            self.api_setup_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {NAVER_GREEN};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 3px 10px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: #00C73C;
+                }}
+            """)
+            self.api_setup_btn.show()
         else:
-            self.api_status_label.setText("🔑 API 키: 미설정")
-            self.api_status_label.setStyleSheet(f"color: {NAVER_RED}; border: none; font-weight: bold;")
+            self.api_status_label.setText("🔑 API: 미설정")
+            self.api_status_label.setStyleSheet(f"color: #000000; border: none;")
+            self.api_setup_btn.setText("설정하기")
+            self.api_setup_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {NAVER_RED};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 3px 10px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: #D32F2F;
+                }}
+            """)
             self.api_setup_btn.show()
         
         # 키워드 개수
@@ -3746,10 +4117,38 @@ class NaverBlogGUI(QMainWindow):
         self.keyword_count_label.setText(f"📦 키워드 개수: {keyword_count}개")
         
         if keyword_count > 0:
-            self.keyword_count_label.setStyleSheet(f"color: {NAVER_GREEN}; border: none; font-weight: bold;")
-            self.keyword_setup_btn.hide()
+            self.keyword_count_label.setStyleSheet(f"color: #000000; border: none;")
+            self.keyword_setup_btn.setText("변경하기")
+            self.keyword_setup_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {NAVER_GREEN};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 3px 10px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: #00C73C;
+                }}
+            """)
+            self.keyword_setup_btn.show()
         else:
-            self.keyword_count_label.setStyleSheet(f"color: {NAVER_RED}; border: none; font-weight: bold;")
+            self.keyword_count_label.setStyleSheet(f"color: #000000; border: none;")
+            self.keyword_setup_btn.setText("설정하기")
+            self.keyword_setup_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {NAVER_RED};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 3px 10px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: #D32F2F;
+                }}
+            """)
             self.keyword_setup_btn.show()
         
         # 발행 간격
@@ -3884,30 +4283,82 @@ class NaverBlogGUI(QMainWindow):
         if widget.text() == example_text:
             widget.clear()
     
+    def _show_auto_close_message(self, message, icon=None):
+        """자동으로 닫히는 메시지 창 (1초 후)"""
+        from PyQt6.QtCore import QTimer
+        
+        msg_box = QMessageBox(self)
+        if icon:
+            msg_box.setIcon(icon)
+        
+        msg_box.setText(message)
+        msg_box.setWindowTitle("알림")
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        
+        # 정사각형 모양 + 가독성 개선
+        msg_box.setStyleSheet(f"""
+            QMessageBox {{
+                background-color: white;
+                min-width: 320px;
+                min-height: 180px;
+            }}
+            QMessageBox QLabel {{
+                font-size: 14px;
+                font-weight: bold;
+                color: {NAVER_TEXT};
+                padding: 20px;
+                min-width: 280px;
+                min-height: 80px;
+                qproperty-alignment: AlignCenter;
+            }}
+            QPushButton {{
+                background-color: {NAVER_GREEN};
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 24px;
+                font-size: 13px;
+                font-weight: bold;
+                min-width: 80px;
+            }}
+            QPushButton:hover {{
+                background-color: #00C73C;
+            }}
+        """)
+        
+        # 1초 후 자동 닫기
+        msg_box.show()
+        QTimer.singleShot(1000, msg_box.close)
+    
     def _update_settings_status(self, message):
         """설정 탭 진행 현황 업데이트"""
         if not hasattr(self, 'settings_log_label'):
             return
         
         try:
+            # 현재 시간 추가
+            from datetime import datetime
+            current_time = datetime.now().strftime("%H:%M:%S")
+            message_with_time = f"{message} ({current_time})"
+            
             current_log = self.settings_log_label.text()
             
             # 초기 상태
             if current_log == "⏸️ 대기 중...":
-                new_log = message
+                new_log = message_with_time
             else:
                 lines = current_log.split("\n")
                 last_message = lines[-1].strip() if lines else ""
                 
-                # 완전히 동일한 메시지는 무시
-                if last_message == message.strip():
+                # 완전히 동일한 메시지는 무시 (시간 제외)
+                if last_message.startswith(message.strip()):
                     return
                 
                 # 최근 10개 메시지만 유지
                 if len(lines) >= 10:
                     lines = lines[-9:]
                 
-                new_log = "\n".join(lines) + "\n" + message
+                new_log = "\n".join(lines) + "\n" + message_with_time
             
             self.settings_log_label.setText(new_log)
             self.settings_log_label.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent; padding: 5px;")
@@ -4053,14 +4504,28 @@ class NaverBlogGUI(QMainWindow):
     def save_api_key(self):
         """API 키 저장"""
         ai_model = "GPT" if self.gpt_radio.isChecked() else "Gemini"
-        self.config["gpt_api_key"] = self.gpt_api_entry.text()
-        self.config["gemini_api_key"] = self.gemini_api_entry.text()
-        # 구버전 호환성을 위해 api_key도 저장
-        self.config["api_key"] = self.gpt_api_entry.text() if self.gpt_radio.isChecked() else self.gemini_api_entry.text()
+        
+        # 빈 칸 검증
+        gpt_key = self.gpt_api_entry.text().strip()
+        gemini_key = self.gemini_api_entry.text().strip()
+        
+        if self.gpt_radio.isChecked() and not gpt_key:
+            self._show_auto_close_message("⚠️ GPT API 키를 입력해주세요", QMessageBox.Icon.Warning)
+            return
+        
+        if self.gemini_radio.isChecked() and not gemini_key:
+            self._show_auto_close_message("⚠️ Gemini API 키를 입력해주세요", QMessageBox.Icon.Warning)
+            return
+        
+        self.config["gpt_api_key"] = gpt_key
+        self.config["gemini_api_key"] = gemini_key
+        self.config["api_key"] = gpt_key if self.gpt_radio.isChecked() else gemini_key
         self.config["ai_model"] = "gpt" if self.gpt_radio.isChecked() else "gemini"
         self._update_settings_status(f"🔑 {ai_model} API 키가 저장되었습니다")
         self.save_config_file()
         self.update_status_display()
+        self._update_settings_summary()
+        self._show_auto_close_message(f"✅ {ai_model} API 키가 저장되었습니다", QMessageBox.Icon.Information)
     
     def save_login_info(self):
         """로그인 정보 저장"""
@@ -4069,6 +4534,7 @@ class NaverBlogGUI(QMainWindow):
         self._update_settings_status("👤 네이버 로그인 정보가 저장되었습니다")
         self.save_config_file()
         self.update_status_display()
+        self._update_settings_summary()
     
     def save_time_settings(self):
         """발행 간격 저장"""
@@ -4138,6 +4604,30 @@ class NaverBlogGUI(QMainWindow):
         self._update_settings_status(f"🔗 외부 링크 설정이 저장되었습니다 (상태: {status})")
         self.save_config_file()
     
+    def save_related_posts_settings(self):
+        """함께 보면 좋은 글 설정 저장"""
+        blog_address = self.blog_address_entry.text().strip()
+        related_posts_title = self.related_posts_title_entry.text().strip()
+        
+        # blog_address가 비어있지 않으면 전체 URL로 변환
+        if blog_address:
+            if not blog_address.startswith("http"):
+                # https://blog.naver.com/아이디 형식으로 변환
+                blog_address = f"https://blog.naver.com/{blog_address}"
+        
+        self.config["blog_address"] = blog_address
+        self.config["related_posts_title"] = related_posts_title if related_posts_title else "함께 보면 좋은 글"
+        
+        status_msg = f"📚 '함께 보면 좋은 글' 설정이 저장되었습니다"
+        if blog_address:
+            status_msg += f"\n   블로그: {blog_address}"
+        else:
+            status_msg += "\n   (블로그 주소 미설정 - 기능 비활성화)"
+        
+        self._update_settings_status(status_msg)
+        self.save_config_file()
+    
+
     def start_posting(self, is_first_start=True):
         """포스팅 시작"""
         
@@ -4174,16 +4664,7 @@ class NaverBlogGUI(QMainWindow):
         except:
             interval = 10
         
-        # 모든 포스팅에 발행 간격 적용 (첫 포스팅도 대기)
         wait_interval = interval
-        
-        # 대기 안내 메시지
-        if is_first_start:
-            self.update_progress_status(f"⏰ 발행 간격 {interval}분 대기 후 첫 포스팅을 시작합니다...")
-            print(f"⏰ 발행 간격 {interval}분 대기 후 첫 포스팅을 시작합니다...")
-        else:
-            self.update_progress_status(f"⏰ 발행 간격 {interval}분 대기 후 다음 포스팅을 시작합니다...")
-            print(f"⏰ 발행 간격 {interval}분 대기 후 다음 포스팅을 시작합니다...")
         
         # 진행 상태 업데이트
         self.update_progress_status("🚀 포스팅 프로세스를 시작합니다...")
@@ -4197,6 +4678,10 @@ class NaverBlogGUI(QMainWindow):
                 
                 # 첫 실행시에만 자동화 인스턴스 생성
                 if is_first_start:
+                    # 블로그 주소 처음 (아이디만 있으면 전체 URL로 변환)
+                    blog_address = self.config.get("blog_address", "")
+                    related_posts_title = self.config.get("related_posts_title", "함께 보면 좋은 글")
+                    
                     self.automation = NaverBlogAutomation(
                         naver_id=self.naver_id_entry.text(),
                         naver_pw=self.naver_pw_entry.text(),
@@ -4209,12 +4694,14 @@ class NaverBlogGUI(QMainWindow):
                         publish_time="now",
                         scheduled_hour="00",
                         scheduled_minute="00",
+                        related_posts_title=related_posts_title,
+                        blog_address=blog_address,
                         callback=self.log_message,
                         config=self.config
                     )
                 
                 # 자동화 실행 (첫 실행 여부 전달)
-                result = self.automation.run(wait_interval, is_first_run=is_first_start)
+                result = self.automation.run(is_first_run=is_first_start)
                 
                 # 실패 시 원인 구분하여 처리
                 if result is False:
@@ -4232,14 +4719,8 @@ class NaverBlogGUI(QMainWindow):
                         return
                     else:
                         # 키워드는 있지만 다른 이유로 실패 (발행 실패 등)
-                        self.update_progress_status("⚠️ 포스팅 중 오류가 발생했습니다. 재시도합니다...")
+                        self.update_progress_status("⚠️ 포스팅 중 오류가 발생했습니다.")
                         print("⚠️ 포스팅 실패 - 키워드는 유지되고 다음 시도에서 재사용됩니다")
-                        
-                        # 실패한 경우에도 계속 진행 (다음 포스팅 시도)
-                        if self.is_running and not self.is_paused:
-                            self.update_progress_status("🔄 다음 포스팅을 준비합니다...")
-                            print("🔄 다음 포스팅을 준비합니다...")
-                            self.start_posting(is_first_start=False)
                         return
                 
                 self.update_progress_status("✅ 포스팅이 완료되었습니다!")
@@ -4252,7 +4733,7 @@ class NaverBlogGUI(QMainWindow):
                 if self.is_running and not self.is_paused:
                     self.update_progress_status("🔄 다음 포스팅을 준비합니다...")
                     print("🔄 다음 포스팅을 준비합니다...")
-                    # 다음 포스팅은 발행 간격 대기가 필요함 (is_first_start=False)
+                    # 다음 포스팅은 첫 포스팅이 아님 (is_first_start=False)
                     self.start_posting(is_first_start=False)
             except Exception as e:
                 self.update_progress_status(f"❌ 오류: {e}")
@@ -4501,13 +4982,53 @@ class NaverBlogGUI(QMainWindow):
 
 
 if __name__ == "__main__":
+    # multiprocessing 콘솔창 방지
+    import multiprocessing
+    multiprocessing.freeze_support()
+    
+    # QApplication 최우선 생성 (스플래시 화면을 가장 먼저 띄우기 위해)
+    app = QApplication(sys.argv)
+    
+    # Windows 작업 표시줄 아이콘 설정 (AppUserModelID)
+    if sys.platform == 'win32':
+        try:
+            myappid = 'naver.autoblog.v5.1'
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except:
+            pass
+    
+    # 애플리케이션 아이콘 설정
+    if getattr(sys, 'frozen', False):
+        base_dir = sys._MEIPASS
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    icon_path = os.path.join(base_dir, "setting", "david153.ico")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+    
+    # 스플래시 스크린 즉시 생성 및 표시
+    splash_pix = QPixmap(400, 200)
+    splash_pix.fill(QColor("#03C75A"))
+    
+    painter = QPainter(splash_pix)
+    painter.setPen(QColor("white"))
+    painter.setFont(QFont("맑은 고딕", 16, QFont.Weight.Bold))
+    painter.drawText(splash_pix.rect(), Qt.AlignmentFlag.AlignCenter, 
+                    "프로그램 실행 중이니,\n잠시만 기다려주세요 :)")
+    painter.end()
+    
+    splash = QSplashScreen(splash_pix, Qt.WindowType.WindowStaysOnTopHint)
+    splash.show()
+    app.processEvents()  # 즉시 화면에 표시
+    
     # 1. 라이선스 체크 (Google Spreadsheet 기반)
     license_manager = LicenseManager()
     is_valid, message = license_manager.verify_license()
     
     if not is_valid:
-        # GUI 없이 에러 메시지 표시
-        app = QApplication(sys.argv)
+        splash.close()  # 스플래시 닫기
+        # GUI 에러 메시지 표시
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QWidget, QHBoxLayout
         from PyQt6.QtCore import Qt
         from PyQt6.QtGui import QFont
@@ -4824,29 +5345,6 @@ if __name__ == "__main__":
     # 전역 예외 처리기 등록
     sys.excepthook = handle_exception
     
-    # Windows 작업 표시줄 아이콘 설정 (AppUserModelID)
-    if sys.platform == 'win32':
-        try:
-            # 고유한 AppUserModelID 설정하여 작업 표시줄 아이콘 그룹화
-            myappid = 'naver.autoblog.v5.1'
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-        except:
-            pass
-    
-    app = QApplication(sys.argv)
-    
-    # 애플리케이션 아이콘 설정
-    if getattr(sys, 'frozen', False):
-        # PyInstaller로 빌드된 경우
-        base_dir = sys._MEIPASS
-    else:
-        # 개발 환경
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    icon_path = os.path.join(base_dir, "setting", "david153.ico")
-    if os.path.exists(icon_path):
-        app.setWindowIcon(QIcon(icon_path))
-    
     # UTF-8 환경 확인
     print(f"✅ 시스템 인코딩: {sys.getdefaultencoding()}")
     print(f"✅ 파일 시스템 인코딩: {sys.getfilesystemencoding()}")
@@ -4859,7 +5357,11 @@ if __name__ == "__main__":
     print(f"✅ 머신 ID: {license_info['machine_id'][:32]}...")
     print(f"✅ MAC 주소: {license_info.get('mac_address', 'N/A')}")
     
+    # 메인 윈도우 생성
     window = NaverBlogGUI()
+    
+    # 스플래시 화면 닫고 메인 윈도우 표시
+    splash.finish(window)
     window.show()
     
     sys.exit(app.exec())
