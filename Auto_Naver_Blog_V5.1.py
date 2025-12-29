@@ -5387,8 +5387,8 @@ if __name__ == "__main__":
     # 메인 윈도우 생성
     window = NaverBlogGUI()
     
-    # 스플래시 화면 닫고 메인 윈도우 표시
+    # 스플래시 화면 닫고 메인 윈도우 최대화 표시
     splash.finish(window)
-    window.show()
+    window.showMaximized()
     
     sys.exit(app.exec())
