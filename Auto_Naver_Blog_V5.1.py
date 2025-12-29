@@ -4529,20 +4529,43 @@ class NaverBlogGUI(QMainWindow):
     
     def save_login_info(self):
         """로그인 정보 저장"""
-        self.config["naver_id"] = self.naver_id_entry.text()
-        self.config["naver_pw"] = self.naver_pw_entry.text()
-        self._update_settings_status("👤 네이버 로그인 정보가 저장되었습니다")
+        naver_id = self.naver_id_entry.text().strip()
+        naver_pw = self.naver_pw_entry.text().strip()
+        
+        if not naver_id or not naver_pw:
+            self._show_auto_close_message("⚠️ 아이디와 비밀번호를 모두 입력해주세요", QMessageBox.Icon.Warning)
+            return
+        
+        self.config["naver_id"] = naver_id
+        self.config["naver_pw"] = naver_pw
+        self._update_settings_status("👤 로그인 정보가 저장되었습니다")
         self.save_config_file()
         self.update_status_display()
         self._update_settings_summary()
+        self._show_auto_close_message("✅ 로그인 정보가 저장되었습니다", QMessageBox.Icon.Information)
     
     def save_time_settings(self):
         """발행 간격 저장"""
-        interval = int(self.interval_entry.text() or "10")
+        interval_text = self.interval_entry.text().strip()
+        
+        if not interval_text:
+            self._show_auto_close_message("⚠️ 발행 간격을 입력해주세요", QMessageBox.Icon.Warning)
+            return
+        
+        try:
+            interval = int(interval_text)
+            if interval < 1:
+                self._show_auto_close_message("⚠️ 발행 간격은 1분 이상이어야 합니다", QMessageBox.Icon.Warning)
+                return
+        except ValueError:
+            self._show_auto_close_message("⚠️ 숫자를 입력해주세요", QMessageBox.Icon.Warning)
+            return
+        
         self.config["interval"] = interval
-        self._update_settings_status(f"⏱️ 발행 간격이 {interval}분으로 저장되었습니다")
+        self._update_settings_status(f"⏰ 발행 간격: {interval}분")
         self.save_config_file()
         self.update_status_display()
+        self._show_auto_close_message(f"✅ 발행 간격이 {interval}분으로 저장되었습니다", QMessageBox.Icon.Information)
     
     def toggle_thumbnail(self):
         """썸네일 ON/OFF 토글"""
@@ -4598,16 +4621,20 @@ class NaverBlogGUI(QMainWindow):
     def save_link_settings(self):
         """링크 설정 저장"""
         self.config["use_external_link"] = self.use_link_checkbox.isChecked()
-        self.config["external_link"] = self.link_url_entry.text()
-        self.config["external_link_text"] = self.link_text_entry.text()
+        self.config["external_link"] = self.link_url_entry.text().strip()
+        self.config["external_link_text"] = self.link_text_entry.text().strip()
         status = "ON" if self.use_link_checkbox.isChecked() else "OFF"
         self._update_settings_status(f"🔗 외부 링크 설정이 저장되었습니다 (상태: {status})")
         self.save_config_file()
+        self._show_auto_close_message(f"✅ 외부 링크 설정이 저장되었습니다 ({status})", QMessageBox.Icon.Information)
     
     def save_related_posts_settings(self):
         """함께 보면 좋은 글 설정 저장"""
+        title = self.related_posts_title_entry.text().strip()
         blog_address = self.blog_address_entry.text().strip()
-        related_posts_title = self.related_posts_title_entry.text().strip()
+        
+        if not title:
+            title = "함께 보면 좋은 글"
         
         # blog_address가 비어있지 않으면 전체 URL로 변환
         if blog_address:
@@ -4616,7 +4643,7 @@ class NaverBlogGUI(QMainWindow):
                 blog_address = f"https://blog.naver.com/{blog_address}"
         
         self.config["blog_address"] = blog_address
-        self.config["related_posts_title"] = related_posts_title if related_posts_title else "함께 보면 좋은 글"
+        self.config["related_posts_title"] = title
         
         status_msg = f"📚 '함께 보면 좋은 글' 설정이 저장되었습니다"
         if blog_address:
