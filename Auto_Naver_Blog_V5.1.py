@@ -3220,6 +3220,19 @@ class NaverBlogGUI(QMainWindow):
         self.login_setup_btn = QPushButton("설정하기")
         self.login_setup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.login_setup_btn.setMinimumHeight(25)
+        self.login_setup_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {NAVER_RED};
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 3px 10px;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background-color: #D32F2F;
+            }}
+        """)
         self.login_setup_btn.clicked.connect(lambda: self._switch_tab(1))
         login_status_layout.addStretch()
         login_status_layout.addWidget(self.login_setup_btn)
@@ -4184,7 +4197,7 @@ class NaverBlogGUI(QMainWindow):
         layout.addWidget(ai_card, 3, 1)
         
         # ===== 함께 보면 좋은 글 제목 설정 카드 =====
-        related_posts_card = PremiumCard("📚 함께 보면 좋은 글 제목 설정", self)
+        related_posts_card = PremiumCard("📚 함께 보면 좋은 글 제목 설정", "📚", self)
         
         # 2열 그리드 레이아웃 생성
         inputs_grid = QGridLayout()
@@ -4265,7 +4278,7 @@ class NaverBlogGUI(QMainWindow):
         # 저장 버튼
         related_posts_save_btn = QPushButton("💾 설정 저장")
         related_posts_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        related_posts_save_btn.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
+        related_posts_save_btn.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))  # 폰트 크기 13으로 감소
         related_posts_save_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {NAVER_GREEN};
@@ -4731,20 +4744,17 @@ class NaverBlogGUI(QMainWindow):
         msg_box.setWindowTitle("알림")
         msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
         
-        # 정사각형 모양 + 가독성 개선
+        # 한 줄 가독성 개선
         msg_box.setStyleSheet(f"""
             QMessageBox {{
                 background-color: white;
-                min-width: 320px;
-                min-height: 180px;
+                min-width: 350px;
             }}
             QMessageBox QLabel {{
                 font-size: 14px;
                 font-weight: bold;
                 color: {NAVER_TEXT};
-                padding: 20px;
-                min-width: 280px;
-                min-height: 80px;
+                padding: 10px 20px;
                 qproperty-alignment: AlignCenter;
             }}
             QPushButton {{
