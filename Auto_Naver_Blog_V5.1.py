@@ -1551,6 +1551,222 @@ class NaverBlogAutomation:
                 time.sleep(1)
                 self._update_status("✅ 본문 입력 완료!")
                 
+                # '함께 보면 좋은 글' 섹션 추가 (동영상 전에 먼저 추가)
+                self._update_status("📚 '함께 보면 좋은 글' 섹션 확인 중...")
+                try:
+                    latest_posts_file = os.path.join(self.data_dir, "setting", "latest_posts.txt")
+                    
+                    # 파일이 존재하는지 확인
+                    if os.path.exists(latest_posts_file):
+                        with open(latest_posts_file, 'r', encoding='utf-8') as f:
+                            lines = f.readlines()
+                            posts = []
+                            
+                            # 각 줄을 파싱 (제목|||링크|||설명)
+                            for line in lines:
+                                line = line.strip()
+                                if line and '|||' in line:
+                                    parts = line.split('|||')
+                                    if len(parts) >= 3:
+                                        post_title = parts[0].strip()
+                                        post_link = parts[1].strip()
+                                        post_desc = parts[2].strip()
+                                        posts.append({
+                                            'title': post_title,
+                                            'link': post_link,
+                                            'description': post_desc
+                                        })
+                            
+                            # 최대 3개까지만 사용
+                            posts = posts[:3]
+                            
+                            if posts:
+                                self._update_status(f"📚 {len(posts)}개의 관련 글 추가 중...")
+                                
+                                # 줄 띄우기 (Enter 2번)
+                                ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                time.sleep(0.3)
+                                ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                time.sleep(0.3)
+                                
+                                # '함께 보면 좋은 글' 제목 입력 및 스타일 적용
+                                title_text = self.related_posts_title if self.related_posts_title else "함께 보면 좋은 글"
+                                ActionChains(self.driver).send_keys(title_text).perform()
+                                time.sleep(0.3)
+                                
+                                # 제목 드래그 (Shift + Home)
+                                ActionChains(self.driver).key_down(Keys.SHIFT).send_keys(Keys.HOME).key_up(Keys.SHIFT).perform()
+                                time.sleep(0.3)
+                                
+                                # 중앙 정렬 적용
+                                try:
+                                    self._update_status("⚙️ 제목 중앙 정렬 중...")
+                                    align_dropdown = WebDriverWait(self.driver, 3).until(
+                                        EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-property-toolbar-drop-down-button.se-align-left-toolbar-button"))
+                                    )
+                                    align_dropdown.click()
+                                    time.sleep(0.3)
+                                    
+                                    center_align_btn = WebDriverWait(self.driver, 3).until(
+                                        EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-toolbar-option-align-center-button"))
+                                    )
+                                    center_align_btn.click()
+                                    time.sleep(0.3)
+                                    self._update_status("✅ 중앙 정렬 완료")
+                                except Exception as e:
+                                    self._update_status(f"⚠️ 중앙 정렬 실패: {str(e)[:30]}")
+                                
+                                # 소제목 스타일 적용
+                                try:
+                                    self._update_status("📝 소제목 스타일 적용 중...")
+                                    
+                                    # 문단 서식 버튼 클릭
+                                    text_format_btn = WebDriverWait(self.driver, 3).until(
+                                        EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-text-format-toolbar-button.se-property-toolbar-label-select-button"))
+                                    )
+                                    text_format_btn.click()
+                                    time.sleep(0.3)
+                                    
+                                    # 소제목 선택
+                                    subtitle_btn = WebDriverWait(self.driver, 3).until(
+                                        EC.element_to_be_clickable((By.CSS_SELECTOR, "button.__se-sentry.se-toolbar-option-text-button.se-toolbar-option-text-format-sectionTitle-button"))
+                                    )
+                                    subtitle_btn.click()
+                                    time.sleep(0.3)
+                                    self._update_status("✅ 소제목 스타일 적용 완료")
+                                except Exception as e:
+                                    self._update_status(f"⚠️ 소제목 스타일 실패: {str(e)[:30]}")
+                                
+                                # 볼드체 적용 (Ctrl+B)
+                                ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('b').key_up(Keys.CONTROL).perform()
+                                time.sleep(0.3)
+                                self._update_status("✅ 볼드체 적용 완료")
+                                
+                                # 커서를 줄 끝으로 이동 (선택 해제)
+                                ActionChains(self.driver).send_keys(Keys.END).perform()
+                                time.sleep(0.2)
+                                
+                                # Enter로 다음 줄로 이동 (2번)
+                                ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                time.sleep(0.2)
+                                ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                time.sleep(0.3)
+                                
+                                # 각 글 정보 추가 (제목에 링크 앵커로 삽입)
+                                for i, post in enumerate(posts, 1):
+                                    self._update_status(f"📝 관련 글 {i} 추가 중...")
+                                    
+                                    # 제목 작성 (클립보드 사용으로 안정성 향상)
+                                    post_title = post['title']
+                                    pyperclip.copy(post_title)  # 클립보드에 제목 복사
+                                    time.sleep(0.1)
+                                    
+                                    # Ctrl+V로 붙여넣기
+                                    ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
+                                    time.sleep(0.5)  # 붙여넣기 완료 대기 시간 증가
+                                    
+                                    # 제목 전체 선택 (더 안정적인 방법: Home → Shift+End)
+                                    # 먼저 줄의 맨 앞으로 이동
+                                    ActionChains(self.driver).send_keys(Keys.HOME).perform()
+                                    time.sleep(0.2)
+                                    
+                                    # 그 다음 Shift+End로 줄 끝까지 선택
+                                    ActionChains(self.driver).key_down(Keys.SHIFT).send_keys(Keys.END).key_up(Keys.SHIFT).perform()
+                                    time.sleep(0.3)
+                                    
+                                    # 링크 삽입 시도
+                                    link_inserted = False
+                                    try:
+                                        # 네이버 블로그 링크 버튼 클릭 (정확한 선택자 사용)
+                                        self._update_status("🔗 링크 버튼 클릭 중...")
+                                        
+                                        # 정확한 네이버 블로그 링크 버튼 선택자
+                                        link_btn_selector = "button.se-link-toolbar-button.se-property-toolbar-custom-layer-button.__se-sentry"
+                                        
+                                        try:
+                                            link_btn = WebDriverWait(self.driver, 3).until(
+                                                EC.element_to_be_clickable((By.CSS_SELECTOR, link_btn_selector))
+                                            )
+                                            # JavaScript 클릭으로 확실하게 실행
+                                            self.driver.execute_script("arguments[0].click();", link_btn)
+                                            self._update_status(f"✅ 링크 버튼 클릭 완료")
+                                            time.sleep(1.0)  # 링크 대화상자가 열릴 때까지 대기
+                                        except Exception as btn_error:
+                                            # 백업: 더 간단한 선택자로 시도
+                                            self._update_status("⚠️ 정확한 선택자 실패, 백업 선택자 시도...")
+                                            link_btn = WebDriverWait(self.driver, 2).until(
+                                                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-link-toolbar-button"))
+                                            )
+                                            self.driver.execute_script("arguments[0].click();", link_btn)
+                                            self._update_status(f"✅ 링크 버튼 클릭 완료 (백업 선택자)")
+                                            time.sleep(1.0)
+                                        
+                                        
+                                        # 링크 URL 입력 (네이버 블로그 정확한 선택자 사용)
+                                        self._update_status("📝 링크 URL 입력 중...")
+                                        
+                                        # 정확한 네이버 블로그 링크 입력 필드
+                                        link_input_selector = "input.se-custom-layer-link-input"
+                                        
+                                        link_input = WebDriverWait(self.driver, 3).until(
+                                            EC.presence_of_element_located((By.CSS_SELECTOR, link_input_selector))
+                                        )
+                                        
+                                        self._update_status(f"✅ 링크 입력창 발견")
+                                        
+                                        # URL 입력
+                                        link_input.clear()
+                                        link_input.send_keys(post['link'])
+                                        time.sleep(0.3)
+                                        
+                                        # 확인 버튼 클릭 (정확한 네이버 블로그 선택자)
+                                        confirm_btn_selector = "button.se-custom-layer-link-apply-button"
+                                        confirm_btn = WebDriverWait(self.driver, 3).until(
+                                            EC.element_to_be_clickable((By.CSS_SELECTOR, confirm_btn_selector))
+                                        )
+                                        confirm_btn.click()
+                                        time.sleep(0.5)
+                                        
+                                        link_inserted = True
+                                        self._update_status(f"✅ 링크 삽입 성공: {post['title'][:20]}...")
+                                            
+                                    except Exception as e:
+                                        # 에러 상세 정보 출력
+                                        error_msg = str(e)
+                                        self._update_status(f"⚠️ 링크 삽입 실패: {error_msg[:50]}")
+                                        print(f"❌ 링크 삽입 오류 상세:")
+                                        print(f"  - 포스트 제목: {post['title']}")
+                                        print(f"  - 링크 URL: {post['link']}")
+                                        print(f"  - 오류 타입: {type(e).__name__}")
+                                        print(f"  - 오류 내용: {error_msg}")
+                                        
+                                        # 실패 시 ESC로 대화상자 닫고 계속 진행
+                                        ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
+                                        time.sleep(0.3)
+                                    
+                                    # 커서를 줄 끝으로 이동
+                                    ActionChains(self.driver).send_keys(Keys.END).perform()
+                                    time.sleep(0.1)
+                                    
+                                    # 줄바꿈
+                                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                    time.sleep(0.1)
+                                    
+                                    # 마지막 글이 아니면 추가 줄바꿈
+                                    if i < len(posts):
+                                        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                        time.sleep(0.2)
+                                
+                                self._update_status("✅ '함께 보면 좋은 글' 섹션 추가 완료")
+                            else:
+                                self._update_status("⚠️ latest_posts.txt 파일에 유효한 데이터가 없습니다")
+                    else:
+                        self._update_status("⚪ latest_posts.txt 파일 없음 - '함께 보면 좋은 글' 섹션 스킵")
+                        
+                except Exception as e:
+                    self._update_status(f"⚠️ '함께 보면 좋은 글' 섹션 추가 실패(진행 계속): {str(e)[:100]}")
+                
+                
                 # 동영상 삽입 (본문 하단에 추가)
                 if video_path:
                     self._update_status("🎬 동영상 삽입 중...")
@@ -2752,11 +2968,13 @@ class NaverBlogGUI(QMainWindow):
         
         header_layout.addWidget(tab_buttons_container, 0, 1, Qt.AlignmentFlag.AlignCenter)
         
-        # 오른쪽 제작자 표시
-        right_label = QLabel("제작자 : 데이비")
+        # 오른쪽 제작자 표시 (하이퍼링크)
+        right_label = QLabel('<a href="https://www.threads.com/@david153.official?hl=ko" style="color: white; text-decoration: none;">제작자 : 데이비</a>')
         right_label.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
         right_label.setStyleSheet("color: white; background-color: transparent; border: none;")
         right_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        right_label.setOpenExternalLinks(True)  # 외부 링크 열기 활성화
+        right_label.setCursor(Qt.CursorShape.PointingHandCursor)  # 마우스 커서 손가락 모양으로
         header_layout.addWidget(right_label, 0, 2)
         
         parent_layout.addWidget(header)
@@ -2992,6 +3210,84 @@ class NaverBlogGUI(QMainWindow):
         
         status_card.content_layout.addLayout(interval_status_layout)
         
+        # 로그인 정보 상태
+        login_status_layout = QHBoxLayout()
+        self.login_status_label = QLabel("👤 로그인: 미설정")
+        self.login_status_label.setFont(QFont(self.font_family, 13))
+        self.login_status_label.setStyleSheet(f"color: #000000; border: none;")
+        login_status_layout.addWidget(self.login_status_label)
+        
+        self.login_setup_btn = QPushButton("설정하기")
+        self.login_setup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.login_setup_btn.setMinimumHeight(25)
+        self.login_setup_btn.clicked.connect(lambda: self._switch_tab(1))
+        login_status_layout.addStretch()
+        login_status_layout.addWidget(self.login_setup_btn)
+        
+        status_card.content_layout.addLayout(login_status_layout)
+        
+        # 썸네일 기능 상태
+        thumbnail_status_layout = QHBoxLayout()
+        self.thumbnail_status_label = QLabel("🖼️ 썸네일: ON")
+        self.thumbnail_status_label.setFont(QFont(self.font_family, 13))
+        self.thumbnail_status_label.setStyleSheet(f"color: #000000; border: none;")
+        thumbnail_status_layout.addWidget(self.thumbnail_status_label)
+        
+        self.thumbnail_setup_btn = QPushButton("설정하기")
+        self.thumbnail_setup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.thumbnail_status_label.setFont(QFont(self.font_family, 13))
+        self.thumbnail_setup_btn.setMinimumHeight(25)
+        self.thumbnail_setup_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {NAVER_GREEN};
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 3px 10px;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background-color: #00C73C;
+            }}
+        """)
+        self.thumbnail_setup_btn.clicked.connect(lambda: self._switch_tab(1))
+        thumbnail_status_layout.addStretch()
+        thumbnail_status_layout.addWidget(self.thumbnail_setup_btn)
+        
+        status_card.content_layout.addLayout(thumbnail_status_layout)
+        
+        # 외부 링크 상태
+        ext_link_status_layout = QHBoxLayout()
+        self.ext_link_status_label = QLabel("🔗 외부 링크: OFF")
+        self.ext_link_status_label.setFont(QFont(self.font_family, 13))
+        self.ext_link_status_label.setStyleSheet(f"color: #000000; border: none;")
+        ext_link_status_layout.addWidget(self.ext_link_status_label)
+        
+        self.ext_link_setup_btn = QPushButton("설정하기")
+        self.ext_link_setup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ext_link_setup_btn.setMinimumHeight(25)
+        self.ext_link_setup_btn.clicked.connect(lambda: self._switch_tab(1))
+        ext_link_status_layout.addStretch()
+        ext_link_status_layout.addWidget(self.ext_link_setup_btn)
+        
+        status_card.content_layout.addLayout(ext_link_status_layout)
+        
+        # 함께 보면 좋은 글 상태
+        related_posts_status_layout = QHBoxLayout()
+        self.related_posts_status_label = QLabel("📚 함께 보면 좋은 글: 미설정")
+        self.related_posts_status_label.setFont(QFont(self.font_family, 13))
+        self.related_posts_status_label.setStyleSheet(f"color: #000000; border: none;")
+        related_posts_status_layout.addWidget(self.related_posts_status_label)
+        
+        self.related_posts_setup_btn = QPushButton("설정하기")
+        self.related_posts_setup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.related_posts_setup_btn.setMinimumHeight(25)
+        self.related_posts_setup_btn.clicked.connect(lambda: self._switch_tab(1))
+        related_posts_status_layout.addStretch()
+        related_posts_status_layout.addWidget(self.related_posts_setup_btn)
+        
+        status_card.content_layout.addLayout(related_posts_status_layout)
+        
         # 사용기간 표시 (라이선스 정보)
         self.license_period_label = QLabel("📅 사용기간: 확인 중...")
         self.license_period_label.setFont(QFont(self.font_family, 13))
@@ -3163,55 +3459,13 @@ class NaverBlogGUI(QMainWindow):
         self.settings_log_scroll.setWidget(settings_log_widget)
         log_container_layout.addWidget(self.settings_log_scroll)
         
-        # 오른쪽: 모든 설정 상태 (50% 너비) - 2x2 그리드
-        status_container = QWidget()
-        status_container.setStyleSheet(f"QWidget {{ background-color: white; border: 2px solid {NAVER_BORDER}; border-radius: 8px; }}")
-        status_layout = QGridLayout(status_container)
-        status_layout.setContentsMargins(15, 15, 15, 15)
-        status_layout.setHorizontalSpacing(15)
-        status_layout.setVerticalSpacing(15)
-        
-        # API 상태 (0, 0)
-        self.settings_api_status = QLabel("🔑 API: 미설정")
-        self.settings_api_status.setFont(QFont(self.font_family, 12))
-        self.settings_api_status.setStyleSheet(f"color: {NAVER_RED}; background-color: transparent; border: none; font-weight: bold;")
-        self.settings_api_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        status_layout.addWidget(self.settings_api_status, 0, 0)
-        
-        # 로그인 상태 (0, 1)
-        self.settings_login_status = QLabel("👤 로그인: 미설정")
-        self.settings_login_status.setFont(QFont(self.font_family, 12))
-        self.settings_login_status.setStyleSheet(f"color: {NAVER_RED}; background-color: transparent; border: none; font-weight: bold;")
-        self.settings_login_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        status_layout.addWidget(self.settings_login_status, 0, 1)
-        
-        # 썸네일 상태 (1, 0)
-        self.settings_thumbnail_status = QLabel("🖼️ 썸네일: OFF")
-        self.settings_thumbnail_status.setFont(QFont(self.font_family, 12))
-        self.settings_thumbnail_status.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; border: none; font-weight: bold;")
-        self.settings_thumbnail_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        status_layout.addWidget(self.settings_thumbnail_status, 1, 0)
-        
-        # 외부링크 상태 (1, 1)
-        self.settings_link_status_label = QLabel("🔗 외부링크: OFF")
-        self.settings_link_status_label.setFont(QFont(self.font_family, 12))
-        self.settings_link_status_label.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; border: none; font-weight: bold;")
-        self.settings_link_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        status_layout.addWidget(self.settings_link_status_label, 1, 1)
-        
-        # 2단 레이아웃 추가 (50:50 비율)
-        status_main_layout.addWidget(log_container, 50)
-        status_main_layout.addWidget(status_container, 50)
-        
-        settings_progress_card.content_layout.addLayout(status_main_layout)
-        
-        # Row 0에 가로로 길게 (2칸럼 통합)
-        layout.addWidget(settings_progress_card, 0, 0, 1, 2)
+        # 로그 섹션만 추가 (오른쪽 상태 섹션 제거)
+        settings_progress_card.content_layout.addWidget(self.settings_log_scroll)
         
         # === Row 1, Col 0: 네이버 로그인 정보 ===
         login_card = PremiumCard("네이버 로그인 정보", "👤")
         
-        # 경고 라벨
+        # 경고 라벨 (볼드체 추가)
         warning_label = QLabel("⚠️ 2차 인증 해제 권장")
         warning_label.setStyleSheet(f"""
             background-color: {NAVER_ORANGE}; 
@@ -3219,6 +3473,7 @@ class NaverBlogGUI(QMainWindow):
             padding: 6px 14px; 
             border-radius: 8px;
             font-size: 13px;
+            font-weight: bold;
             border: none;
         """)
         warning_label.setFixedHeight(36)
@@ -3586,13 +3841,6 @@ class NaverBlogGUI(QMainWindow):
             }}
         """)
         self.gpt_toggle_btn.clicked.connect(self.toggle_gpt_api_key)
-        gpt_toggle_container.addWidget(self.gpt_toggle_btn)
-        
-        gpt_api_input_layout.addLayout(gpt_toggle_container)
-        gpt_api_layout.addLayout(gpt_api_input_layout)
-        
-        api_grid.addWidget(gpt_api_widget, 0, 0)
-        
         # Gemini API
         gemini_api_widget = QWidget()
         gemini_api_widget.setStyleSheet("QWidget { background-color: transparent; }")
@@ -3632,12 +3880,12 @@ class NaverBlogGUI(QMainWindow):
         self.gemini_toggle_btn.setMinimumSize(70, 34)
         self.gemini_toggle_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: {NAVER_TEXT_SUB};
-                border: none;
-                border-radius: 6px;
+                background-color: {NAVER_TEXT};
                 color: white;
-                font-size: 13px;
-                font-weight: bold;
+                border: none;
+                border-radius: 5px;
+                padding: 5px 10px;
+                font-size: 12px;
             }}
             QPushButton:hover {{
                 background-color: {NAVER_TEXT};
@@ -3649,7 +3897,65 @@ class NaverBlogGUI(QMainWindow):
         gemini_api_input_layout.addLayout(gemini_toggle_container)
         gemini_api_layout.addLayout(gemini_api_input_layout)
         
-        api_grid.addWidget(gemini_api_widget, 0, 1)
+        api_grid.addWidget(gemini_api_widget, 0, 0) # Gemini API를 왼쪽으로 변경
+        
+        # GPT API
+        gpt_api_widget = QWidget()
+        gpt_api_widget.setStyleSheet("QWidget { background-color: transparent; }")
+        gpt_api_layout = QVBoxLayout(gpt_api_widget)
+        gpt_api_layout.setSpacing(5)
+        
+        gpt_api_label = PremiumCard.create_section_label("🧠 GPT API", self.font_family)
+        gpt_api_layout.addWidget(gpt_api_label)
+        
+        gpt_api_input_layout = QHBoxLayout()
+        self.gpt_api_entry = QLineEdit()
+        self.gpt_api_entry.setPlaceholderText("GPT API 키")
+        self.gpt_api_entry.setEchoMode(QLineEdit.EchoMode.Password)
+        self.gpt_api_entry.setCursorPosition(0)
+        self.gpt_api_entry.setStyleSheet(f"""
+            QLineEdit {{
+                border: 2px solid {NAVER_BORDER};
+                border-radius: 8px;
+                padding: 8px;
+                background-color: white;
+                color: {NAVER_TEXT};
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border-color: {NAVER_GREEN};
+            }}
+        """)
+        self.gpt_api_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
+        gpt_api_input_layout.addWidget(self.gpt_api_entry)
+        
+        # GPT 토글 버튼과 상태 라벨
+        gpt_toggle_container = QVBoxLayout()
+        gpt_toggle_container.setSpacing(2)
+        
+        self.gpt_toggle_btn = QPushButton("비공개")
+        self.gpt_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.gpt_toggle_btn.setMinimumSize(70, 34)
+        self.gpt_toggle_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {NAVER_TEXT_SUB};
+                border: none;
+                border-radius: 6px;
+                color: white;
+                font-size: 13px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {NAVER_TEXT};
+            }}
+        """)
+        self.gpt_toggle_btn.clicked.connect(self.toggle_gpt_api_key)
+        gpt_toggle_container.addWidget(self.gpt_toggle_btn)
+        
+        gpt_api_input_layout.addLayout(gpt_toggle_container)
+        gpt_api_layout.addLayout(gpt_api_input_layout)
+        
+        api_grid.addWidget(gpt_api_widget, 0, 1) # GPT API를 오른쪽으로 변경
         
         api_card.content_layout.addLayout(api_grid)
         
@@ -3878,15 +4184,25 @@ class NaverBlogGUI(QMainWindow):
         layout.addWidget(ai_card, 3, 1)
         
         # ===== 함께 보면 좋은 글 제목 설정 카드 =====
-        related_posts_card = PremiumCard("📚 함께 보면 좋은 글 제목 설정", "📚", self)
+        related_posts_card = PremiumCard("📚 함께 보면 좋은 글 제목 설정", self)
         
-        # 섹션 제목 라벨
+        # 2열 그리드 레이아웃 생성
+        inputs_grid = QGridLayout()
+        inputs_grid.setHorizontalSpacing(15)
+        inputs_grid.setVerticalSpacing(10)
+        
+        # 왼쪽 열: 섹션 제목
+        section_container = QWidget()
+        section_container.setStyleSheet("QWidget { background-color: transparent; }")
+        section_layout = QVBoxLayout(section_container)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(8)
+        
         section_label = QLabel("📚 섹션 제목")
-        section_label.setFont(QFont(self.font_family, 12))
+        section_label.setFont(QFont(self.font_family, 12, QFont.Weight.Bold))
         section_label.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
-        related_posts_card.content_layout.addWidget(section_label)
+        section_layout.addWidget(section_label)
         
-        # 섹션 제목 입력 필드 (기본값: "함께 보면 좋은 글")
         self.related_posts_title_entry = QLineEdit()
         self.related_posts_title_entry.setPlaceholderText("함께 보면 좋은 글")
         self.related_posts_title_entry.setFont(QFont(self.font_family, 12))
@@ -3902,15 +4218,22 @@ class NaverBlogGUI(QMainWindow):
                 border-color: {NAVER_GREEN};
             }}
         """)
-        related_posts_card.content_layout.addWidget(self.related_posts_title_entry)
+        section_layout.addWidget(self.related_posts_title_entry)
         
-        # 블로그 주소 라벨
+        inputs_grid.addWidget(section_container, 0, 0)
+        
+        # 오른쪽 열: 블로그 주소
+        blog_container = QWidget()
+        blog_container.setStyleSheet("QWidget { background-color: transparent; }")
+        blog_layout = QVBoxLayout(blog_container)
+        blog_layout.setContentsMargins(0, 0, 0, 0)
+        blog_layout.setSpacing(8)
+        
         blog_addr_label = QLabel("🌐 블로그 주소")
-        blog_addr_label.setFont(QFont(self.font_family, 12))
+        blog_addr_label.setFont(QFont(self.font_family, 12, QFont.Weight.Bold))
         blog_addr_label.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
-        related_posts_card.content_layout.addWidget(blog_addr_label)
+        blog_layout.addWidget(blog_addr_label)
         
-        # 블로그 주소 입력 필드
         self.blog_address_entry = QLineEdit()
         self.blog_address_entry.setPlaceholderText("yourname (예: david153official-ctrl)")
         self.blog_address_entry.setFont(QFont(self.font_family, 12))
@@ -3926,7 +4249,11 @@ class NaverBlogGUI(QMainWindow):
                 border-color: {NAVER_GREEN};
             }}
         """)
-        related_posts_card.content_layout.addWidget(self.blog_address_entry)
+        blog_layout.addWidget(self.blog_address_entry)
+        
+        inputs_grid.addWidget(blog_container, 0, 1)
+        
+        related_posts_card.content_layout.addLayout(inputs_grid)
         
         # 설명 라벨
         desc_label = QLabel("💡 블로그 주소를 입력하면 최신글 3개를 자동으로 가져와 포스팅 하단에 추가합니다")
@@ -3961,6 +4288,10 @@ class NaverBlogGUI(QMainWindow):
         related_posts_card.setMinimumHeight(300)
         
         layout.addWidget(related_posts_card, 4, 0)
+        
+        # 설정 로그 카드를 '함께 보면 좋은 글' 오른쪽에 배치
+        settings_progress_card.setMinimumHeight(300)
+        layout.addWidget(settings_progress_card, 4, 1)
         
         tab.setWidget(content)
         return tab
@@ -4154,6 +4485,111 @@ class NaverBlogGUI(QMainWindow):
         # 발행 간격
         interval = self.interval_entry.text() or "10"
         self.interval_label.setText(f"⏱️ 발행 간격: {interval}분")
+        
+        # 썸네일 기능 상태
+        use_thumbnail = self.config.get("use_thumbnail", True)
+        if use_thumbnail:
+            self.thumbnail_status_label.setText("🖼️ 썸네일: ON")
+            self.thumbnail_setup_btn.setText("설정하기")
+            self.thumbnail_setup_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {NAVER_GREEN};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 3px 10px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: #00C73C;
+                }}
+            """)
+        else:
+            self.thumbnail_status_label.setText("🖼️ 썸네일: OFF")
+            self.thumbnail_setup_btn.setText("설정하기")
+            self.thumbnail_setup_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {NAVER_RED};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 3px 10px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: #D32F2F;
+                }}
+            """)
+        
+        # 외부 링크 상태
+        use_external_link = self.config.get("use_external_link", False)
+        if use_external_link:
+            self.ext_link_status_label.setText("🔗 외부 링크: ON")
+            self.ext_link_setup_btn.setText("변경하기")
+            self.ext_link_setup_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {NAVER_GREEN};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 3px 10px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: #00C73C;
+                }}
+            """)
+        else:
+            self.ext_link_status_label.setText("🔗 외부 링크: OFF")
+            self.ext_link_setup_btn.setText("설정하기")
+            self.ext_link_setup_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {NAVER_RED};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 3px 10px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: #D32F2F;
+                }}
+            """)
+        
+        # 함께 보면 좋은 글 상태
+        blog_address = self.config.get("blog_address", "").strip()
+        if blog_address:
+            self.related_posts_status_label.setText("📚 함께 보면 좋은 글: ON")
+            self.related_posts_setup_btn.setText("변경하기")
+            self.related_posts_setup_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {NAVER_GREEN};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 3px 10px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: #00C73C;
+                }}
+            """)
+        else:
+            self.related_posts_status_label.setText("📚 함께 보면 좋은 글: 미설정")
+            self.related_posts_setup_btn.setText("설정하기")
+            self.related_posts_setup_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {NAVER_RED};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 3px 10px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: #D32F2F;
+                }}
+            """)
     
     def _update_license_info(self):
         """라이선스 정보 업데이트"""
