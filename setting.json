@@ -1,0 +1,40 @@
+{
+  "api_keys": {
+    "openai": "",
+    "gemini": ""
+  },
+  "global_settings": {
+    "default_ai": "gemini",
+    "default_wait_time": "33",
+    "posting_mode": "수익용",
+    "ai_model": "gemini-2.5-flash-lite",
+    "common_username": "memo",
+    "common_password": "",
+    "font_path": "fonts/timon.ttf",
+    "max_sites": 20,
+    "auto_save": true
+  },
+  "posting_state": {
+    "last_site_id": 1,
+    "last_site_url": "https://barogagi.it-hotissue.com",
+    "posting_in_progress": true,
+    "next_site_id": null
+  },
+  "version": "multi-site",
+  "sites": [
+    {
+      "name": "barogagi.it-hotissue.com",
+      "url": "https://barogagi.it-hotissue.com",
+      "username": "memo",
+      "password": "",
+      "category_id": 1,
+      "ai_provider": "gemini",
+      "wait_time": "33",
+      "thumbnail_image": "",
+      "keyword_file": "barogagi_keywords.txt",
+      "keywords": [],
+      "id": 1,
+      "updated_at": "2025-11-01T23:17:12.833129"
+    }
+  ]
+}
