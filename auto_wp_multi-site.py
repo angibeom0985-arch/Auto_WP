@@ -337,36 +337,53 @@ class PostingWorker(QThread):
                 print(f"⏹️ {site_name}: 포스팅이 중지되었습니다. 키워드 '{keyword}' 보존됨")
                 return
                 
-            if title and content:
-                self.log(f"✅ 콘텐츠 생성 성공, 워드프레스 업로드 시작")
-                # 워드프레스에 포스팅
-                result = content_generator.post_to_wordpress(site, title, content, thumbnail_path)
+            # 🔥 콘텐츠 생성 결과 검증 강화 (빈 문자열 체크 포함)
+            if not title or not title.strip():
+                self.log(f"❌ 콘텐츠 생성 실패 - 제목이 비어있음. 키워드 '{keyword}' 보존")
+                return
+            
+            if not content or not content.strip():
+                self.log(f"❌ 콘텐츠 생성 실패 - 본문이 비어있음. 키워드 '{keyword}' 보존")
+                return
+            
+            # 최소 길이 검증
+            if len(title.strip()) < 5:
+                self.log(f"❌ 콘텐츠 생성 실패 - 제목이 너무 짧음 ({len(title.strip())}자). 키워드 '{keyword}' 보존")
+                return
+            
+            if len(content.strip()) < 100:
+                self.log(f"❌ 콘텐츠 생성 실패 - 본문이 너무 짧음 ({len(content.strip())}자). 키워드 '{keyword}' 보존")
+                return
                 
-                if result and result.get('success'):
-                    # 🔥 중요: 포스팅 성공 후에만 키워드를 used 파일로 이동
-                    try:
-                        self.status_update.emit(f"🔄 키워드 '{keyword}' 처리 완료 파일로 이동")
-                        keyword_moved = self.move_keyword_to_used(keyword, site)
-                        if not keyword_moved:
-                            self.status_update.emit(f"⚠️ 포스팅 완료, 키워드 이동 실패")
-                    except Exception as keyword_error:
-                        self.status_update.emit(f"⚠️ 포스팅 완료, 키워드 처리 오류")
+            self.log(f"✅ 콘텐츠 생성 성공 (제목: {len(title)}자, 본문: {len(content)}자), 워드프레스 업로드 시작")
+            
+            # 워드프레스에 포스팅
+            result = content_generator.post_to_wordpress(site, title, content, thumbnail_path)
+            
+            if result and result.get('success'):
+                # 🔥 중요: 포스팅 성공 후에만 키워드를 used 파일로 이동
+                try:
+                    self.status_update.emit(f"🔄 키워드 '{keyword}' 처리 완료 파일로 이동")
+                    keyword_moved = self.move_keyword_to_used(keyword, site)
+                    if not keyword_moved:
+                        self.status_update.emit(f"⚠️ 포스팅 완료, 키워드 이동 실패")
+                except Exception as keyword_error:
+                    self.status_update.emit(f"⚠️ 포스팅 완료, 키워드 처리 오류")
+                
+                # 🔒 포스팅 성공 시 완료 상태 저장 (다음 사이트로 이동)
+                self.config_manager.save_posting_state(site_id, site_url, in_progress=False)
+                self.status_update.emit(f"✅ 다음 프로그램 실행 시 {site_name} 다음 사이트부터 시작됩니다")
+                
+                # 개별 포스팅 완료 신호 발송 (카운트다운 시작용)
+                self.single_posting_complete.emit()
+                
+                # 🔥 포스팅 완료 후 키워드 개수 체크 (300개 미만 경고)
+                self.check_low_keywords_after_posting(site)
                     
-                    # 🔒 포스팅 성공 시 완료 상태 저장 (다음 사이트로 이동)
-                    self.config_manager.save_posting_state(site_id, site_url, in_progress=False)
-                    self.status_update.emit(f"✅ 다음 프로그램 실행 시 {site_name} 다음 사이트부터 시작됩니다")
-                    
-                    # 개별 포스팅 완료 신호 발송 (카운트다운 시작용)
-                    self.single_posting_complete.emit()
-                        
-                else:
-                    self.status_update.emit(f"❌ {site_name}: 워드프레스 포스팅 실패 - 키워드 보존")
-                    # 🔒 포스팅 실패 시 진행 중 상태 유지 (재시작 시 같은 사이트에서 재시작)
-                    self.config_manager.save_posting_state(site_id, site_url, in_progress=True)
             else:
-                self.log(f"❌ 콘텐츠 생성 실패 - 제목: '{title}', 본문 길이: {len(content) if content else 0}")
-                self.status_update.emit(f"❌ {site_name}: 콘텐츠 생성 실패 - 키워드 보존")
-                # 🔒 콘텐츠 생성 실패 시 진행 중 상태 유지
+                self.status_update.emit(f"❌ {site_name}: 워드프레스 포스팅 실패 - 키워드 보존")
+                # 🔒 포스팅 실패 시 진행 중 상태 유지 (재시작 시 같은 사이트에서 재시작)
+                self.config_manager.save_posting_state(site_id, site_url, in_progress=True)
                 self.config_manager.save_posting_state(site_id, site_url, in_progress=True)
             
         except Exception as e:
@@ -377,6 +394,37 @@ class PostingWorker(QThread):
             # 🔒 예외 발생 시 진행 중 상태 유지 (재시작 시 같은 사이트에서 재시작)
             self.config_manager.save_posting_state(site_id, site_url, in_progress=True)
             # 예외가 발생해도 키워드를 보존하고 다음 사이트로 진행
+
+    def check_low_keywords_after_posting(self, site):
+        """포스팅 완료 후 해당 사이트의 키워드가 300개 미만이면 알림"""
+        try:
+            site_name = site.get('name', 'Unknown')
+            keyword_file = site.get('keyword_file', '')
+            
+            if not keyword_file:
+                return
+            
+            base_path = get_base_path()
+            keyword_path = os.path.join(base_path, "keywords", keyword_file)
+            
+            if not os.path.exists(keyword_path):
+                return
+            
+            # 현재 남은 키워드 개수 확인
+            with open(keyword_path, 'r', encoding='utf-8') as f:
+                lines = [line.strip() for line in f.readlines() if line.strip() and not line.strip().startswith('#')]
+                keyword_count = len(lines)
+            
+            # 300개 미만이면 경고 신호 발생
+            if keyword_count < 300:
+                warning_msg = f"⚠️ {site_name}의 키워드가 {keyword_count}개로 부족합니다! (최소 300개 권장)"
+                self.status_update.emit(warning_msg)
+                
+                # 메인 스레드에서 알림창 표시 (error_occurred 신호 사용)
+                self.error_occurred.emit(f"키워드 부족|{site_name}|{keyword_count}")
+                
+        except Exception as e:
+            print(f"키워드 체크 오류: {e}")
 
     def move_keyword_to_used(self, keyword, site):
         """사용한 키워드를 used 파일로 이동 - 'used_' 접두사 붙인 파일로 이동"""
@@ -549,9 +597,21 @@ except ImportError:
 def get_base_path():
     """실행 파일의 기본 경로 반환 (EXE/PY 모두 지원)"""
     if getattr(sys, 'frozen', False):  # PyInstaller로 빌드된 EXE인 경우
+        # _MEIPASS는 PyInstaller가 리소스를 압축 해제한 임시 폴더
+        # sys.executable은 실제 exe 파일 위치
+        # 설정 파일 등은 exe 위치, 리소스 파일은 _MEIPASS 사용
         return os.path.dirname(sys.executable)
     else:  # 일반 Python 스크립트인 경우
         return os.path.dirname(os.path.abspath(__file__))
+
+def get_resource_path(relative_path):
+    """리소스 파일의 절대 경로 반환 (PyInstaller 호환)"""
+    if getattr(sys, 'frozen', False):  # PyInstaller로 빌드된 EXE인 경우
+        # _MEIPASS: PyInstaller가 리소스를 압축 해제한 임시 폴더
+        base_path = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+    else:  # 일반 Python 스크립트인 경우
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
 
 def log_to_file(message):
     """EXE 실행 시 로그 파일에 기록"""
@@ -1060,15 +1120,9 @@ class ContentGenerator:
                     }
                 ]
 
-                # 모델 초기화 시 사용 가능한 모델 확인 (2025년 최신 모델부터 시도)
+                # 모델 초기화 시 사용 가능한 모델 확인 (gemini-2.5-flash-lite만 사용)
                 model_priority = [
-                    'gemini-2.0-flash-exp',      # 2025년 최신 실험 모델
                     'gemini-2.5-flash-lite',     # 2.5 lite 모델
-                    'gemini-1.5-flash-latest',   # 최신 Flash
-                    'gemini-1.5-flash',
-                    'gemini-1.5-pro-latest',     # 최신 Pro
-                    'gemini-1.5-pro',
-                    'gemini-pro'                 # Fallback
                 ]
                 model_initialized = False
                 last_error = None
@@ -1198,7 +1252,20 @@ class ContentGenerator:
                 temperature=temperature,
                 timeout=60
             )
-            return response.choices[0].message.content
+            
+            # 🔥 응답 검증 추가
+            if not response.choices or len(response.choices) == 0:
+                self.log(f"❌ {step_name} OpenAI 응답이 비어있음 (choices 없음)")
+                return None
+            
+            content = response.choices[0].message.content
+            if not content or not content.strip():
+                self.log(f"❌ {step_name} OpenAI 응답 내용이 비어있음")
+                return None
+            
+            self.log(f"✅ {step_name} OpenAI 응답 성공 ({len(content)}자)")
+            return content
+            
         except Exception as api_error:
             self.log(f"❌ {step_name} OpenAI API 오류: {api_error}")
             return None
@@ -1229,8 +1296,14 @@ class ContentGenerator:
                 response = self.gemini_model.generate_content(full_prompt, generation_config=generation_config)
                 elapsed_time = time.time() - start_time
                 
+                # 🔥 응답 검증 강화
                 if hasattr(response, 'text') and response.text:
-                    return response.text
+                    response_text = response.text.strip()
+                    if not response_text:
+                        raise Exception("응답 텍스트가 공백만 포함되어 있습니다.")
+                    
+                    self.log(f"✅ {step_name} Gemini 응답 성공 ({len(response_text)}자, {elapsed_time:.1f}초)")
+                    return response_text
                 else:
                     # 빈 응답에 대한 상세 정보
                     if hasattr(response, 'prompt_feedback'):
@@ -4378,7 +4451,23 @@ class ContentGenerator:
             result = self.call_ai_api(
                 prompt, f"{step_num}단계", max_tokens=max_tokens, temperature=0.7, system_content=system_prompt
             )
+            
+            # 🔥 AI 응답 검증 추가
+            if not result:
+                self.log(f"❌ {step_num}단계: AI API 응답 없음")
+                return None
+            
+            if not result.strip():
+                self.log(f"❌ {step_num}단계: AI 응답이 비어있음")
+                return None
+            
+            if len(result.strip()) < 50:
+                self.log(f"❌ {step_num}단계: AI 응답이 너무 짧음 ({len(result.strip())}자)")
+                return None
+            
+            self.log(f"✅ {step_num}단계 검증 완료 ({len(result)}자)")
             return result
+            
         except Exception as e:
             self.log(f"{step_num}단계 처리 중 오류: {e}")
             return None
@@ -4600,6 +4689,27 @@ class ContentGenerator:
                 password_hint = password[:4] + "***" + password[-4:] if len(password) > 8 else password[:2] + "***"
                 
                 return {'success': False, 'error': 'Authentication failed'}
+
+            # 🔥 중요: 제목과 콘텐츠 검증 (empty_content 에러 방지)
+            if not title or not title.strip():
+                self.log(f"❌ {site_name}: 제목이 비어있습니다. 포스팅 중단")
+                return {'success': False, 'error': '제목이 비어있습니다'}
+            
+            if not content or not content.strip():
+                self.log(f"❌ {site_name}: 콘텐츠가 비어있습니다. 포스팅 중단")
+                return {'success': False, 'error': '콘텐츠가 비어있습니다'}
+            
+            # 제목과 콘텐츠 길이 검증 (최소 길이 확인)
+            if len(title.strip()) < 5:
+                self.log(f"❌ {site_name}: 제목이 너무 짧습니다 (최소 5자 필요): '{title}'")
+                return {'success': False, 'error': '제목이 너무 짧습니다'}
+            
+            if len(content.strip()) < 100:
+                self.log(f"❌ {site_name}: 콘텐츠가 너무 짧습니다 (최소 100자 필요): {len(content.strip())}자")
+                return {'success': False, 'error': '콘텐츠가 너무 짧습니다'}
+            
+            self.log(f"✅ 제목 검증 완료: '{title}' ({len(title)}자)")
+            self.log(f"✅ 콘텐츠 검증 완료: {len(content)}자")
 
             post_data = {
                 'title': title,
@@ -6764,14 +6874,14 @@ class MainWindow(QMainWindow):
     # ==================== 중앙 집중식 스타일 관리 ====================
     
     def get_card_container_style(self):
-        """카드 컨테이너 공통 스타일 반환"""
+        """카드 컨테이너 공통 스타일 반환 - 작은 화면 지원"""
         return {
-            'max_height': 180,  # 160에서 180으로 증가
-            'min_height': 140,  # 120에서 140으로 증가
-            'min_width': 300,
+            'max_height': 180,
+            'min_height': 120,  # 140에서 120으로 축소
+            'min_width': 180,   # 250에서 180으로 축소 (매우 작은 화면 지원)
             'size_policy': (QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred),
-            'contents_margins': (20, 20, 20, 20),
-            'spacing': 12,
+            'contents_margins': (15, 15, 15, 15),  # 여백 축소 (20 -> 15)
+            'spacing': 10,  # 간격 축소 (12 -> 10)
             'stylesheet': f"""
                 QWidget {{
                     background-color: {COLORS['background']};
@@ -7093,20 +7203,23 @@ class MainWindow(QMainWindow):
             print(f"반응형 레이아웃 적용 오류: {e}")
 
     def adjust_monitoring_grid(self, width):
-        """모니터링 탭 그리드 조정 - 안전한 방법"""
+        """모니터링 탭 그리드 조정 - 매우 작은 화면도 지원"""
         try:
             if not hasattr(self, 'settings_grid'):
                 return
                 
-            # 창 너비에 따라 그리드 열 수 결정
-            if width < 600:
-                # 작은 화면: 1열
+            # 🔥 창 너비에 따라 그리드 열 수 결정 (더 세밀하게)
+            if width < 400:
+                # 매우 작은 화면: 1열
                 columns = 1
-            elif width < 900:
-                # 중간 화면: 2열  
+            elif width < 700:
+                # 작은 화면: 1열 (태블릿 세로)
+                columns = 1
+            elif width < 1000:
+                # 중간 화면: 2열 (태블릿 가로)
                 columns = 2
             else:
-                # 큰 화면: 3열
+                # 큰 화면: 3열 (데스크톱)
                 columns = 3
                 
             # 현재 그리드와 다른 경우에만 재배치
@@ -7200,18 +7313,41 @@ class MainWindow(QMainWindow):
         """UI 설정 - 간단한 레이아웃"""
         self.setWindowTitle("Auto WP multi-site - 멀티 사이트 관리 시스템")
         
+        # 🔥 프로그램 아이콘 설정 (임베디드 방식)
+        try:
+            # 아이콘 파일 경로 (PyInstaller 리소스 경로 사용)
+            icon_path = get_resource_path("daivd153.ico")
+            
+            # 아이콘 파일이 있으면 로드
+            if os.path.exists(icon_path):
+                icon = QIcon(icon_path)
+                self.setWindowIcon(icon)
+                # QApplication에도 설정하여 모든 다이얼로그에 적용
+                QApplication.instance().setWindowIcon(icon)
+                print(f"✅ 프로그램 아이콘 설정 완료: {icon_path}")
+            else:
+                # 아이콘 파일이 없으면 기본 아이콘 생성 (흰색 원)
+                print(f"⚠️ 아이콘 파일을 찾을 수 없습니다: {icon_path}")
+                pixmap = QPixmap(64, 64)
+                pixmap.fill(QColor("#5E81AC"))
+                icon = QIcon(pixmap)
+                self.setWindowIcon(icon)
+                QApplication.instance().setWindowIcon(icon)
+                
+        except Exception as e:
+            print(f"⚠️ 아이콘 설정 오류: {e}")
+        
         # 화면 크기에 맞춰 창 크기 자동 조정
         from PyQt6.QtGui import QGuiApplication
         screen = QGuiApplication.primaryScreen()
         screen_geometry = screen.availableGeometry()
         
-        # 화면 크기의 80%로 창 크기 설정
+        # 화면 크기의 80%로 초기 창 크기 설정
         window_width = int(screen_geometry.width() * 0.8)
         window_height = int(screen_geometry.height() * 0.8)
         
-        # 최소 크기 보장
-        window_width = max(window_width, 1200)
-        window_height = max(window_height, 800)
+        # 🔥 최소 크기 제한 제거 - 사용자가 자유롭게 크기 조절 가능
+        # 초기 크기만 설정하고 최소/최대 제한 없음
         
         # 창을 화면 중앙에 배치
         x = (screen_geometry.width() - window_width) // 2
@@ -7833,12 +7969,14 @@ class MainWindow(QMainWindow):
         status_layout.setSpacing(25)
         status_layout.setContentsMargins(20, 20, 20, 20)
 
-        # 설정 정보 표시 - 명확한 2행 x 3열 그리드
+        # 설정 정보 표시 - 명확한 2행 x 3열 그리드 (완전 반응형)
         self.settings_grid = QGridLayout()
-        self.settings_grid.setSpacing(15)
-        self.settings_grid.setColumnMinimumWidth(0, 200)
-        self.settings_grid.setColumnMinimumWidth(1, 200)
-        self.settings_grid.setColumnMinimumWidth(2, 200)
+        self.settings_grid.setSpacing(10)  # 15에서 10으로 축소
+        # 🔥 최소 너비를 더 줄여서 매우 작은 창에서도 표시 가능
+        self.settings_grid.setColumnMinimumWidth(0, 150)  # 180에서 150으로 축소
+        self.settings_grid.setColumnMinimumWidth(1, 150)
+        self.settings_grid.setColumnMinimumWidth(2, 150)
+        # 🔥 모든 열이 동일하게 확장되도록 설정
         self.settings_grid.setColumnStretch(0, 1)
         self.settings_grid.setColumnStretch(1, 1)
         self.settings_grid.setColumnStretch(2, 1)
@@ -8003,8 +8141,8 @@ class MainWindow(QMainWindow):
         self.progress_text = QTextEdit()
         self.progress_text.setReadOnly(True)
         self.progress_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        # 최소 높이만 설정하고 최대 높이는 제한 없음
-        self.progress_text.setMinimumHeight(300)
+        # 🔥 최소 높이를 더 줄여서 작은 창에서도 표시 가능
+        self.progress_text.setMinimumHeight(150)  # 300에서 150으로 축소
         
         # 폰트 설정
         font = self.progress_text.font()
@@ -8128,9 +8266,9 @@ class MainWindow(QMainWindow):
                 self.ai_model_combo.clear()
                 ai_provider = self.config_manager.data["global_settings"].get("default_ai", "gemini")
                 if ai_provider == "gemini":
-                    models = ["gemini-2.5-flash-lite", "gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-pro"]
+                    models = ["gemini-2.5-flash-lite"]
                 else:
-                    models = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
+                    models = ["gpt-4o-mini"]
                 
                 self.ai_model_combo.addItems(models)
                 current_model = self.config_manager.data["global_settings"].get("ai_model", models[0])
@@ -8212,6 +8350,52 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             print(f"포스팅 모드 설정 저장 오류: {e}")
+
+    def update_monitoring_settings(self):
+        """설정 저장 후 모니터링 탭의 '현재 설정 상태' 업데이트"""
+        try:
+            # AI 모델 콤보박스 업데이트
+            if hasattr(self, 'ai_model_combo') and self.ai_model_combo:
+                ai_provider = self.config_manager.data["global_settings"].get("default_ai", "gemini")
+                current_model = self.config_manager.data["global_settings"].get("ai_model", "")
+                
+                # AI 제공자에 따라 콤보박스 항목 재구성
+                self.ai_model_combo.blockSignals(True)
+                self.ai_model_combo.clear()
+                
+                if ai_provider == "gemini":
+                    models = ["gemini-2.5-flash-lite", "gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-pro"]
+                else:
+                    models = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
+                
+                self.ai_model_combo.addItems(models)
+                
+                # 현재 모델 선택
+                if current_model in models:
+                    self.ai_model_combo.setCurrentText(current_model)
+                else:
+                    self.ai_model_combo.setCurrentIndex(0)
+                
+                self.ai_model_combo.blockSignals(False)
+                print(f"✅ 모니터링 탭 AI 모델 업데이트: {current_model}")
+            
+            # 포스팅 모드 콤보박스 업데이트
+            if hasattr(self, 'posting_mode_combo') and self.posting_mode_combo:
+                posting_mode = self.config_manager.data["global_settings"].get("posting_mode", "승인용")
+                self.posting_mode_combo.blockSignals(True)
+                self.posting_mode_combo.setCurrentText(posting_mode)
+                self.posting_mode_combo.blockSignals(False)
+                print(f"✅ 모니터링 탭 포스팅 모드 업데이트: {posting_mode}")
+            
+            # 키워드 개수 업데이트
+            self.update_all_ui_status()
+            
+            print("✅ 모니터링 탭의 '현재 설정 상태'가 업데이트되었습니다.")
+            
+        except Exception as e:
+            print(f"❌ 모니터링 탭 업데이트 오류: {e}")
+            import traceback
+            traceback.print_exc()
 
     def create_clickable_setting_label(self, title, value, callback):
         """클릭 가능한 설정 라벨 생성 - 통합된 스타일 사용"""
@@ -8821,13 +9005,19 @@ class MainWindow(QMainWindow):
             warning_msg += "\n⚠️ 키워드가 부족하면 포스팅이 조기에 중단될 수 있습니다."
             warning_msg += "\n💡 Keywords 폴더에서 키워드를 추가해주세요."
             
-            # 비차단 메시지 박스 (경고 아이콘)
+            # 비차단 메시지 박스 (경고 아이콘 없이 소리 차단)
             msg_box = QMessageBox(self)
-            msg_box.setIcon(QMessageBox.Icon.Warning)
+            msg_box.setIcon(QMessageBox.Icon.NoIcon)  # 경고음 방지
+            msg_box.setOption(QMessageBox.Option.DontUseNativeDialog, True)  # OS 기본 사운드 비활성화
             msg_box.setWindowTitle("키워드 부족 경고")
             msg_box.setText(warning_msg)
             msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
             msg_box.setModal(False)  # 비차단 모드
+            
+            # 🔥 메시지 박스에 프로그램 아이콘 적용
+            if self.windowIcon():
+                msg_box.setWindowIcon(self.windowIcon())
+            
             msg_box.show()
             
         except Exception as e:
@@ -9128,9 +9318,9 @@ class MainWindow(QMainWindow):
         except:
             pass  # 메서드가 없으면 기본값 설정
             if self.default_ai_combo.currentText() == "gemini":
-                self.ai_model_combo.addItems(["gemini-2.5-flash-lite", "gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-pro"])
+                self.ai_model_combo.addItems(["gemini-2.5-flash-lite"])
             else:
-                self.ai_model_combo.addItems(["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"])
+                self.ai_model_combo.addItems(["gpt-4o-mini"])
 
         # 전역 설정
         global_group = QGroupBox("🌐 전역 설정")
@@ -9528,14 +9718,8 @@ class MainWindow(QMainWindow):
                 # API 상태 업데이트
                 self.update_api_status_labels()
                 
-                # 모니터링 탭의 AI 모델 콤보박스 업데이트
-                if hasattr(self, 'ai_model_combo') and self.ai_model_combo:
-                    # 현재 설정된 AI 모델 가져오기
-                    current_ai_model = self.config_manager.data["global_settings"].get("ai_model", "")
-                    # 콤보박스에서 해당 모델 선택
-                    index = self.ai_model_combo.findText(current_ai_model)
-                    if index >= 0:
-                        self.ai_model_combo.setCurrentIndex(index)
+                # 모니터링 탭의 현재 설정 상태 업데이트
+                self.update_monitoring_settings()
                 
                 self.update_posting_status("✅ 설정이 저장되었습니다!")
                 print("✅ 설정이 저장되었습니다!")
@@ -9863,10 +10047,19 @@ class MainWindow(QMainWindow):
                     # 텍스트 업데이트
                     self.progress_text.setPlainText(new_text)
                     
-                    # 항상 맨 아래로 스크롤 (최신 로그가 보이도록)
+                    # 🔥 항상 맨 아래로 스크롤 (최신 로그가 보이도록) - 강화된 스크롤 로직
+                    # 방법 1: 커서를 문서 끝으로 이동
+                    cursor = self.progress_text.textCursor()
+                    cursor.movePosition(cursor.MoveOperation.End)
+                    self.progress_text.setTextCursor(cursor)
+                    
+                    # 방법 2: 스크롤바를 최대값으로 설정
                     scrollbar = self.progress_text.verticalScrollBar()
                     if scrollbar:
                         scrollbar.setValue(scrollbar.maximum())
+                    
+                    # 방법 3: ensureCursorVisible() 호출
+                    self.progress_text.ensureCursorVisible()
                     
                     # GUI 갱신
                     self.progress_text.update()
@@ -9980,10 +10173,39 @@ class MainWindow(QMainWindow):
             self.start_next_posting_countdown()
         
     def on_posting_error(self, error_message):
-        """포스팅 오류 처리"""
+        """포스팅 오류 처리 및 키워드 부족 알림"""
         print(f"❌ 포스팅 중 오류 발생: {error_message}")
         
-        # 워커 정리
+        # 키워드 부족 메시지인지 확인
+        if error_message.startswith("키워드 부족|"):
+            parts = error_message.split("|")
+            if len(parts) == 3:
+                _, site_name, keyword_count = parts
+                
+                # 비차단 알림창 표시
+                warning_msg = f"⚠️ {site_name}의 키워드가 부족합니다!\n\n"
+                warning_msg += f"현재 남은 키워드: {keyword_count}개\n"
+                warning_msg += f"권장 키워드 수: 300개 이상\n\n"
+                warning_msg += "💡 Keywords 폴더에서 키워드를 추가해주세요.\n"
+                warning_msg += "⚠️ 키워드가 부족하면 포스팅이 조기에 중단될 수 있습니다."
+                
+                msg_box = QMessageBox(self)
+                msg_box.setIcon(QMessageBox.Icon.NoIcon)  # 경고음 방지
+                msg_box.setOption(QMessageBox.Option.DontUseNativeDialog, True)  # OS 기본 사운드 비활성화
+                msg_box.setWindowTitle("키워드 부족 경고")
+                msg_box.setText(warning_msg)
+                msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+                msg_box.setModal(False)  # 비차단 모드
+                
+                # 🔥 메시지 박스에 프로그램 아이콘 적용
+                if self.windowIcon():
+                    msg_box.setWindowIcon(self.windowIcon())
+                
+                msg_box.show()
+                
+                return  # 포스팅 중지하지 않고 계속 진행
+        
+        # 일반 오류인 경우 워커 정리
         if hasattr(self, 'posting_worker') and self.posting_worker:
             try:
                 self.posting_worker.deleteLater()
@@ -10137,7 +10359,7 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
 
     def progress_wheel_event(self, event):
-        """프로그레스 텍스트 휠 이벤트 - Ctrl+휠로 폰트 크기 조절"""
+        """프로그레스 텍스트 휠 이벤트 - Ctrl+휠로 창 크기 조절"""
         try:
             from PyQt6.QtCore import Qt
             import time
@@ -10146,19 +10368,23 @@ class MainWindow(QMainWindow):
             self.user_scrolling = True
             self.last_scroll_time = time.time()
             
-            # Ctrl 키가 눌린 경우 폰트 크기 조절
+            # 🔥 Ctrl 키가 눌린 경우 창 크기 조절 (폰트 크기가 아님!)
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 wheel_delta = event.angleDelta().y()
-                current_font = self.progress_text.font()
-                current_size = current_font.pointSize()
+                current_height = self.progress_text.minimumHeight()
+                
+                # 창 크기 조절 단계 (50px씩)
+                step = 50
                 
                 if wheel_delta > 0:  # 확대
-                    new_size = min(current_size + 1, 24)  # 최대 24pt
+                    new_height = current_height + step
+                    new_height = min(new_height, 1000)  # 최대 1000px
                 else:  # 축소
-                    new_size = max(current_size - 1, 8)   # 최소 8pt
+                    new_height = current_height - step
+                    new_height = max(new_height, 100)   # 최소 100px
                 
-                current_font.setPointSize(new_size)
-                self.progress_text.setFont(current_font)
+                self.progress_text.setMinimumHeight(new_height)
+                self.progress_text.setMaximumHeight(new_height)
                 event.accept()
                 return
             
@@ -10574,14 +10800,43 @@ def main():
         app.setStyle('Fusion')
         # 스타일 설정
         
+        # 🔥 명시적인 팔레트 설정으로 시스템 테마 영향 차단
+        palette = QPalette()
+        
+        # 기본 배경과 텍스트 색상 설정
+        palette.setColor(QPalette.ColorRole.Window, QColor(COLORS['background']))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(COLORS['text']))
+        palette.setColor(QPalette.ColorRole.Base, QColor(COLORS['surface']))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(COLORS['surface_light']))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(COLORS['surface']))
+        palette.setColor(QPalette.ColorRole.ToolTipText, QColor(COLORS['text']))
+        palette.setColor(QPalette.ColorRole.Text, QColor(COLORS['text']))
+        palette.setColor(QPalette.ColorRole.Button, QColor(COLORS['surface']))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor(COLORS['text']))
+        palette.setColor(QPalette.ColorRole.BrightText, QColor("#FFFFFF"))
+        palette.setColor(QPalette.ColorRole.Link, QColor(COLORS['primary']))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor(COLORS['primary']))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
+        
+        # 비활성화된 상태의 색상
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor("#808080"))
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor("#808080"))
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor("#808080"))
+        
+        # 애플리케이션에 팔레트 적용
+        app.setPalette(palette)
+        
         # 폰트 설정
         font = QFont("맑은 고딕", 9)
         app.setFont(font)
 
-        # 아이콘 설정 (있는 경우)
-        icon_path = os.path.join(get_base_path(), "daivd153.ico")
+        # 아이콘 설정 (PyInstaller 리소스 경로 사용)
+        icon_path = get_resource_path("daivd153.ico")
         if os.path.exists(icon_path):
             app.setWindowIcon(QIcon(icon_path))
+            print(f"✅ 애플리케이션 아이콘 설정 완료: {icon_path}")
+        else:
+            print(f"⚠️ 아이콘 파일을 찾을 수 없습니다: {icon_path}")
 
         # 예외 처리 핸들러 추가 (UTF-8 안전)
         def handle_exception(exc_type, exc_value, exc_traceback):
