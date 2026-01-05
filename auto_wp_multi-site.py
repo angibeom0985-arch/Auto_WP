@@ -7436,6 +7436,9 @@ class MainWindow(QMainWindow):
             
             # 4. 썸네일 파일 다시 스캔  
             self.reload_thumbnail_files()
+
+            # 4-1. 모니터링 탭의 현재 설정 상태 즉시 반영
+            self.update_monitoring_settings()
             
             # 5. UI 상태 업데이트
             self.update_all_ui_status()
