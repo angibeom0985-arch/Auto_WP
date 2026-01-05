@@ -837,12 +837,18 @@ class NaverBlogAutomation:
                     try:
                         post_title = element.text.strip()
                         post_url = element.get_attribute("href")
-                        
+
                         # 제목과 URL이 유효한지 확인
                         if not post_title or not post_url:
                             self._update_status(f"⚠️ 요소 {idx+1}: 제목 또는 URL 없음 - 스킵")
                             continue
-                        
+
+                        # 카테고리/목록 링크 제외 (실제 포스트만 사용)
+                        lower_url = post_url.lower()
+                        if ("logno=" not in lower_url) and ("postview" not in lower_url):
+                            self._update_status(f"⚠️ 요소 {idx+1}: 포스트 링크 아님 - 스킵")
+                            continue
+
                         # 이미 추가된 URL인지 확인 (중복 방지)
                         if any(p['url'] == post_url for p in posts):
                             self._update_status(f"⚠️ 요소 {idx+1}: 중복 URL - 스킵")
