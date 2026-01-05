@@ -4555,7 +4555,7 @@ class ConfigManager:
                 "default_ai": "gemini",
                 "default_wait_time": "47~50",
                 "posting_mode": "수익용",
-                "ai_model": "",
+                "ai_model": "gemini-2.5-flash-lite",
                 "common_username": "",
                 "common_password": "",
                 "font_path": "fonts/timon.ttf",
