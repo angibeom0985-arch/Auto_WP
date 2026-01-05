@@ -329,9 +329,15 @@ class PostingWorker(QThread):
             
             # 현재 처리 중인 사이트 정보를 전달
             content_generator.set_current_site(site)
-            
+
+            # 포스팅 모드에 따라 콘텐츠 타입 결정
+            content_type = "approval" if posting_mode == "승인용" else "revenue"
+
             # 콘텐츠 생성
-            title, content, thumbnail_path = content_generator.generate_content(keyword)
+            title, content, thumbnail_path = content_generator.generate_simple_content(
+                keyword,
+                content_type=content_type
+            )
             
             if not self.is_running:
                 print(f"⏹️ {site_name}: 포스팅이 중지되었습니다. 키워드 '{keyword}' 보존됨")
@@ -507,11 +513,6 @@ class PostingWorker(QThread):
         
     def resume(self):
         """재개"""
-        self.is_paused = False
-        
-    def stop(self):
-        """중지"""
-        self.is_running = False
         self.is_paused = False
 
 # 기존 라이브러리들
@@ -1194,43 +1195,63 @@ class ContentGenerator:
             return None
         
         ai_provider = self.current_ai_provider
+
+        # 현재 설정된 API 키 확인 (config_manager 우선)
+        if self.config_manager:
+            gemini_key = self.config_manager.data.get("api_keys", {}).get("gemini", "").strip()
+            openai_key = self.config_manager.data.get("api_keys", {}).get("openai", "").strip()
+        else:
+            gemini_key = self.config_data.get('gemini_api_key', '').strip()
+            openai_key = self.config_data.get('openai_api_key', '').strip()
+
+        def gemini_ready():
+            """Gemini 사용 가능 여부 확인 및 필요 시 재초기화"""
+            if not gemini_key:
+                return False
+            if not self.api_status.get('gemini') or not self.gemini_model:
+                self.initialize_apis()
+            return bool(self.api_status.get('gemini') and self.gemini_model)
+
+        def openai_ready():
+            """OpenAI 사용 가능 여부 확인 및 필요 시 재초기화"""
+            if not openai_key:
+                return False
+            if not self.api_status.get('openai') or not self.openai_client:
+                self.initialize_apis()
+            return bool(self.api_status.get('openai') and self.openai_client)
         
         # Gemini API 사용 시 검증
         if ai_provider == 'gemini':
-            # API 키 확인
-            gemini_key = self.config_manager.data.get("api_keys", {}).get("gemini", "").strip()
-            if not gemini_key:
-                self.log("❌ Gemini API 키가 설정되지 않았습니다.")
-                return None
-            
-            # 모델 상태 확인
-            if not self.api_status.get('gemini'):
-                self.log("❌ Gemini API가 초기화되지 않았습니다.")
-                self.initialize_apis()  # 재초기화 시도
-                if not self.api_status.get('gemini'):
-                    return None
-                
-            if not self.gemini_model:
-                self.log("❌ Gemini 모델이 로드되지 않았습니다.")
-                self.initialize_apis()  # 재초기화 시도
-                if not self.gemini_model:
-                    return None
-            
-            return self.call_gemini_api(prompt, step_name, max_tokens, temperature, system_content)
+            if gemini_ready():
+                return self.call_gemini_api(prompt, step_name, max_tokens, temperature, system_content)
+            # Gemini가 없으면 OpenAI로 자동 전환
+            if openai_ready():
+                self.log("⚠️ Gemini 사용 불가 - OpenAI로 자동 전환")
+                self.current_ai_provider = 'openai'
+                return self.call_openai_api(prompt, step_name, max_tokens, temperature, system_content)
+            self.log("❌ 사용 가능한 AI 제공자가 없습니다.")
+            return None
             
         elif ai_provider in ['gpt', 'openai']:
-            # OpenAI API 키 확인
-            openai_key = self.config_manager.data.get("api_keys", {}).get("openai", "").strip()
-            if not openai_key:
-                self.log("❌ OpenAI API 키가 설정되지 않았습니다. 설정 탭에서 API 키를 입력해주세요.")
-                return None
-                
-            if not self.api_status.get('openai'):
-                self.log("❌ OpenAI API가 초기화되지 않았습니다. API 키와 네트워크 상태를 확인해주세요.")
-                return None
-                
-            return self.call_openai_api(prompt, step_name, max_tokens, temperature, system_content)
+            if openai_ready():
+                return self.call_openai_api(prompt, step_name, max_tokens, temperature, system_content)
+            # OpenAI가 없으면 Gemini로 자동 전환
+            if gemini_ready():
+                self.log("⚠️ OpenAI 사용 불가 - Gemini로 자동 전환")
+                self.current_ai_provider = 'gemini'
+                return self.call_gemini_api(prompt, step_name, max_tokens, temperature, system_content)
+            self.log("❌ 사용 가능한 AI 제공자가 없습니다.")
+            return None
         else:
+            # 알 수 없는 제공자일 경우 사용 가능한 모델을 자동 선택
+            if gemini_ready():
+                self.log("⚠️ 알 수 없는 AI 제공자 - Gemini로 자동 선택")
+                self.current_ai_provider = 'gemini'
+                return self.call_gemini_api(prompt, step_name, max_tokens, temperature, system_content)
+            if openai_ready():
+                self.log("⚠️ 알 수 없는 AI 제공자 - OpenAI로 자동 선택")
+                self.current_ai_provider = 'openai'
+                return self.call_openai_api(prompt, step_name, max_tokens, temperature, system_content)
             self.log(f"❌ 알 수 없는 AI 제공자: {ai_provider}. 설정을 확인.")
             return None
 
@@ -3470,1008 +3491,6 @@ class ContentGenerator:
             self.log(f"체크리스트 추가 중 오류: {e}")
             return content
 
-    # def generate_with_gemini(self, keyword):
-    #     """[사용하지 않음] AI 제공자별 구분은 제거됨. generate_content() 사용"""
-    #     pass
-
-    def generate_with_openai(self, keyword):
-        try:
-            # 프롬프트 파일 로드
-            prompt_files = [
-                "prompt1.txt", "prompt2.txt", "prompt3.txt",
-                "prompt4.txt", "prompt5.txt"
-            ]
-
-            self.log(f"👍 Gemini 수익용 콘텐츠 생성: {keyword} (5단계 프롬프트 순차 적용)")
-
-            all_content_parts = []
-            title = ""
-
-            # 모든 프롬프트 파일을 순차적으로 적용
-            for i, prompt_file in enumerate(prompt_files, 1):
-                # Worker Thread에서 실행 중일 때는 중지/일시정지 체크를 더 유연하게
-                try:
-                    # WorkerThread의 상태를 우선 확인
-                    if hasattr(self.auto_wp, 'is_posting') and not self.auto_wp.is_posting:
-                        self.log(f"🛑 Gemini 콘텐츠 생성이 중지되었습니다. (메인 앱 중지 요청)")
-                        return None, None, None
-                    
-                    # 내부 상태 체크 (더 관대하게)
-                    if not getattr(self, 'is_posting', True):
-                        self.log(f"🛑 Gemini 콘텐츠 생성이 중지되었습니다. (내부 상태)")
-                        return None, None, None
-                        
-                except AttributeError:
-                    # 속성이 없는 경우 계속 진행 (Worker Thread에서는 정상)
-                    pass
-
-                # 일시정지 체크 - 메인 클래스의 상태를 확인
-                try:
-                    is_paused = getattr(self.auto_wp, 'is_paused', False)
-                    pause_check_count = 0
-                    while is_paused and pause_check_count < 1000:  # 최대 500초(8분) 대기
-                        time.sleep(0.5)
-                        pause_check_count += 1
-                        # 일시정지 중에도 중지 확인
-                        if hasattr(self.auto_wp, 'is_posting') and not self.auto_wp.is_posting:
-                            return None, None, None
-                        is_paused = getattr(self.auto_wp, 'is_paused', False)
-                except AttributeError:
-                    # 속성이 없는 경우 일시정지 없이 계속 진행
-                    # ContentGenerator는 Worker Thread에서 실행되므로 메인 앱의 상태만 체크
-                    pass
-
-                prompt_path = os.path.join(get_base_path(), "prompts", "gemini", prompt_file)
-
-                if os.path.exists(prompt_path):
-                    with open(prompt_path, 'r', encoding='utf-8') as f:
-                        prompt_template = f.read()
-
-                    # 키워드 대체
-                    prompt = prompt_template.replace("{keyword}", keyword)
-                    
-                    # HTML 구조 정확성 지시사항 강화
-                    html_accuracy_instruction = f"""
-⚠️ **[최우선 필수] HTML 태그 구조 정확성 준수사항**:
-
-🚨 **절대 금지 사항**:
-   - ❌ <strong>제목</strong></h2> (여는 태그 없이 닫는 태그만 사용)
-   - ❌ <strong>제목</strong></h3> (여는 태그 없이 닫는 태그만 사용)
-   - ❌ style="text-align:" (값 없는 속성)
-   - ❌ style="color:" (값 없는 속성)
-   - ❌ '클릭'이라는 단어 사용 금지 (서론, 소제목, 본문, FAQ 모든 부분)
-
-✅ **반드시 지켜야 할 HTML 작성법**:
-   1. 소제목 작성 시:
-      - 올바름: <h2><strong>소제목 내용</strong></h2>
-      - 올바름: <h3><strong>소제목 내용</strong></h3>
-      - 잘못됨: <strong>소제목 내용</strong></h2>
-      - 여는 태그 <h2> 또는 <h3>를 반드시 먼저 작성!
-   
-   2. style 속성 작성 시:
-      - 올바름: style="text-align:center;"
-      - 올바름: style="color:#ee2323;"
-      - 잘못됨: style="text-align:"
-      - 반드시 속성값을 포함할 것!
-
-   3. '클릭' 단어 사용 금지:
-      - ❌ 금지: "여기를 클릭하세요", "클릭해서 확인", "클릭하면"
-      - ✅ 대신 사용: "선택하세요", "확인하세요", "눌러보세요", "터치하세요", "접속하세요", "방문하세요"
-      - 포스팅 제목에만 '클릭' 사용 가능, 본문에서는 절대 사용 금지
-
-📋 **prompts 폴더의 txt 파일 HTML 예시를 정확히 복사**:
-   - 예시에 있는 HTML 태그 구조를 그대로 사용
-   - 내용만 변경하고 HTML 태그 구조는 절대 변경 금지
-   - 여는 태그와 닫는 태그가 항상 쌍으로 존재해야 함
-
-현재 {i}단계입니다. 위 규칙을 반드시 지키세요.
-
-"""
-                    prompt = html_accuracy_instruction + prompt
-
-                    # 기타 필요한 링크 변수들 처리
-                    import urllib.parse
-                    encoded_keyword = urllib.parse.quote(keyword)
-                    prompt = prompt.replace("{url}", f"https://search.naver.com/search.naver?query={encoded_keyword}")
-                    prompt = prompt.replace("{naver_search_link}", f'<a href="https://search.naver.com/search.naver?query={encoded_keyword}" target="_self">{keyword} 관련 정보</a>')
-                    prompt = prompt.replace("{youtube_link}", f'<a href="https://tv.naver.com/search?query={encoded_keyword}" target="_self">{keyword} 관련 영상</a>')
-                    prompt = prompt.replace("{primary_link}", f'<a href="https://search.naver.com/search.naver?query={encoded_keyword}" target="_self">{keyword} 상세 정보</a>')
-
-                    # 정부 및 공공기관 링크들
-                    prompt = prompt.replace("{hometax_link}", '<a href="https://www.hometax.go.kr" target="_self">홈택스 바로가기</a>')
-                    prompt = prompt.replace("{lh_link}", '<a href="https://www.lh.or.kr" target="_self">LH 한국토지주택공사</a>')
-                    prompt = prompt.replace("{efine_link}", '<a href="https://www.efine.go.kr" target="_self">교통민원24</a>')
-                    prompt = prompt.replace("{gov24_link}", '<a href="https://www.gov.kr" target="_self">정부24</a>')
-                    prompt = prompt.replace("{wetax_link}", '<a href="https://www.wetax.go.kr" target="_self">위택스</a>')
-                    prompt = prompt.replace("{kepco_link}", '<a href="https://cyber.kepco.co.kr" target="_self">한국전력 사이버지점</a>')
-                    prompt = prompt.replace("{car365_link}", '<a href="https://www.car365.go.kr" target="_self">자동차365</a>')
-                    prompt = prompt.replace("{apply_lh_link}", '<a href="https://apply.lh.or.kr" target="_self">LH청약플러스</a>')
-                    prompt = prompt.replace("{bokjiro_link}", '<a href="https://www.bokjiro.go.kr" target="_self">복지로</a>')
-                    
-                    # 금융기관 링크들
-                    prompt = prompt.replace("{kbstar_link}", '<a href="https://www.kbstar.com" target="_self">KB국민은행</a>')
-                    prompt = prompt.replace("{shinhan_link}", '<a href="https://www.shinhan.com" target="_self">신한은행</a>')
-                    prompt = prompt.replace("{hanabank_link}", '<a href="https://www.hanabank.com" target="_self">하나은행</a>')
-                    prompt = prompt.replace("{wooribank_link}", '<a href="https://www.wooribank.com" target="_self">우리은행</a>')
-                    prompt = prompt.replace("{ibk_link}", '<a href="https://www.ibk.co.kr" target="_self">IBK기업은행</a>')
-                    prompt = prompt.replace("{kdb_link}", '<a href="https://www.kdb.co.kr" target="_self">KDB산업은행</a>')
-                    prompt = prompt.replace("{bok_link}", '<a href="https://www.bok.or.kr" target="_self">한국은행</a>')
-                    prompt = prompt.replace("{fss_link}", '<a href="https://www.fss.or.kr" target="_self">금융감독원</a>')
-                    prompt = prompt.replace("{toss_link}", '<a href="https://toss.im" target="_self">토스</a>')
-                    prompt = prompt.replace("{kakaopay_link}", '<a href="https://www.kakaopay.com" target="_self">카카오페이</a>')
-                    
-                    # 통신 및 유틸리티 링크들
-                    prompt = prompt.replace("{tworld_link}", '<a href="https://www.tworld.co.kr" target="_self">T월드</a>')
-                    prompt = prompt.replace("{kt_link}", '<a href="https://www.kt.com" target="_self">KT</a>')
-                    prompt = prompt.replace("{uplus_link}", '<a href="https://www.uplus.co.kr" target="_self">LG U+</a>')
-                    prompt = prompt.replace("{naver_land_link}", '<a href="https://land.naver.com" target="_self">네이버 부동산</a>')
-                    prompt = prompt.replace("{zigbang_link}", '<a href="https://www.zigbang.com" target="_self">직방</a>')
-                    
-                    # 자동차 관련 링크들
-                    prompt = prompt.replace("{bobaedream_link}", '<a href="https://www.bobaedream.co.kr" target="_self">보배드림</a>')
-                    prompt = prompt.replace("{encar_link}", '<a href="https://www.encar.com" target="_self">엔카</a>')
-                    prompt = prompt.replace("{kcar_link}", '<a href="https://www.kcar.com" target="_self">K카</a>')
-                    prompt = prompt.replace("{tmap_link}", '<a href="https://www.tmap.co.kr" target="_self">T맵</a>')
-                    prompt = prompt.replace("{naver_map_link}", '<a href="https://map.naver.com" target="_self">네이버 지도</a>')
-                    prompt = prompt.replace("{kakao_map_link}", '<a href="https://map.kakao.com" target="_self">카카오맵</a>')
-                    prompt = prompt.replace("{hyundai_link}", '<a href="https://www.hyundai.com" target="_self">현대자동차</a>')
-                    prompt = prompt.replace("{kia_link}", '<a href="https://www.kia.com" target="_self">기아</a>')
-
-                    self.log(f"📝 {i}단계")
-
-                    # 프롬프트 파일 내용을 그대로 사용 (시스템 프롬프트 없이)
-
-                    # 중지 체크 (API 호출 전)
-                    if self.should_stop_posting():
-                        self.log(f"🛑 Gemini API 호출 전 중지 감지")
-                        return None, None, None
-
-                    # Gemini API 호출 (할당량 체크 제거)
-                    try:
-                        import signal
-                        import threading
-                        
-                        # 타임아웃을 위한 결과 저장 변수
-                        api_result = [None]
-                        api_error = [None]
-                        
-                        def api_call():
-                            try:
-                                # 시스템 프롬프트와 함께 사용
-                                system_content = self.get_revenue_system_prompt(i, keyword)
-                                full_prompt = f"{system_content}\n\n---\n\n{prompt}"
-                                api_result[0] = self.gemini_model.generate_content(full_prompt)
-                            except Exception as e:
-                                api_error[0] = e
-                        
-                        # 별도 스레드에서 API 호출
-                        api_thread = threading.Thread(target=api_call)
-                        api_thread.daemon = True
-                        api_thread.start()
-                        
-                        # 최대 60초 대기 (매 0.5초마다 중지 체크)
-                        timeout_count = 0
-                        max_timeout = 120  # 60초 (0.5초 * 120)
-                        
-                        while api_thread.is_alive() and timeout_count < max_timeout:
-                            # 중지 체크
-                            if self.should_stop_posting():
-                                self.log(f"🛑 Gemini API 호출 중 중지 감지")
-                                return None, None, None
-                            
-                            time.sleep(0.5)
-                            timeout_count += 1
-                        
-                        # 타임아웃 체크
-                        if api_thread.is_alive():
-                            self.log(f"⏰ Gemini API 호출 타임아웃 (60초) - 프롬프트 {i} 건너뜀")
-                            continue
-                        
-                        # 에러 체크
-                        if api_error[0]:
-                            raise api_error[0]
-                        
-                        response = api_result[0]
-
-                        # 중지 체크 (API 호출 후)
-                        if self.should_stop_posting():
-                            self.log(f"🛑 Gemini API 호출 후 중지 감지")
-                            return None, None, None
-
-                        # 응답 검증
-                        if hasattr(response, 'candidates') and response.candidates:
-                            if response.text and response.text.strip():
-                                step_content = self.remove_prompt_meta_terms(response.text.strip())
-
-                                # 첫 번째 단계에서 제목 추출 및 본문에서 제거
-                                if i == 1 and step_content:
-                                    lines = step_content.split('\n')
-                                    extracted_title = ""
-                                    content_lines = []
-                                    title_found = False
-
-                                    for line_idx, line in enumerate(lines):
-                                        line = line.strip()
-                                        if line and not line.startswith('<') and not title_found and len(line) > 15:
-                                            # HTML 태그 제거하여 제목 추출
-                                            import re
-                                            clean_title = re.sub(r'<[^>]+>', '', line)
-                                            clean_title = re.sub(r'^#+\s*', '', clean_title)  # 마크다운 제목 기호 제거
-                                            if len(clean_title.strip()) > 10:  # 의미있는 제목인지 확인
-                                                extracted_title = clean_title.strip()
-                                                title_found = True
-                                                # 제목 다음 줄부터 본문으로 사용
-                                                content_lines = lines[line_idx + 1:]
-                                                break
-
-                                    if extracted_title:
-                                        title = extracted_title
-                                        # 제목이 제거된 본문만 추가
-                                        step_content = '\n'.join(content_lines)
-
-                                all_content_parts.append(step_content)
-                                self.log(f"✅ {i}단계")
-                            else:
-                                self.log(f"📌 {i}단계 빈 응답")
-                        else:
-                            # 차단된 콘텐츠 처리
-                            if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
-                                block_reason = getattr(response.prompt_feedback, 'block_reason', None)
-                                if block_reason:
-                                    self.log(f"  📌 단계 {i} 콘텐츠 차단됨: {block_reason}")
-                                else:
-                                    self.log(f"  📌 단계 {i} 알수없는 차단")
-                            else:
-                                self.log(f"  🔥 단계 {i} 응답 없음")
-
-                    except Exception as step_error:
-                        error_str = str(step_error)
-                        self.log(f"  ✨ 단계 {i} 오류: {error_str}")
-
-                        # 간단한 오류 분석 (할당량 체크 제거)
-                        error_type = self.analyze_api_error(error_str, 'gemini')
-
-                        if error_type == 'TEMPORARY_ERROR':
-                            self.log(f"  ⌛ 단계 {i} 일시적 오류 - 10초 대기 후 계속 진행")
-                            time.sleep(10)
-                        else:
-                            self.log(f"  🔥 단계 {i} API 호출 오류: {step_error}")
-                        # 단계별 오류 시에도 계속 진행
-                else:
-                    self.log(f"  🔥 프롬프트 파일 없음: {prompt_file}")
-
-            if not all_content_parts:
-                self.log(f"🔥 Gemini 콘텐츠 생성 실패 - 모든 단계 실패")
-                return None, None, None
-
-            # 모든 단계의 콘텐츠를 결합
-            full_content = "\n\n".join(all_content_parts)
-
-            # 마크다운을 HTML로 변환
-            full_content = self.convert_markdown_to_html(full_content)
-            
-            # HTML 구조 정리 및 오류 수정
-            full_content = self.clean_content(full_content)
-
-            if not title:
-                # prompt1.txt 제목 지침에 따른 fallback 제목 생성
-                # 형식: {keyword} | 숫자포함 후킹문구
-                hook_phrases = [
-                    "5분만에 끝내는 완벽 가이드", "10가지 핵심 포인트", "3단계로 마스터하기",
-                    "7가지 전문가 팁", "2배 효과적인 방법", "30초만에 해결하는 비법",
-                    "15분 투자로 평생 활용", "4가지 실무 노하우", "6개월 경험을 압축한 가이드",
-                    "9가지 검증된 방법", "1일 1시간으로 완성", "12가지 실전 전략"
-                ]
-                import random
-                hook_phrase = random.choice(hook_phrases)
-                title = f"{keyword} | {hook_phrase}"
-                self.log(f"📝 자동 생성된 제목: {title}")
-
-            # 썸네일 이미지 선택 및 제목 추가
-            thumbnail_filename = self.get_thumbnail_file()
-            base_thumbnail_path = os.path.join(get_base_path(), 'images', thumbnail_filename)
-
-            # 제목이 있으면 썸네일에 제목 추가
-            thumbnail_path = self.create_thumbnail_with_title(title, keyword)
-
-            self.log(f"✅ Gemini 완료: {title}")
-            self.is_posting = False
-            return title, full_content, thumbnail_path
-
-        except Exception as e:
-            self.log(f"🔥 Gemini 콘텐츠 생성 오류: {e}")
-            self.is_posting = False
-            return None, None, None
-
-    # def generate_with_openai(self, keyword):
-    #     """[사용하지 않음] AI 제공자별 구분은 제거됨. generate_content() 사용"""
-    #     pass
-        try:
-            # 프롬프트 파일 로드
-            prompt_files = [
-                "prompt1.txt", "prompt2.txt", "prompt3.txt",
-                "prompt4.txt", "prompt5.txt"
-            ]
-
-            self.log(f"👍 GPT 수익용 콘텐츠 생성: {keyword} (5단계 프롬프트 순차 적용)")
-
-            all_content_parts = []
-            title = ""
-
-            # 모든 프롬프트 파일을 순차적으로 적용
-            for i, prompt_file in enumerate(prompt_files, 1):
-                # 중지/일시정지 체크
-                if not self.is_posting:
-                    self.log(f"🛑 콘텐츠 생성이 중지되었습니다.")
-                    return None, None, None
-
-                while self.is_paused:
-                    time.sleep(0.5)
-                    if not self.is_posting:
-                        return None, None, None
-
-                prompt_path = os.path.join(get_base_path(), "prompts", "gpt", prompt_file)
-
-                if os.path.exists(prompt_path):
-                    with open(prompt_path, 'r', encoding='utf-8') as f:
-                        prompt_template = f.read()
-
-                    # 키워드 대체
-                    prompt = prompt_template.replace("{keyword}", keyword)
-
-                    self.log(f"📝 {i}단계")
-
-                    # 중지 체크 (API 호출 전)
-                    if not self.is_posting:
-                        self.log(f"🛑 API 호출 전 중지 감지")
-                        return None, None, None
-
-                    # 시스템 프롬프트와 함께 OpenAI API 호출
-                    system_content = self.get_revenue_system_prompt(i, keyword)
-                    response = self.openai_client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[
-                            {"role": "system", "content": system_content},
-                            {"role": "user", "content": prompt}
-                        ],
-                        max_tokens=3000,
-                        temperature=0.7
-                    )
-
-                    # 중지 체크 (API 호출 후)
-                    if not self.is_posting:
-                        self.log(f"🛑 API 호출 후 중지 감지")
-                        return None, None, None
-
-                    if response and response.choices and response.choices[0].message.content:
-                        step_content = self.remove_prompt_meta_terms(response.choices[0].message.content.strip())
-                        all_content_parts.append(step_content)
-
-                        # 첫 번째 단계에서 제목 추출
-                        if i == 1 and step_content:
-                            lines = step_content.split('\n')
-                            for line in lines:
-                                line = line.strip()
-                                if line and not line.startswith('<'):
-                                    # HTML 태그 제거하여 제목 추출
-                                    import re
-                                    clean_title = re.sub(r'<[^>]+>', '', line)
-                                    if len(clean_title) > 10:  # 의미있는 제목인지 확인
-                                        title = clean_title
-                                        break
-
-                        self.log(f"✅ {i}단계")
-                    else:
-                        self.log(f"  🔥 단계 {i} 응답 없음")
-                else:
-                    self.log(f"  🔥 프롬프트 파일 없음: {prompt_file}")
-
-            if not all_content_parts:
-                self.log(f"🔥 GPT 콘텐츠 생성 실패 - 모든 단계 실패")
-                return None, None, None
-
-            # 모든 단계의 콘텐츠를 결합
-            full_content = "\n\n".join(all_content_parts)
-
-            # 마크다운을 HTML로 변환
-            full_content = self.convert_markdown_to_html(full_content)
-            
-            # HTML 구조 정리 및 오류 수정
-            full_content = self.clean_content(full_content)
-
-            if not title:
-                # prompt1.txt 제목 지침에 따른 fallback 제목 생성
-                # 형식: {keyword} | 숫자포함 후킹문구
-                hook_phrases = [
-                    "5분만에 끝내는 완벽 가이드", "10가지 핵심 포인트", "3단계로 마스터하기",
-                    "7가지 전문가 팁", "2배 효과적인 방법", "30초만에 해결하는 비법",
-                    "15분 투자로 평생 활용", "4가지 실무 노하우", "6개월 경험을 압축한 가이드",
-                    "9가지 검증된 방법", "1일 1시간으로 완성", "12가지 실전 전략"
-                ]
-                import random
-                hook_phrase = random.choice(hook_phrases)
-                title = f"{keyword} | {hook_phrase}"
-                self.log(f"📝 자동 생성된 제목: {title}")
-
-            # 썸네일 이미지 선택 및 제목 추가
-            thumbnail_filename = self.get_thumbnail_file()
-            base_thumbnail_path = os.path.join(get_base_path(), 'images', thumbnail_filename)
-
-            # 제목이 있으면 썸네일에 제목 추가
-            thumbnail_path = self.create_thumbnail_with_title(title, keyword)
-
-            self.log(f"✅ GPT 완료: {title}")
-            return title, full_content, thumbnail_path
-
-        except Exception as e:
-            self.log(f"🔥 OpenAI 콘텐츠 생성 오류: {e}")
-            return None, None, None
-
-    def convert_markdown_to_html(self, content):
-        """간단한 마크다운을 HTML로 변환 - <br> 태그 남용 방지"""
-        if not content:
-            return content
-
-        import re
-
-        # 기존 HTML 태그는 보호
-        if '<div>' in content or '<p>' in content or '<h2>' in content:
-            return content  # 이미 HTML 형태면 그대로 반환
-
-        # 헤딩 변환
-        content = re.sub(r'^### (.*?)$', r'<h3>\1</h3>', content, flags=re.MULTILINE)
-        content = re.sub(r'^## (.*?)$', r'<h2>\1</h2>', content, flags=re.MULTILINE)
-        content = re.sub(r'^# (.*?)$', r'<h1>\1</h1>', content, flags=re.MULTILINE)
-
-        # 볼드, 이탤릭 변환
-        content = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', content)
-        content = re.sub(r'\*(.*?)\*', r'<em>\1</em>', content)
-
-        # 리스트 변환
-        content = re.sub(r'^- (.*?)$', r'<li>\1</li>', content, flags=re.MULTILINE)
-        content = re.sub(r'(<li>.*?</li>\s*)+', r'<ul>\1</ul>', content, flags=re.DOTALL)
-
-        # 인용구 변환
-        content = re.sub(r'^> (.*?)$', r'<blockquote>\1</blockquote>', content, flags=re.MULTILINE)
-
-        # 수평선 변환
-        content = re.sub(r'^---$', r'<hr>', content, flags=re.MULTILINE)
-
-        # 단락 처리 - 빈 줄로 구분된 텍스트를 <p> 태그로
-        paragraphs = content.split('\n\n')
-        html_paragraphs = []
-        
-        for para in paragraphs:
-            para = para.strip()
-            if para and not para.startswith('<'):
-                para = f'<p>{para}</p>'
-            html_paragraphs.append(para)
-        
-        content = '\n'.join(html_paragraphs)
-
-        # 단일 줄바꿈은 공백으로 처리 (<br> 태그 남용 방지)
-        content = re.sub(r'(?<!>)\n(?!<)', ' ', content)
-        
-        # 과도한 공백 정리
-        content = re.sub(r'\s+', ' ', content)
-
-        return content
-
-    def upload_thumbnail(self, site_url, username, password, post_id, thumbnail_path):
-        """썸네일 이미지 업로드"""
-        try:
-            if not site_url.endswith('/'):
-                site_url += '/'
-            media_url = f"{site_url}wp-json/wp/v2/media"
-
-            import base64
-            import requests
-
-            credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
-            headers = {
-                'Authorization': f'Basic {credentials}',
-            }
-
-            with open(thumbnail_path, 'rb') as img_file:
-                files = {
-                    'file': (os.path.basename(thumbnail_path), img_file, 'image/jpeg')
-                }
-
-                response = requests.post(media_url, files=files, headers=headers, timeout=30)
-
-                if response.status_code == 201:
-                    media_id = response.json().get('id')
-
-                    # 포스트에 썸네일 설정
-                    post_update_url = f"{site_url}wp-json/wp/v2/posts/{post_id}"
-                    update_data = {'featured_media': media_id}
-                    headers['Content-Type'] = 'application/json'
-
-                    requests.post(post_update_url, json=update_data, headers=headers, timeout=30)
-                    self.log(f"   👍 썸네일 업로드 완료")
-
-        except Exception as e:
-            self.log(f"   📌 썸네일 업로드 실패: {e}")
-
-    def create_thumbnail_with_title(self, title, keyword):
-        """제목이 포함된 썸네일 이미지를 생성합니다 - image 폴더의 JPG 파일 사용"""
-        try:
-            from PIL import Image, ImageDraw, ImageFont, ImageEnhance
-            from datetime import datetime
-            import random
-            import textwrap
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            # thumbnails 폴더에 썸네일 저장
-            output_dir = os.path.join(get_base_path(), "thumbnails")
-            os.makedirs(output_dir, exist_ok=True)
-
-            filename = f"thumbnail_{timestamp}.webp"
-            filepath = os.path.join(output_dir, filename)
-
-            # image 폴더에서 JPG 파일 찾기
-            images_dir = os.path.join(get_base_path(), "images")
-            available_images = []
-
-            if os.path.exists(images_dir):
-                for file in os.listdir(images_dir):
-                    if file.lower().endswith(('.jpg', '.jpeg', '.png')):
-                        available_images.append(os.path.join(images_dir, file))
-
-            # 배경 이미지 설정 - 사이트별 설정 우선 사용
-            background_path = None
-            
-            # 현재 사이트의 썸네일 이미지 설정 확인
-            if self.current_site and self.current_site.get('thumbnail_image'):
-                thumbnail_filename = self.current_site.get('thumbnail_image')
-                specific_path = os.path.join(images_dir, thumbnail_filename)
-                if os.path.exists(specific_path):
-                    background_path = specific_path
-                    self.log(f"🖼️ 사이트별 썸네일 이미지 사용: {thumbnail_filename}")
-                else:
-                    self.log(f"⚠️ 사이트별 썸네일 이미지 파일이 없습니다: {thumbnail_filename}")
-            
-            # 사이트별 설정이 없거나 파일이 없으면 랜덤 선택
-            if not background_path and available_images:
-                background_path = random.choice(available_images)
-                self.log(f"🖼️ 기본 배경 이미지 사용: {os.path.basename(background_path)}")
-            
-            if background_path:
-                try:
-                    # 배경 이미지 로드 및 리사이즈 (300x300 정사각형)
-                    background = Image.open(background_path)
-                    background = background.resize((300, 300), Image.Resampling.LANCZOS)
-
-                    # 배경 이미지 살짝 어둡게(텍스트 가독성 향상)
-                    enhancer = ImageEnhance.Brightness(background)
-                    background = enhancer.enhance(0.7)  # 70% 밝기
-
-                    # 반투명 오버레이 추가 (300x300)
-                    overlay = Image.new('RGBA', (300, 300), (0, 0, 0, 100))  # 검정색 반투명
-                    background = Image.alpha_composite(background.convert('RGBA'), overlay)
-                    background = background.convert('RGB')
-
-                except Exception as img_error:
-                    self.log(f"배경 이미지 처리 오류: {img_error}, 기본 배경 사용")
-                    background = Image.new('RGB', (1200, 630), color=(0, 115, 170))  # WordPress 블루
-            else:
-                # 이미지가 없으면 기본 그라디언트 배경 생성 (300x300)
-                background = Image.new('RGB', (300, 300), color=(0, 115, 170))
-                self.log("🎨 기본 그라디언트 배경 사용")
-
-            draw = ImageDraw.Draw(background)
-
-            # 폰트 설정 (한글 지원)
-            try:
-                # 한글 폰트 우선 시도
-                font_paths = [
-                    os.path.join(get_base_path(), "fonts", "timon.ttf"),  # 프로젝트 폰트
-                    "C:/Windows/Fonts/malgun.ttf",  # 맑은 고딕
-                    "C:/Windows/Fonts/gulim.ttc",   # 굴림
-                    "arial.ttf"  # 영문 폰트
-                ]
-
-                font = None
-                for font_path in font_paths:
-                    try:
-                        if os.path.exists(font_path):
-                            font = ImageFont.truetype(font_path, 24)  # 300px에 맞게 폰트 크기 축소
-                            break
-                    except:
-                        continue
-
-                if not font:
-                    font = ImageFont.load_default()
-
-            except Exception as font_error:
-                self.log(f"폰트 로드 오류: {font_error}")
-                font = ImageFont.load_default()
-
-            # 제목 텍스트 처리 - 모든 마크다운과 특수문자 완전 제거
-            import re
-            cleaned_title = title
-            # HTML 태그 완전 제거
-            cleaned_title = re.sub(r'<[^>]+>', '', cleaned_title)
-            # 모든 마크다운 헤더 기호 제거 (# ## ### #### 등)
-            cleaned_title = re.sub(r'#+\s*', '', cleaned_title)
-            # 모든 마크다운 강조 기호 제거 (* ** _ __ 등)
-            cleaned_title = re.sub(r'\*+', '', cleaned_title)
-            cleaned_title = re.sub(r'_+', '', cleaned_title)
-            # 대괄호와 소괄호 제거 ([text] (url) 등)
-            cleaned_title = re.sub(r'[\[\](){}]', '', cleaned_title)
-            # 백틱 제거 (`code`)
-            cleaned_title = re.sub(r'`', '', cleaned_title)
-            # 기타 특수문자 제거
-            cleaned_title = re.sub(r'[~\^\\|]', '', cleaned_title)
-            # | 문자를 줄바꿈으로 변환
-            cleaned_title = cleaned_title.replace('|', '\n')
-            # 연속된 공백을 하나로
-            cleaned_title = re.sub(r'\s+', ' ', cleaned_title)
-            # 앞뒤 공백 제거
-            cleaned_title = cleaned_title.strip()
-
-            # 텍스트 길이에 따른 자동 줄바꿈 (300px에 맞게 조정)
-            max_chars_per_line = 12  # 300px 크기에 맞게 줄임
-            if len(cleaned_title) > max_chars_per_line and '\n' not in cleaned_title:
-                # textwrap을 사용하여 자동 줄바꿈
-                wrapped_lines = textwrap.fill(cleaned_title, width=max_chars_per_line).split('\n')
-                text_lines = wrapped_lines
-            else:
-                text_lines = cleaned_title.split('\n')
-
-            # 최대 3줄로 제한
-            if len(text_lines) > 3:
-                text_lines = text_lines[:3]
-                text_lines[-1] = text_lines[-1][:10] + "" if len(text_lines[-1]) > 10 else text_lines[-1]
-
-            # 텍스트 위치 계산 (중앙 정렬) - 300px에 맞게 조정
-            line_height = 30  # 줄 간격 축소
-            total_height = len(text_lines) * line_height
-            start_y = (300 - total_height) // 2
-
-            # 각 줄을 중앙에 배치
-            for i, line in enumerate(text_lines):
-                try:
-                    bbox = draw.textbbox((0, 0), line, font=font)
-                    text_width = bbox[2] - bbox[0]
-                except:
-                    # 구형 PIL 버전 호환
-                    text_width, _ = draw.textsize(line, font=font)
-
-                x = (300 - text_width) // 2  # 300px 중앙 정렬
-                y = start_y + (i * line_height)
-
-                # 텍스트 그림자 효과 (축소)
-                shadow_offset = 2  # 그림자 간격 축소
-                draw.text((x + shadow_offset, y + shadow_offset), line, fill=(0, 0, 0, 180), font=font)
-
-                # 메인 텍스트 (흰색)
-                draw.text((x, y), line, fill=(255, 255, 255), font=font)
-
-            # 키워드 라벨 추가 (선택사항) - 300px에 맞게 조정
-            if keyword and len(keyword) <= 10:  # 글자 수 제한 축소
-                try:
-                    small_font = ImageFont.truetype(font_paths[0] if font_paths and os.path.exists(font_paths[0]) else "arial.ttf", 14)  # 폰트 크기 축소
-                except:
-                    small_font = font
-
-                keyword_text = f"#{keyword}"
-                try:
-                    kw_bbox = draw.textbbox((0, 0), keyword_text, font=small_font)
-                    kw_width = kw_bbox[2] - kw_bbox[0]
-                except:
-                    kw_width, _ = draw.textsize(keyword_text, font=small_font)
-
-                kw_x = (300 - kw_width) // 2  # 300px 중앙 정렬
-                kw_y = start_y + total_height + 15  # 간격 축소
-
-                # 키워드 배경 박스 (크기 축소)
-                padding = 8  # 패딩 축소
-                draw.rectangle([kw_x - padding, kw_y - 3, kw_x + kw_width + padding, kw_y + 20],
-                              fill=(0, 115, 170, 200), outline=(255, 255, 255))
-                draw.text((kw_x, kw_y), keyword_text, fill=(255, 255, 255), font=small_font)
-
-            # WEBP 형식으로 저장 (고품질 적은 용량)
-            background.save(filepath, 'WEBP', quality=85, method=6)
-
-            # 썸네일 생성 완료 - 로그 제거
-            return filepath
-
-        except Exception as e:
-            self.log(f"썸네일 생성 오류: {e}")
-            # 백업: 간단한 텍스트 썸네일 생성 (300x300)
-            try:
-                from PIL import Image, ImageDraw, ImageFont
-                img = Image.new('RGB', (300, 300), color=(0, 115, 170))  # 300x300 정사각형
-                draw = ImageDraw.Draw(img)
-
-                try:
-                    font = ImageFont.truetype("arial.ttf", 20)  # 폰트 크기 축소
-                except:
-                    font = ImageFont.load_default()
-
-                text = title[:30] + "" if len(title) > 30 else title  # 글자 수 축소
-                try:
-                    bbox = draw.textbbox((0, 0), text, font=font)
-                    text_width = bbox[2] - bbox[0]
-                    text_height = bbox[3] - bbox[1]
-                except:
-                    text_width, text_height = draw.textsize(text, font=font)
-
-                x = (300 - text_width) // 2  # 300px 중앙 정렬
-                y = (300 - text_height) // 2  # 300px 중앙 정렬
-
-                draw.text((x, y), text, fill=(255, 255, 255), font=font)
-
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filepath = os.path.join(get_base_path(), "thumbnails", f"thumbnail_{timestamp}.webp")
-                img.save(filepath, 'WEBP')
-                # 기본 썸네일 생성 완료 - 로그 제거
-                return filepath
-            except:
-                return None
-
-    def generate_content(self, keyword):
-        """통합된 콘텐츠 생성 함수 - 포스팅 모드에 따라 승인용/수익용 구분"""
-        if self.config_manager:
-            posting_mode = self.config_manager.data.get("global_settings", {}).get("posting_mode", "수익용")
-            self.log(f"🔍 포스팅 모드 확인: '{posting_mode}' (config_manager 사용)")
-        else:
-            posting_mode = getattr(self.auto_wp, 'posting_mode', '수익용')
-            self.log(f"🔍 포스팅 모드 확인: '{posting_mode}' (auto_wp 속성 사용)")
-            
-        if posting_mode == "승인용":
-            self.log("✅ 승인용 콘텐츠 생성 모드 선택됨")
-            return self.generate_approval_content(keyword)
-        else:
-            self.log("✅ 수익용 콘텐츠 생성 모드 선택됨")
-            return self.generate_revenue_content(keyword)
-
-    # def generate_content_with_5_prompts(self, keyword):
-    #     """[사용하지 않음] generate_revenue_content() 함수로 통합됨"""
-    #     pass
-        try:
-            # 1단계: 제목 및 서론
-            self.log("📝 1단계: 제목 및 서론 생성 중")
-            self.log("  ➡️ prompt1.txt 적용 + AI API 호출 중")
-            
-            # 중지 체크
-            if hasattr(self, 'auto_wp') and hasattr(self.auto_wp, 'posting_worker') and not self.auto_wp.posting_worker.is_running:
-                self.log("⏹️ 1단계 시작 전 중지됨")
-                return None, None, None
-            
-            title_and_intro = self.execute_prompt_step(1, keyword, "", "", "")
-            if not title_and_intro: 
-                self.log("❌ 1단계 실패")
-                return None, None, None
-            
-            # 1단계 콘텐츠 정리 (AI 역할 언급 제거, 구조 검증)
-            title_and_intro = self.clean_step1_content(title_and_intro)
-            
-            title, intro = self.extract_title_and_intro(title_and_intro, keyword)
-            self.log("✅ 1단계")
-
-            # 2단계: 첫 번째 본문
-            self.log("📝 2단계: 첫 번째 본문 생성 중")
-            self.log("  ➡️ prompt2.txt 적용 + AI API 호출 중")
-            
-            # 중지 체크
-            if hasattr(self, 'auto_wp') and hasattr(self.auto_wp, 'posting_worker') and not self.auto_wp.posting_worker.is_running:
-                self.log("⏹️ 2단계 시작 전 중지됨")
-                return None, None, None
-            
-            body1 = self.execute_prompt_step(2, keyword, "", "", f"제목: {title}\n서론: {intro}")
-            if not body1: 
-                self.log("❌ 2단계 실패")
-                return None, None, None
-            self.log("  ✅ 2단계 완료")
-
-            # 3단계: 두 번째 본문
-            self.log("📝 3단계: 두 번째 본문 생성 중")
-            self.log("  ➡️ prompt3.txt 적용 + AI API 호출 중")
-            
-            # 중지 체크
-            if hasattr(self, 'auto_wp') and hasattr(self.auto_wp, 'posting_worker') and not self.auto_wp.posting_worker.is_running:
-                self.log("⏹️ 3단계 시작 전 중지됨")
-                return None, None, None
-            
-            body2 = self.execute_prompt_step(3, keyword, "", "", f"제목: {title}\n서론: {intro}\n첫 번째 본문: {body1}")
-            if not body2: 
-                self.log("❌ 3단계 실패")
-                return None, None, None
-            self.log("  ✅ 3단계 완료")
-
-            # 4단계: 세 번째 본문
-            self.log("📝 4단계: 세 번째 본문 생성 중")
-            self.log("  ➡️ prompt4.txt 적용 + AI API 호출 중")
-            
-            # 중지 체크
-            if hasattr(self, 'auto_wp') and hasattr(self.auto_wp, 'posting_worker') and not self.auto_wp.posting_worker.is_running:
-                self.log("⏹️ 4단계 시작 전 중지됨")
-                return None, None, None
-            
-            body3 = self.execute_prompt_step(4, keyword, "", "", f"제목: {title}\n서론: {intro}\n첫 번째 본문: {body1}\n두 번째 본문: {body2}")
-            if not body3: 
-                self.log("❌ 4단계 실패")
-                return None, None, None
-            self.log("  ✅ 4단계 완료")
-
-            # 5단계: 마무리 내용
-            self.log("📝 5단계: 마무리 내용 생성 중")
-            self.log("  ➡️ prompt5.txt 적용 + AI API 호출 중")
-            
-            # 중지 체크
-            if hasattr(self, 'auto_wp') and hasattr(self.auto_wp, 'posting_worker') and not self.auto_wp.posting_worker.is_running:
-                self.log("⏹️ 5단계 시작 전 중지됨")
-                return None, None, None
-            
-            final_part = self.execute_prompt_step(5, keyword, "", "", f"제목: {title}\n서론: {intro}\n첫 번째 본문: {body1}\n두 번째 본문: {body2}\n세 번째 본문: {body3}")
-            if not final_part: 
-                self.log("❌ 5단계 실패")
-                return None, None, None
-            
-            # 5단계 콘텐츠 검증 (마무리 구조 확인)
-            final_part = self.clean_step5_content(final_part)
-            self.log("  ✅ 5단계 완료")
-
-            # 최종 콘텐츠 조합 및 후처리
-            self.log("🔧 콘텐츠 조합 및 후처리 중")
-            # intro는 서론만 포함하도록 처리 (제목은 이미 별도로 추출됨)
-            final_content = f"{intro}\n\n{body1}\n\n{body2}\n\n{body3}\n\n{final_part}"
-            
-            # URL 변수 치환 먼저 수행
-            final_content = self.replace_prompt_variables(final_content, keyword, [], [], "")
-            
-            # 콘텐츠 정리 수행
-            final_content = self.clean_content(final_content, keyword)
-            
-            self.log("🖼️ 썸네일 생성 중")
-            thumbnail_path = self.create_thumbnail(title, keyword)
-            
-            self.log(f"✅ 5단계 수익용 콘텐츠 생성 완료: {title}")
-            
-            return title, final_content, thumbnail_path
-
-        except Exception as e:
-            self.log(f"❌ 5단계 프롬프트 처리 중 오류 발생: {e}")
-            return None, None, None
-
-    def generate_approval_content_internal(self, keyword):
-        """승인용 콘텐츠 생성 (3단계 방식)"""
-        self.log("🔄 승인용 콘텐츠 생성을 시작합니다")
-        try:
-            title = ""
-            content_parts = []
-            
-            for step in range(1, 4):
-                # self.log(f"📝 승인용 {step}단계 진행 중")
-                
-                # 중지 체크
-                if hasattr(self, 'auto_wp') and hasattr(self.auto_wp, 'posting_worker') and not self.auto_wp.posting_worker.is_running:
-                    self.log(f"⏹️ 승인용 {step}단계 시작 전 중지됨")
-                    return None, None, None
-                
-                approval_file = os.path.join(get_base_path(), "prompts", f"approval{step}.txt")
-                if not os.path.exists(approval_file):
-                    self.log(f"⚠️ approval{step}.txt 파일을 찾을 수 없습니다.")
-                    continue
-                    
-                with open(approval_file, 'r', encoding='utf-8') as f:
-                    prompt = f.read().replace("{keyword}", keyword)
-
-                # 이전 단계 결과를 다음 프롬프트에 포함
-                if step > 1:
-                    prompt += f"\n\n이전 단계 내용:\n" + "\n".join(content_parts)
-                
-                # 시스템 프롬프트는 각 단계별로 특화된 지침을 포함
-                system_content = self.get_approval_system_prompt(step, keyword)
-
-                response_text = self.call_ai_api(
-                    prompt, f"승인용 {step}단계", max_tokens=3000, system_content=system_content
-                )
-                if not response_text: 
-                    self.log(f"❌ 승인용 {step}단계 실패")
-                    return None, None, None
-
-                # 1단계에서 제목 추출
-                if step == 1:
-                    title, intro_content = self.extract_approval_title_and_intro(response_text, keyword)
-                    content_parts.append(intro_content)
-                    self.log(f"✅ 승인용 {step}단계 완료: 제목 및 서론 생성됨")
-                else:
-                    content_parts.append(response_text.strip())
-                    self.log(f"✅ 승인용 {step}단계 완료: 본문 생성됨")
-
-                self.log(f"승인용 {step}단계 완료")
-
-            full_content = "\n\n".join(content_parts)
-            thumbnail_path = self.create_thumbnail(title, keyword)
-            return title, full_content, thumbnail_path
-        except Exception as e:
-            self.log(f"승인용 콘텐츠 생성 중 오류 발생: {e}")
-            return None, None, None
-
-    def execute_prompt_step(self, step_num, keyword, urls, anchor_links, context):
-        """각 프롬프트 단계를 실행하고 AI API를 호출하는 헬퍼 함수"""
-        try:
-            # 중지 체크
-            if hasattr(self, 'auto_wp') and hasattr(self.auto_wp, 'posting_worker') and not self.auto_wp.posting_worker.is_running:
-                self.log(f"⏹️ {step_num}단계 실행 전 중지됨")
-                return None
-            
-            prompt_file = os.path.join(get_base_path(), "prompts", f"prompt{step_num}.txt")
-            if not os.path.exists(prompt_file):
-                self.log(f"⚠️ prompt{step_num}.txt 파일을 찾을 수 없습니다.")
-                return None
-                
-            with open(prompt_file, 'r', encoding='utf-8') as f:
-                prompt_content = f.read()
-
-            prompt = self.replace_prompt_variables(prompt_content, keyword, urls, anchor_links, context)
-            
-            # HTML 구조 준수를 위한 시스템 프롬프트 추가
-            system_prompt = f"""너는 전문 SEO 콘텐츠 작가야.
-
-**절대적으로 준수해야 할 규칙:**
-
-1. **제목 형식 (1단계에만 해당) - 매우 중요!**: 
-   - 100% 무조건 "{keyword} | 숫자포함 후킹문구" 형식만 허용
-   - 절대 금지: "- 완벽 가이드", "- 완벽 설명", "- 방법", "- 노하우" 형식
-   - 정확한 예시: "{keyword} | 10분만에 완성하는 5가지 방법"
-   - 잘못된 예시: "{keyword} - 완벽 가이드" (절대 사용 금지)
-   - 반드시 파이프(|) 기호 사용, 숫자 필수 포함
-
-2. **HTML 구조 100% 완전 준수**: 
-   - 프롬프트 끝부분의 HTML 예시를 한 글자도 빠뜨리지 말고 정확히 복사해
-   - 모든 태그 정확히 열고 닫기: <p></p>, <div></div>, <center></center>
-   - class와 style 속성을 정확히 그대로 복사해
-   - 절대 임의로 태그 변경하거나 생략하지 말 것
-   - href="url" 부분은 {{url}}로 변경하지 말고 "url"로 그대로 유지해
-
-3. **변수 처리**: 
-   - {{keyword}}, {{url}} 등 중괄호 변수는 절대 사용 금지
-   - 변수 부분은 프롬프트 예시대로 정확히 작성해
-
-4. **출력 형식**: 
-   - 프롬프트의 HTML 예시만 출력해
-   - 설명, 주석, 코멘트 등 일체 금지
-   - 예시에 없는 추가 태그나 내용 절대 금지
-
-5. **1단계 특별 주의사항**:
-   - 제목은 반드시 "{keyword} |" 로 시작해
-   - 서론에 제목 중복 절대 금지
-   - AI 역할 언급 금지 ("SEO 작가로서", "전문가로서" 등)
-   - 1단계는 오직 제목+서론+링크버튼만 생성
-   - h2 소제목이나 본문 내용 절대 금지
-   - HTML 예시 구조 정확히 따라야 해
-
-현재 {step_num}단계야. 프롬프트의 HTML 예시를 정확히 복사해서 내용만 채워 넣어."""
-            
-            max_tokens = 3000 if step_num == 5 else 1500
-            result = self.call_ai_api(
-                prompt, f"{step_num}단계", max_tokens=max_tokens, temperature=0.7, system_content=system_prompt
-            )
-            
-            # 🔥 AI 응답 검증 추가
-            if not result:
-                self.log(f"❌ {step_num}단계: AI API 응답 없음")
-                return None
-            
-            if not result.strip():
-                self.log(f"❌ {step_num}단계: AI 응답이 비어있음")
-                return None
-            
-            if len(result.strip()) < 50:
-                self.log(f"❌ {step_num}단계: AI 응답이 너무 짧음 ({len(result.strip())}자)")
-                return None
-            
-            self.log(f"✅ {step_num}단계 검증 완료 ({len(result)}자)")
-            return result
-            
-        except Exception as e:
-            self.log(f"{step_num}단계 처리 중 오류: {e}")
-            return None
-
     def create_thumbnail(self, title, keyword):
         """썸네일 이미지를 생성합니다."""
         try:
@@ -5689,8 +4708,6 @@ class ConfigManager:
             # 오류 발생 시 첫 번째 사이트 반환
             sites = self.data.get("sites", [])
             return sites[0].get("id") if sites else None
-            print(f"시작 사이트 ID 조회 오류: {e}")
-            return None
 
     def add_site(self, site_data):
         """새 사이트 추가"""
@@ -6600,79 +5617,6 @@ class SiteWidget(QWidget):
             print(f"키워드 개수 조회 오류: {e}")
             return 0
 
-    def move_keyword_to_used(self, keyword, keyword_file):
-        """사용한 키워드를 used 파일로 이동 - 'used_' 접두사 붙인 파일로 이동"""
-        try:
-            base_path = get_base_path()
-            keywords_dir = os.path.join(base_path, "keywords")
-
-            # 원본 키워드 파일 경로
-            original_file = os.path.join(keywords_dir, keyword_file)
-            if not os.path.exists(original_file):
-                print(f"❌ 키워드 파일이 존재하지 않습니다: {keyword_file}")
-                return False
-
-            # 'used_' 접두사가 붙은 파일명 생성 (예: ai-news_keywords.txt -> used_ai-news_keywords.txt)
-            used_filename = f"used_{keyword_file}"
-            used_file = os.path.join(keywords_dir, used_filename)
-
-            # 원본 파일에서 키워드 제거
-            with open(original_file, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-
-            # 키워드가 포함된 라인 찾아서 제거 (정확히 일치하는 라인만)
-            new_lines = []
-            keyword_removed = False
-            for line in lines:
-                if line.strip() == keyword.strip():
-                    keyword_removed = True
-                    print(f"🔍 키워드 '{keyword}' 발견하여 제거")
-                    continue
-                new_lines.append(line)
-
-            if keyword_removed:
-                # 원본 파일에 업데이트된 내용 저장
-                with open(original_file, 'w', encoding='utf-8') as f:
-                    f.writelines(new_lines)
-
-                # used 파일에 키워드 추가 (파일이 없으면 자동 생성)
-                with open(used_file, 'a', encoding='utf-8') as f:
-                    f.write(f"{keyword.strip()}\n")
-
-                print(f"✅ 키워드 '{keyword}' 이동 완료: {keyword_file} -> {used_filename}")
-                return True
-            else:
-                print(f"📌 키워드 '{keyword}'를 {keyword_file}에서 찾을 수 없습니다.")
-                return False
-
-        except Exception as e:
-            print(f"❌ 키워드 이동 중 오류: {e}")
-            return False
-
-    def get_next_keyword(self, keyword_file):
-        """키워드 파일에서 다음 키워드 가져오기"""
-        try:
-            keywords_dir = os.path.join(get_base_path(), "keywords")
-            keyword_path = os.path.join(keywords_dir, keyword_file)
-
-            if not os.path.exists(keyword_path):
-                return None
-
-            with open(keyword_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-
-            # 첫 번째 유효한 키워드 찾기
-            for line in lines:
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    return line
-
-            return None
-
-        except Exception as e:
-            print(f"키워드 가져오기 오류: {e}")
-            return None
-
     def get_thumbnails_count(self):
         """썸네일 개수 조회 (자동 생성되므로 항상 충분)"""
         return "자동생성"
@@ -7203,26 +6147,14 @@ class MainWindow(QMainWindow):
             print(f"반응형 레이아웃 적용 오류: {e}")
 
     def adjust_monitoring_grid(self, width):
-        """모니터링 탭 그리드 조정 - 매우 작은 화면도 지원"""
+        """모니터링 탭 그리드 고정 - 2x3 배치 유지"""
         try:
             if not hasattr(self, 'settings_grid'):
                 return
-                
-            # 🔥 창 너비에 따라 그리드 열 수 결정 (더 세밀하게)
-            if width < 400:
-                # 매우 작은 화면: 1열
-                columns = 1
-            elif width < 700:
-                # 작은 화면: 1열 (태블릿 세로)
-                columns = 1
-            elif width < 1000:
-                # 중간 화면: 2열 (태블릿 가로)
-                columns = 2
-            else:
-                # 큰 화면: 3열 (데스크톱)
-                columns = 3
-                
-            # 현재 그리드와 다른 경우에만 재배치
+            
+            # 항상 3열(2행) 고정 배치
+            columns = 3
+            
             if not hasattr(self, '_current_grid_columns') or self._current_grid_columns != columns:
                 self._current_grid_columns = columns
                 self.rearrange_monitoring_widgets(columns)
@@ -8024,11 +6956,11 @@ class MainWindow(QMainWindow):
                 background-color: {COLORS['success']};
                 color: white;
                 font-weight: bold;
-                padding: 15px 10px;
+                padding: 8px 8px;
                 border-radius: 8px;
                 border: none;
-                font-size: 14px;
-                min-height: 20px;
+                font-size: 12px;
+                min-height: 28px;
                 min-width: 80px;
             }}
             QPushButton:hover {{
@@ -8047,11 +6979,11 @@ class MainWindow(QMainWindow):
                 background-color: {COLORS['danger']};
                 color: white;
                 font-weight: bold;
-                padding: 15px 10px;
+                padding: 8px 8px;
                 border-radius: 8px;
                 border: none;
-                font-size: 14px;
-                min-height: 20px;
+                font-size: 12px;
+                min-height: 28px;
                 min-width: 80px;
             }}
             QPushButton:hover {{
@@ -8070,11 +7002,11 @@ class MainWindow(QMainWindow):
                 background-color: {COLORS['primary']};
                 color: white;
                 font-weight: bold;
-                padding: 15px 10px;
+                padding: 8px 8px;
                 border-radius: 8px;
                 border: none;
-                font-size: 14px;
-                min-height: 20px;
+                font-size: 12px;
+                min-height: 28px;
                 min-width: 80px;
             }}
             QPushButton:hover {{
@@ -8093,11 +7025,11 @@ class MainWindow(QMainWindow):
                 background-color: {COLORS['warning']};
                 color: white;
                 font-weight: bold;
-                padding: 15px 10px;
+                padding: 8px 8px;
                 border-radius: 8px;
                 border: none;
-                font-size: 14px;
-                min-height: 20px;
+                font-size: 12px;
+                min-height: 28px;
                 min-width: 80px;
             }}
             QPushButton:hover {{
@@ -9431,31 +8363,6 @@ class MainWindow(QMainWindow):
         scroll_area.setWidget(widget)
         
         return scroll_area
-
-        # Gemini API 키
-        gemini_row = QHBoxLayout()
-        self.gemini_key_edit = QLineEdit()
-        self.gemini_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        gemini_key_value = self.config_manager.data["api_keys"].get("gemini", "")
-        print(f"🔧 [LOAD] Gemini 키 로딩: '{gemini_key_value[:10]}'" if gemini_key_value else "🔧 [LOAD] Gemini 키: 빈 값")
-        self.gemini_key_edit.setText(gemini_key_value)
-        gemini_row.addWidget(self.gemini_key_edit, 1)
-        
-        # Gemini 공개/비공개 토글 버튼
-        self.gemini_toggle_btn = QPushButton("👁️")
-        self.gemini_toggle_btn.setMaximumWidth(40)
-        self.gemini_toggle_btn.setToolTip("클릭하여 API 키 표시/숨김")
-        self.gemini_toggle_btn.clicked.connect(lambda: self.toggle_password_visibility(self.gemini_key_edit, self.gemini_toggle_btn))
-        gemini_row.addWidget(self.gemini_toggle_btn)
-        
-        # Gemini 상태 표시 라벨
-        self.gemini_status_label = QLabel("❌ 미설정")
-        self.gemini_status_label.setStyleSheet("color: #BF616A; font-weight: bold;")
-        gemini_row.addWidget(self.gemini_status_label)
-        
-        gemini_widget = QWidget()
-        gemini_widget.setLayout(gemini_row)
-        api_layout.addRow("Gemini API 키:", gemini_widget)
         
         # API 테스트 버튼
         test_api_btn = QPushButton("🧪 API 연결 테스트")
