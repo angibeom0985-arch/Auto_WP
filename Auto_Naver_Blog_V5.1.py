@@ -2141,7 +2141,7 @@ class NaverBlogAutomation:
             options.add_argument("--disable-dev-shm-usage")
             options.add_argument("--disable-web-security")
             options.add_argument("--disable-features=IsolateOrigins,site-per-process")
-            
+
             # 🔕 알림 및 권한 비활성화
             prefs = {
                 "profile.default_content_setting_values.notifications": 2,
@@ -2149,6 +2149,8 @@ class NaverBlogAutomation:
                 "profile.password_manager_enabled": False
             }
             options.add_experimental_option("prefs", prefs)
+            # 브라우저 종료 방지 (프로세스는 사용자가 직접 종료)
+            options.add_experimental_option("detach", True)
             
             self._update_status("⚙️ 크롬 드라이버 설치 중...")
             try:
