@@ -803,14 +803,22 @@ class NaverBlogAutomation:
                 ]
                 
                 post_elements = []
+                seen_urls = set()
                 for selector in post_selectors:
+                    if len(post_elements) >= 6:
+                        break  # 충분히 모이면 종료 (최대 6개까지 확보)
                     try:
                         elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                        if elements and len(elements) >= 1:
+                        if elements:
                             self._update_status(f"🔍 셀렉터 '{selector}'로 {len(elements)}개 발견")
-                            # 충분한 개수가 발견되면 사용
-                            post_elements = elements[:10]  # 여유있게 10개까지 찾음
-                            break
+                            for el in elements:
+                                href = el.get_attribute("href")
+                                if not href or href in seen_urls:
+                                    continue
+                                seen_urls.add(href)
+                                post_elements.append(el)
+                                if len(post_elements) >= 6:
+                                    break
                     except Exception as e:
                         self._update_status(f"⚠️ 셀렉터 '{selector}' 실패: {str(e)[:30]}")
                         continue
