@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 from datetime import datetime
-import requests
+# import requests  <-- removed top-level import
 import uuid
 import subprocess
 import platform
@@ -122,6 +122,7 @@ class LicenseManager:
             # Google Sheets를 CSV로 export하는 URL
             url = f"https://docs.google.com/spreadsheets/d/{self.SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={self.SHEET_NAME}"
             
+            import requests  # Lazy load
             response = requests.get(url, timeout=10)
             response.encoding = 'utf-8'
             
