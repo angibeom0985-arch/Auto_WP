@@ -3697,6 +3697,8 @@ class NaverBlogGUI(QMainWindow):
         link_grid = QGridLayout()
         link_grid.setColumnStretch(0, 1)
         link_grid.setColumnStretch(1, 1)
+        link_grid.setHorizontalSpacing(12)
+        link_grid.setVerticalSpacing(8)
         
         url_widget = QWidget()
         url_widget.setStyleSheet("QWidget { background-color: transparent; }")
@@ -3712,10 +3714,11 @@ class NaverBlogGUI(QMainWindow):
             QLineEdit {{
                 border: 2px solid {NAVER_BORDER};
                 border-radius: 10px;
-                padding: 6px;
+                padding: 8px 12px;
                 background-color: {NAVER_BG};
                 color: {NAVER_TEXT_SUB};
                 font-size: 13px;
+                min-height: 38px;
             }}
             QLineEdit:enabled {{
                 background-color: white;
@@ -3749,10 +3752,11 @@ class NaverBlogGUI(QMainWindow):
             QLineEdit {{
                 border: 2px solid {NAVER_BORDER};
                 border-radius: 10px;
-                padding: 6px;
+                padding: 8px 12px;
                 background-color: {NAVER_BG};
                 color: {NAVER_TEXT_SUB};
                 font-size: 13px;
+                min-height: 38px;
             }}
             QLineEdit:enabled {{
                 background-color: white;
@@ -3832,10 +3836,11 @@ class NaverBlogGUI(QMainWindow):
             QLineEdit {{
                 border: 2px solid {NAVER_BORDER};
                 border-radius: 8px;
-                padding: 8px;
+                padding: 8px 12px;
                 background-color: white;
                 color: {NAVER_TEXT};
                 font-size: 13px;
+                min-height: 38px;
             }}
             QLineEdit:focus {{
                 border-color: {NAVER_GREEN};
@@ -3865,7 +3870,7 @@ class NaverBlogGUI(QMainWindow):
         """)
         self.gemini_toggle_btn.clicked.connect(self.toggle_gemini_api_key)
         gemini_toggle_container.addWidget(self.gemini_toggle_btn)
-        
+
         gemini_api_input_layout.addLayout(gemini_toggle_container)
         gemini_api_layout.addLayout(gemini_api_input_layout)
 
