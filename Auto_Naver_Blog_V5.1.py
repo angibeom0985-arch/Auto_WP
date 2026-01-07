@@ -4116,20 +4116,20 @@ class NaverBlogGUI(QMainWindow):
         
         # ===== 함께 보면 좋은 글 제목 설정 카드 =====
         related_posts_card = PremiumCard("📚 함께 보면 좋은 글 제목 설정", "📚", self)
-        related_posts_card.content_layout.setContentsMargins(12, 2, 12, 8)
-        related_posts_card.content_layout.setSpacing(6)
+        related_posts_card.content_layout.setContentsMargins(12, 0, 12, 4)
+        related_posts_card.content_layout.setSpacing(4)
 
         # 2열 그리드 레이아웃 생성
         inputs_grid = QGridLayout()
         inputs_grid.setHorizontalSpacing(10)
-        inputs_grid.setVerticalSpacing(6)
+        inputs_grid.setVerticalSpacing(4)
         
         # 왼쪽 열: 섹션 제목
         section_container = QWidget()
         section_container.setStyleSheet("QWidget { background-color: transparent; }")
         section_layout = QVBoxLayout(section_container)
         section_layout.setContentsMargins(0, 0, 0, 0)
-        section_layout.setSpacing(8)
+        section_layout.setSpacing(4)
         
         section_label = QLabel("📚 섹션 제목")
         section_label.setFont(QFont(self.font_family, 12, QFont.Weight.Bold))
@@ -4161,7 +4161,7 @@ class NaverBlogGUI(QMainWindow):
         blog_container.setStyleSheet("QWidget { background-color: transparent; }")
         blog_layout = QVBoxLayout(blog_container)
         blog_layout.setContentsMargins(0, 0, 0, 0)
-        blog_layout.setSpacing(8)
+        blog_layout.setSpacing(4)
         
         blog_addr_label = QLabel("🌐 블로그 주소")
         blog_addr_label.setFont(QFont(self.font_family, 12, QFont.Weight.Bold))
@@ -4208,7 +4208,7 @@ class NaverBlogGUI(QMainWindow):
                 padding: 7px 16px;
                 font-size: 13px;
                 font-weight: bold;
-                margin-top: 6px;
+                margin-top: 4px;
             }}
             QPushButton:hover {{
                 background-color: #00C73C;
