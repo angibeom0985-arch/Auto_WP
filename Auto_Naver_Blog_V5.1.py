@@ -4115,9 +4115,17 @@ class NaverBlogGUI(QMainWindow):
         layout.addWidget(posting_card, 3, 1)
         
         # ===== 함께 보면 좋은 글 제목 설정 카드 =====
-        related_posts_card = PremiumCard("📚 함께 보면 좋은 글 제목 설정", "📚", self)
-        related_posts_card.content_layout.setContentsMargins(12, 0, 12, 4)
-        related_posts_card.content_layout.setSpacing(4)
+        related_posts_card = PremiumCard("함께 보면 좋은 글 제목 설정", "📚", self)
+        related_posts_card.setStyleSheet(f"""
+            QFrame {{
+                background-color: {NAVER_CARD_BG};
+                border: 2px solid {NAVER_BORDER};
+                border-radius: 12px;
+                padding: 0px;
+            }}
+        """)
+        related_posts_card.content_layout.setContentsMargins(12, 0, 12, 2)
+        related_posts_card.content_layout.setSpacing(2)
 
         # 2열 그리드 레이아웃 생성
         inputs_grid = QGridLayout()
@@ -4235,11 +4243,11 @@ class NaverBlogGUI(QMainWindow):
                 background-color: transparent;
                 border: none;
                 border-bottom: 1px solid {NAVER_BORDER};
-                padding: 2px 10px;
+                padding: 0px 10px;
             }}
         """)
-        related_posts_card.content_layout.setContentsMargins(12, 0, 12, 4)
-        related_posts_card.content_layout.setSpacing(4)
+        related_posts_card.content_layout.setContentsMargins(12, 0, 12, 2)
+        related_posts_card.content_layout.setSpacing(2)
 
         layout.addWidget(related_posts_card, 4, 0)
         
