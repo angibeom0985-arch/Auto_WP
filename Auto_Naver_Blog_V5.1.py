@@ -73,7 +73,6 @@ if TYPE_CHECKING:
     from selenium.webdriver.common.keys import Keys
     from selenium.webdriver.common.action_chains import ActionChains
     import google.generativeai as genai
-    from openai import OpenAI
     from PIL import Image, ImageDraw, ImageFont
     import pyautogui
     # moviepy types handled separately
@@ -114,13 +113,12 @@ class NaverBlogAutomation:
         """Lazy load heavy imports"""
         global webdriver, By, WebDriverWait, EC, Service, ChromeDriverManager
         global TimeoutException, NoSuchElementException, Keys, ActionChains
-        global genai, OpenAI, pyautogui
-        
+        global genai, pyautogui
+
         if 'webdriver' not in globals() or 'genai' not in globals():
             print("⏳ Loading heavy libraries...")
             try:
                 import google.generativeai as genai
-                from openai import OpenAI
                 from selenium import webdriver
                 from selenium.webdriver.common.by import By
                 from selenium.webdriver.support.ui import WebDriverWait
@@ -143,9 +141,9 @@ class NaverBlogAutomation:
             if os.path.exists(imageio_ffmpeg_exe):
                 os.environ["IMAGEIO_FFMPEG_EXE"] = imageio_ffmpeg_exe
 
-    def __init__(self, naver_id, naver_pw, api_key, ai_model="gemini", theme="일상", 
+    def __init__(self, naver_id, naver_pw, api_key, ai_model="gemini", posting_method="search", theme="일상",
                  open_type="전체공개", external_link=None, external_link_text="더 알아보기",
-                 publish_time="즉시발행", scheduled_hour=12, scheduled_minute=0, 
+                 publish_time="즉시발행", scheduled_hour=12, scheduled_minute=0,
                  related_posts_title="함께 보면 좋은 글", blog_address="",
                  callback=None, config=None):
         """초기화 함수"""
@@ -154,7 +152,8 @@ class NaverBlogAutomation:
         self.naver_id = naver_id
         self.naver_pw = naver_pw
         self.api_key = api_key
-        self.ai_model = ai_model
+        # GPT 지원 종료: 내부적으로 Gemini만 사용
+        self.ai_model = "gemini"
         self.theme = theme
         self.open_type = open_type
         self.external_link = external_link
@@ -166,6 +165,10 @@ class NaverBlogAutomation:
         self.blog_address = normalize_blog_address(blog_address)
         self.callback = callback
         self.config = config or {}  # config 저장
+        self.posting_method = self.config.get(
+            "posting_method",
+            posting_method if posting_method in ("search", "home") else "search"
+        )
         self.driver = None
         self.should_stop = False  # 정지 플래그
         self.current_keyword = ""  # 현재 사용 중인 키워드
@@ -189,13 +192,9 @@ class NaverBlogAutomation:
         else:
             self.data_dir = os.path.dirname(os.path.abspath(__file__))
         
-        # AI 모델 설정
-        if ai_model == "gemini":
-            genai.configure(api_key=api_key)  # type: ignore
-            self.model = genai.GenerativeModel('gemini-2.5-flash-lite')  # type: ignore
-        elif ai_model == "gpt":
-            self.client = OpenAI(api_key=api_key)
-            self.model = "gpt-4o"
+        # AI 모델 설정 (Gemini 고정)
+        genai.configure(api_key=api_key)  # type: ignore
+        self.model = genai.GenerativeModel('gemini-2.5-flash-lite')  # type: ignore
         
         # 초기화 시 오래된 파일 정리
         self.clean_old_files()
@@ -388,9 +387,9 @@ class NaverBlogAutomation:
                     traceback.print_exc()
     
     def generate_content_with_ai(self):
-        """AI를 사용하여 블로그 글 생성 (Gemini 또는 GPT)"""
+        """AI를 사용하여 블로그 글 생성 (Gemini 고정)"""
         try:
-            model_name = "Gemini 2.5 Flash-Lite" if self.ai_model == "gemini" else "GPT-4o"
+            model_name = "Gemini 2.5 Flash-Lite"
             self._update_status(f"🤖 AI 모델 준비 중: {model_name}")
             
             # keywords.txt에서 키워드 로드
@@ -477,21 +476,14 @@ class NaverBlogAutomation:
                 self._update_status("❌ 프롬프트 파일을 찾을 수 없습니다")
                 return None, None
             
-            # AI 모델에 따라 호출
+            # Gemini 호출
             self._update_status(f"🔄 AI에게 글 생성 요청 중... (모델: {model_name})")
-            if self.ai_model == "gemini":
-                response = self.model.generate_content(full_prompt)  # type: ignore
-                content = response.text  # type: ignore
-            elif self.ai_model == "gpt":
-                response = self.client.chat.completions.create(
-                    model=self.model,  # type: ignore
-                    messages=[
-                        {"role": "system", "content": "당신은 블로그 글 작성 전문가입니다. 사용자가 제공하는 프롬프트의 모든 지시사항을 정확히 준수하여 글을 작성하세요. 특히 제목 형식은 반드시 '키워드, 후킹문구' 형식을 지켜야 합니다. 가능한 한 상세하고 길게 작성하세요."},
-                        {"role": "user", "content": full_prompt}
-                    ],
-                    max_tokens=4000  # 최대 토큰 수 증가
-                )
-                content = response.choices[0].message.content
+            response = self.model.generate_content(full_prompt)  # type: ignore
+            content = getattr(response, "text", "")  # type: ignore
+
+            if not content or not content.strip():
+                self._update_status("❌ AI 응답이 비어 있습니다")
+                return None, None
             
             self._update_status("📝 AI 응답 처리 중...")
             
@@ -2371,14 +2363,14 @@ class NaverBlogAutomation:
             # self.driver.quit()  # 브라우저는 종료하지 않음
 
 
-def start_automation(naver_id, naver_pw, api_key, ai_model="gemini", theme="", 
-                     open_type="전체공개", external_link="", external_link_text="", 
-                     publish_time="now", scheduled_hour="09", scheduled_minute="00", 
+def start_automation(naver_id, naver_pw, api_key, ai_model="gemini", posting_method="search", theme="",
+                     open_type="전체공개", external_link="", external_link_text="",
+                     publish_time="now", scheduled_hour="09", scheduled_minute="00",
                      callback=None):
     """자동화 시작 함수"""
     automation = NaverBlogAutomation(
-        naver_id, naver_pw, api_key, ai_model,
-        theme, open_type, external_link, external_link_text, 
+        naver_id, naver_pw, api_key, ai_model, posting_method,
+        theme, open_type, external_link, external_link_text,
         publish_time, scheduled_hour, scheduled_minute, callback
     )
     # 자동화 실행
@@ -2394,7 +2386,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                               QHBoxLayout, QGridLayout, QPushButton, QLabel, 
                               QLineEdit, QTextEdit, QRadioButton, QCheckBox,
                               QComboBox, QGroupBox, QTabWidget, QMessageBox,
-                              QFrame, QScrollArea, QButtonGroup, QStackedWidget,
+                               QFrame, QScrollArea, QStackedWidget,
                               QSizePolicy, QSplashScreen)
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt6.QtGui import QFont, QIcon, QPalette, QColor, QPixmap, QPainter
@@ -2547,7 +2539,8 @@ class NaverBlogGUI(QMainWindow):
         
         # 설정 로드
         self.config = self.load_config()
-        
+        self.posting_method = self.config.get("posting_method", "search")
+
         # 상태 변수
         self.is_running = False
         self.is_paused = False
@@ -2761,18 +2754,8 @@ class NaverBlogGUI(QMainWindow):
     def show_api_help(self):
         """API 발급 방법 안내"""
         help_text = """
-<h3>🔑 API 키 발급 방법</h3>
+<h3>🔑 Gemini API 키 발급 방법</h3>
 
-<p><b>📌 GPT API 발급</b></p>
-<ol>
-<li>OpenAI 웹사이트 접속: <a href='https://platform.openai.com/api-keys'>https://platform.openai.com/api-keys</a></li>
-<li>로그인 또는 회원가입</li>
-<li>"Create new secret key" 버튼 클릭</li>
-<li>생성된 API 키 복사 (한 번만 표시됨!)</li>
-<li>위의 "GPT API" 입력란에 붙여넣기</li>
-</ol>
-
-<p><b>📌 Gemini API 발급</b></p>
 <ol>
 <li>Google AI Studio 접속: <a href='https://aistudio.google.com/app/apikey'>https://aistudio.google.com/app/apikey</a></li>
 <li>Google 계정으로 로그인</li>
@@ -2784,8 +2767,7 @@ class NaverBlogGUI(QMainWindow):
 <p><b>⚠️ 주의사항</b></p>
 <ul>
 <li>API 키는 절대 타인과 공유하지 마세요</li>
-<li>GPT API는 유료이며, 사용량에 따라 과금됩니다</li>
-<li>Gemini API는 무료 할당량이 있으며, 초과 시 과금될 수 있습니다</li>
+<li>무료 할당량 초과 시 과금될 수 있습니다</li>
 </ul>
         """
         
@@ -2808,16 +2790,21 @@ class NaverBlogGUI(QMainWindow):
         """설정 저장 후 새로고침"""
         try:
             # 1. 현재 입력된 설정 저장
-            self.config["gpt_api_key"] = self.gpt_api_entry.text()
             self.config["gemini_api_key"] = self.gemini_api_entry.text()
-            self.config["ai_model"] = "gpt" if self.gpt_radio.isChecked() else "gemini"
+            self.config["api_key"] = self.gemini_api_entry.text()
+            self.config["ai_model"] = "gemini"
             self.config["naver_id"] = self.naver_id_entry.text()
             self.config["naver_pw"] = self.naver_pw_entry.text()
             self.config["interval"] = int(self.interval_entry.text()) if self.interval_entry.text() else 30
             self.config["use_external_link"] = self.use_link_checkbox.isChecked()
             self.config["external_link"] = self.link_url_entry.text()
             self.config["external_link_text"] = self.link_text_entry.text()
-            
+            if hasattr(self, "posting_home_radio") and self.posting_home_radio.isChecked():
+                self.config["posting_method"] = "home"
+            else:
+                self.config["posting_method"] = "search"
+            self.posting_method = self.config["posting_method"]
+
             # 2. 설정 파일로 저장
             setting_dir = os.path.join(self.base_dir, "setting")
             os.makedirs(setting_dir, exist_ok=True)
@@ -3002,7 +2989,6 @@ class NaverBlogGUI(QMainWindow):
         # Enter 키 바인딩 (설정 탭 생성 후 적용)
         self.naver_id_entry.returnPressed.connect(self.save_login_info)
         self.naver_pw_entry.returnPressed.connect(self.save_login_info)
-        self.gpt_api_entry.returnPressed.connect(self.save_api_key)
         self.gemini_api_entry.returnPressed.connect(self.save_api_key)
         self.related_posts_title_entry.returnPressed.connect(self.save_related_posts_settings)
         self.blog_address_entry.returnPressed.connect(self.save_related_posts_settings)
@@ -3768,8 +3754,8 @@ class NaverBlogGUI(QMainWindow):
         # 초기 취소선 적용 (체크 해제 상태이므로)
         self.toggle_external_link()
         
-        # === Row 2, Col 1: API 키 설정 ===
-        api_card = PremiumCard("🔑 API 키 설정", "")
+        # === Row 2, Col 1: AI 설정 (Gemini 전용) ===
+        api_card = PremiumCard("🤖 AI 설정", "")
         
         # 카드 헤더에 API 발급 방법 버튼 추가
         api_help_btn_header = QPushButton("❓ API 발급 방법")
@@ -3792,63 +3778,14 @@ class NaverBlogGUI(QMainWindow):
         api_card.header_layout.addWidget(api_help_btn_header)
         
         api_card.content_layout.addStretch()
-        
+
         api_grid = QGridLayout()
-        api_grid.setColumnStretch(0, 1)
-        api_grid.setColumnStretch(1, 1)
-        
-        # GPT API
-        gpt_api_widget = QWidget()
-        gpt_api_widget.setStyleSheet("QWidget { background-color: transparent; }")
-        gpt_api_layout = QVBoxLayout(gpt_api_widget)
-        gpt_api_layout.setSpacing(5)
-        
-        gpt_api_label = PremiumCard.create_section_label("🧠 GPT API", self.font_family)
-        gpt_api_layout.addWidget(gpt_api_label)
-        
-        gpt_api_input_layout = QHBoxLayout()
-        self.gpt_api_entry = QLineEdit()
-        self.gpt_api_entry.setPlaceholderText("GPT API 키")
-        self.gpt_api_entry.setEchoMode(QLineEdit.EchoMode.Password)
-        self.gpt_api_entry.setCursorPosition(0)
-        self.gpt_api_entry.setStyleSheet(f"""
-            QLineEdit {{
-                border: 2px solid {NAVER_BORDER};
-                border-radius: 8px;
-                padding: 8px;
-                background-color: white;
-                color: {NAVER_TEXT};
-                font-size: 13px;
-            }}
-            QLineEdit:focus {{
-                border-color: {NAVER_GREEN};
-            }}
-        """)
-        self.gpt_api_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
-        gpt_api_input_layout.addWidget(self.gpt_api_entry)
-        
-        # GPT 토글 버튼과 상태 라벨
-        gpt_toggle_container = QVBoxLayout()
-        gpt_toggle_container.setSpacing(2)
-        
-        self.gpt_toggle_btn = QPushButton("비공개")
-        self.gpt_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.gpt_toggle_btn.setMinimumSize(70, 34)
-        self.gpt_toggle_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {NAVER_TEXT_SUB};
-                border: none;
-                border-radius: 6px;
-                color: white;
-                font-size: 13px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {NAVER_TEXT};
-            }}
-        """)
-        self.gpt_toggle_btn.clicked.connect(self.toggle_gpt_api_key)
-        # Gemini API
+        api_grid.setColumnStretch(0, 3)
+        api_grid.setColumnStretch(1, 2)
+        api_grid.setHorizontalSpacing(12)
+        api_grid.setVerticalSpacing(8)
+
+        # --- Left: Gemini API 입력 ---
         gemini_api_widget = QWidget()
         gemini_api_widget.setStyleSheet("QWidget { background-color: transparent; }")
         gemini_api_layout = QVBoxLayout(gemini_api_widget)
@@ -3878,7 +3815,6 @@ class NaverBlogGUI(QMainWindow):
         self.gemini_api_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
         gemini_api_input_layout.addWidget(self.gemini_api_entry)
         
-        # Gemini 토글 버튼과 상태 라벨
         gemini_toggle_container = QVBoxLayout()
         gemini_toggle_container.setSpacing(2)
         
@@ -3903,69 +3839,37 @@ class NaverBlogGUI(QMainWindow):
         
         gemini_api_input_layout.addLayout(gemini_toggle_container)
         gemini_api_layout.addLayout(gemini_api_input_layout)
-        
-        api_grid.addWidget(gemini_api_widget, 0, 0) # Gemini API를 왼쪽으로 변경
-        
-        # GPT API
-        gpt_api_widget = QWidget()
-        gpt_api_widget.setStyleSheet("QWidget { background-color: transparent; }")
-        gpt_api_layout = QVBoxLayout(gpt_api_widget)
-        gpt_api_layout.setSpacing(5)
-        
-        gpt_api_label = PremiumCard.create_section_label("🧠 GPT API", self.font_family)
-        gpt_api_layout.addWidget(gpt_api_label)
-        
-        gpt_api_input_layout = QHBoxLayout()
-        self.gpt_api_entry = QLineEdit()
-        self.gpt_api_entry.setPlaceholderText("GPT API 키")
-        self.gpt_api_entry.setEchoMode(QLineEdit.EchoMode.Password)
-        self.gpt_api_entry.setCursorPosition(0)
-        self.gpt_api_entry.setStyleSheet(f"""
-            QLineEdit {{
-                border: 2px solid {NAVER_BORDER};
-                border-radius: 8px;
-                padding: 8px;
-                background-color: white;
+
+        api_grid.addWidget(gemini_api_widget, 0, 0)
+
+        # --- Right: AI 모델 표시 ---
+        ai_model_widget = QWidget()
+        ai_model_widget.setStyleSheet("QWidget { background-color: transparent; }")
+        ai_model_layout = QVBoxLayout(ai_model_widget)
+        ai_model_layout.setSpacing(5)
+
+        ai_model_label = PremiumCard.create_section_label("🤖 AI 모델", self.font_family)
+        ai_model_layout.addWidget(ai_model_label)
+
+        self.ai_model_chip = QLabel("✨ Gemini 2.5 Flash-Lite (고정)")
+        self.ai_model_chip.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
+        self.ai_model_chip.setStyleSheet(f"""
+            QLabel {{
                 color: {NAVER_TEXT};
-                font-size: 13px;
-            }}
-            QLineEdit:focus {{
-                border-color: {NAVER_GREEN};
-            }}
-        """)
-        self.gpt_api_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
-        gpt_api_input_layout.addWidget(self.gpt_api_entry)
-        
-        # GPT 토글 버튼과 상태 라벨
-        gpt_toggle_container = QVBoxLayout()
-        gpt_toggle_container.setSpacing(2)
-        
-        self.gpt_toggle_btn = QPushButton("비공개")
-        self.gpt_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.gpt_toggle_btn.setMinimumSize(70, 34)
-        self.gpt_toggle_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {NAVER_TEXT_SUB};
-                border: none;
-                border-radius: 6px;
-                color: white;
-                font-size: 13px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {NAVER_TEXT};
+                background-color: {NAVER_GREEN_LIGHT};
+                border: 2px solid {NAVER_BORDER};
+                border-radius: 10px;
+                padding: 14px;
+                min-height: 52px;
             }}
         """)
-        self.gpt_toggle_btn.clicked.connect(self.toggle_gpt_api_key)
-        gpt_toggle_container.addWidget(self.gpt_toggle_btn)
-        
-        gpt_api_input_layout.addLayout(gpt_toggle_container)
-        gpt_api_layout.addLayout(gpt_api_input_layout)
-        
-        api_grid.addWidget(gpt_api_widget, 0, 1) # GPT API를 오른쪽으로 변경
-        
+        self.ai_model_chip.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        ai_model_layout.addWidget(self.ai_model_chip)
+
+        api_grid.addWidget(ai_model_widget, 0, 1)
+
         api_card.content_layout.addLayout(api_grid)
-        
+
         # 버튼 레이아웃
         api_button_layout = QHBoxLayout()
         
@@ -4138,57 +4042,44 @@ class NaverBlogGUI(QMainWindow):
         
         layout.addWidget(file_card, 3, 0)
         
-        # === Row 3, Col 1: AI 모델 선택 ===
-        ai_card = PremiumCard("AI 모델 선택", "🤖")
-        
-        from PyQt6.QtWidgets import QButtonGroup
-        
-        ai_card.content_layout.addStretch()
-        
-        ai_grid = QGridLayout()
-        ai_grid.setColumnStretch(0, 1)
-        ai_grid.setColumnStretch(1, 1)
-        
-        # 버튼 그룹 생성 (중복 선택 방지)
-        self.ai_model_group = QButtonGroup(self)
-        
-        # Gemini (왼쪽)
-        gemini_widget = QWidget()
-        gemini_widget.setStyleSheet("QWidget { background-color: transparent; }")
-        gemini_layout = QHBoxLayout(gemini_widget)
-        gemini_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.gemini_radio = QRadioButton("✨ Gemini 2.5 Flash-Lite")
-        self.gemini_radio.setChecked(True)
-        self.gemini_radio.setFont(QFont(self.font_family, 13))
-        self.gemini_radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
-        self.ai_model_group.addButton(self.gemini_radio)
-        gemini_layout.addWidget(self.gemini_radio)
-        gemini_layout.addStretch()
-        
-        ai_grid.addWidget(gemini_widget, 0, 0)
-        
-        # GPT-4o (오른쪽)
-        gpt_widget = QWidget()
-        gpt_widget.setStyleSheet("QWidget { background-color: transparent; }")
-        gpt_layout = QHBoxLayout(gpt_widget)
-        gpt_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.gpt_radio = QRadioButton("🧠 GPT-4o")
-        self.gpt_radio.setFont(QFont(self.font_family, 13))
-        self.gpt_radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
-        self.ai_model_group.addButton(self.gpt_radio)
-        gpt_layout.addWidget(self.gpt_radio)
-        gpt_layout.addStretch()
-        
-        ai_grid.addWidget(gpt_widget, 0, 1)
-        
-        ai_card.content_layout.addLayout(ai_grid)
-        ai_card.content_layout.addStretch()
-        
-        ai_card.setMinimumHeight(160)
-        
-        layout.addWidget(ai_card, 3, 1)
+        # === Row 3, Col 1: 포스팅 방법 ===
+        posting_card = PremiumCard("포스팅 방법", "📰")
+        posting_card.content_layout.addStretch()
+
+        posting_desc = QLabel("블로그 노출 방식을 선택하세요.")
+        posting_desc.setFont(QFont(self.font_family, 12))
+        posting_desc.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent;")
+        posting_card.content_layout.addWidget(posting_desc)
+
+        posting_layout = QHBoxLayout()
+        posting_layout.setSpacing(20)
+
+        self.posting_search_radio = QRadioButton("검색 노출 (기존 방식)")
+        self.posting_search_radio.setFont(QFont(self.font_family, 13))
+        self.posting_search_radio.setChecked(True)
+
+        self.posting_home_radio = QRadioButton("홈판 노출 (제목·썸네일 커스텀 예정)")
+        self.posting_home_radio.setFont(QFont(self.font_family, 13))
+
+        for radio in (self.posting_search_radio, self.posting_home_radio):
+            radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
+            posting_layout.addWidget(radio)
+
+        self.posting_search_radio.toggled.connect(self.on_posting_method_changed)
+        self.posting_home_radio.toggled.connect(self.on_posting_method_changed)
+
+        posting_card.content_layout.addLayout(posting_layout)
+        posting_card.content_layout.addStretch()
+
+        posting_save_btn = QPushButton("💾 포스팅 방법 저장")
+        posting_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        posting_save_btn.setStyleSheet(f"background-color: {NAVER_GREEN}; padding: 10px 24px; font-size: 13px; font-weight: bold;")
+        posting_save_btn.clicked.connect(self.save_posting_method)
+        posting_card.content_layout.addWidget(posting_save_btn)
+
+        posting_card.setMinimumHeight(160)
+
+        layout.addWidget(posting_card, 3, 1)
         
         # ===== 함께 보면 좋은 글 제목 설정 카드 =====
         related_posts_card = PremiumCard("📚 함께 보면 좋은 글 제목 설정", "📚", self)
@@ -4310,23 +4201,26 @@ class NaverBlogGUI(QMainWindow):
         if not self.config:
             return
         
-        # API 키 (새로운 방식)
-        if "gpt_api_key" in self.config:
-            self.gpt_api_entry.setText(self.config["gpt_api_key"])
+        # API 키 (Gemini)
         if "gemini_api_key" in self.config:
             self.gemini_api_entry.setText(self.config["gemini_api_key"])
         
         # 구버전 호환성 (api_key만 있는 경우)
-        if "api_key" in self.config and not ("gpt_api_key" in self.config or "gemini_api_key" in self.config):
-            if self.config.get("ai_model") == "gpt":
-                self.gpt_api_entry.setText(self.config["api_key"])
+        if "api_key" in self.config and "gemini_api_key" not in self.config:
+            self.gemini_api_entry.setText(self.config["api_key"])
+
+        # AI 모델 (고정)
+        self.config["ai_model"] = "gemini"
+
+        # 포스팅 방법
+        posting_method = self.config.get("posting_method", "search")
+        if hasattr(self, "posting_home_radio"):
+            if posting_method == "home":
+                self.posting_home_radio.setChecked(True)
             else:
-                self.gemini_api_entry.setText(self.config["api_key"])
-        
-        # AI 모델
-        if self.config.get("ai_model") == "gpt":
-            self.gpt_radio.setChecked(True)
-        
+                self.posting_search_radio.setChecked(True)
+        self.posting_method = "home" if posting_method == "home" else "search"
+
         # 로그인 정보
         if "naver_id" in self.config:
             self.naver_id_entry.setText(self.config["naver_id"])
@@ -4407,16 +4301,10 @@ class NaverBlogGUI(QMainWindow):
             self.login_setup_btn.show()
         
         # API 키 상태 (UI 입력창에서 직접 읽기)
-        gpt_key = self.gpt_api_entry.text().strip() if hasattr(self, 'gpt_api_entry') else ""
         gemini_key = self.gemini_api_entry.text().strip() if hasattr(self, 'gemini_api_entry') else ""
         
-        if gpt_key or gemini_key:
-            if gpt_key and gemini_key:
-                self.api_status_label.setText("🔑 API: GPT + Gemini")
-            elif gpt_key:
-                self.api_status_label.setText("🔑 API: GPT")
-            else:
-                self.api_status_label.setText("🔑 API: Gemini")
+        if gemini_key:
+            self.api_status_label.setText("🔑 API: Gemini")
             self.api_status_label.setStyleSheet(f"color: #000000; border: none;")
             self.api_setup_btn.setText("변경하기")
             self.api_setup_btn.setStyleSheet(f"""
@@ -4658,15 +4546,6 @@ class NaverBlogGUI(QMainWindow):
             else:
                 self.api_key_entry.setEchoMode(QLineEdit.EchoMode.Password)
     
-    def toggle_gpt_api_key(self):
-        """GPT API 키 표시/숨김"""
-        if self.gpt_api_entry.echoMode() == QLineEdit.EchoMode.Password:
-            self.gpt_api_entry.setEchoMode(QLineEdit.EchoMode.Normal)
-            self.gpt_toggle_btn.setText("공개")
-        else:
-            self.gpt_api_entry.setEchoMode(QLineEdit.EchoMode.Password)
-            self.gpt_toggle_btn.setText("비공개")
-    
     def toggle_gemini_api_key(self):
         """Gemini API 키 표시/숨김"""
         if self.gemini_api_entry.echoMode() == QLineEdit.EchoMode.Password:
@@ -4820,16 +4699,9 @@ class NaverBlogGUI(QMainWindow):
         
         try:
             # API 키 상태
-            gpt_key = self.gpt_api_entry.text() if hasattr(self, 'gpt_api_entry') else ""
             gemini_key = self.gemini_api_entry.text() if hasattr(self, 'gemini_api_entry') else ""
             
-            if gpt_key and gemini_key:
-                api_text = "🔑 API: GPT + Gemini"
-                api_color = NAVER_GREEN
-            elif gpt_key:
-                api_text = "🔑 API: GPT"
-                api_color = NAVER_GREEN
-            elif gemini_key:
+            if gemini_key:
                 api_text = "🔑 API: Gemini"
                 api_color = NAVER_GREEN
             else:
@@ -4943,30 +4815,38 @@ class NaverBlogGUI(QMainWindow):
     
     def save_api_key(self):
         """API 키 저장"""
-        ai_model = "GPT" if self.gpt_radio.isChecked() else "Gemini"
-        
-        # 빈 칸 검증
-        gpt_key = self.gpt_api_entry.text().strip()
         gemini_key = self.gemini_api_entry.text().strip()
-        
-        if self.gpt_radio.isChecked() and not gpt_key:
-            self._show_auto_close_message("⚠️ GPT API 키를 입력해주세요", QMessageBox.Icon.Warning)
-            return
-        
-        if self.gemini_radio.isChecked() and not gemini_key:
+
+        if not gemini_key:
             self._show_auto_close_message("⚠️ Gemini API 키를 입력해주세요", QMessageBox.Icon.Warning)
             return
         
-        self.config["gpt_api_key"] = gpt_key
         self.config["gemini_api_key"] = gemini_key
-        self.config["api_key"] = gpt_key if self.gpt_radio.isChecked() else gemini_key
-        self.config["ai_model"] = "gpt" if self.gpt_radio.isChecked() else "gemini"
-        self._update_settings_status(f"🔑 {ai_model} API 키가 저장되었습니다")
+        self.config["api_key"] = gemini_key
+        self.config["ai_model"] = "gemini"
+        self._update_settings_status("🔑 Gemini API 키가 저장되었습니다")
         self.save_config_file()
         self.update_status_display()
         self._update_settings_summary()
-        self._show_auto_close_message(f"✅ {ai_model} API 키가 저장되었습니다", QMessageBox.Icon.Information)
-    
+        self._show_auto_close_message("✅ Gemini API 키가 저장되었습니다", QMessageBox.Icon.Information)
+
+    def on_posting_method_changed(self):
+        """포스팅 방법 라디오 변경 시 상태 반영"""
+        method = "home" if self.posting_home_radio.isChecked() else "search"
+        self.posting_method = method
+        self.config["posting_method"] = method
+
+    def save_posting_method(self):
+        """포스팅 방법 저장"""
+        method = "home" if self.posting_home_radio.isChecked() else "search"
+        self.posting_method = method
+        self.config["posting_method"] = method
+        label = "홈판 노출" if method == "home" else "검색 노출"
+        self._update_settings_status(f"📰 포스팅 방법이 '{label}'로 설정되었습니다")
+        self.save_config_file()
+        self._update_settings_summary()
+        self._show_auto_close_message(f"✅ 포스팅 방법이 '{label}'로 저장되었습니다", QMessageBox.Icon.Information)
+
     def save_login_info(self):
         """로그인 정보 저장"""
         naver_id = self.naver_id_entry.text().strip()
@@ -5107,13 +4987,12 @@ class NaverBlogGUI(QMainWindow):
             self.pause_btn.setEnabled(True)
             self.resume_btn.setEnabled(False)
         
-        # 설정 검증
-        ai_model = "gpt" if self.gpt_radio.isChecked() else "gemini"
-        api_key = self.gpt_api_entry.text() if ai_model == "gpt" else self.gemini_api_entry.text()
+        # 설정 검증 (Gemini 전용)
+        ai_model = "gemini"
+        api_key = self.gemini_api_entry.text()
         
-        # 선택된 AI 모델에 해당하는 API 키만 검증
         if not api_key:
-            self.show_message("⚠️ 경고", f"선택된 AI 모델({ai_model.upper()})의 API 키를 입력해주세요!", "warning")
+            self.show_message("⚠️ 경고", "Gemini API 키를 입력해주세요!", "warning")
             return
         if not self.naver_id_entry.text() or not self.naver_pw_entry.text():
             self.show_message("⚠️ 경고", "네이버 로그인 정보를 입력해주세요!", "warning")
@@ -5142,12 +5021,14 @@ class NaverBlogGUI(QMainWindow):
                     # 블로그 주소 처음 (아이디만 있으면 전체 URL로 변환)
                     blog_address = self.config.get("blog_address", "")
                     related_posts_title = self.config.get("related_posts_title", "함께 보면 좋은 글")
-                    
+                    posting_method = "home" if self.config.get("posting_method") == "home" else "search"
+
                     self.automation = NaverBlogAutomation(
                         naver_id=self.naver_id_entry.text(),
                         naver_pw=self.naver_pw_entry.text(),
                         api_key=api_key,
                         ai_model=ai_model,
+                        posting_method=posting_method,
                         theme="",
                         open_type="전체공개",
                         external_link=external_link,
