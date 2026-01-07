@@ -3169,8 +3169,37 @@ class NaverBlogGUI(QMainWindow):
         self.api_setup_btn.clicked.connect(lambda: self._switch_tab(1))
         api_status_layout.addStretch()
         api_status_layout.addWidget(self.api_setup_btn)
-        
+
         status_card.content_layout.addLayout(api_status_layout)
+
+        # 포스팅 방법 상태
+        posting_status_layout = QHBoxLayout()
+        self.posting_status_label = QLabel("📰 포스팅: 검색 노출")
+        self.posting_status_label.setFont(QFont(self.font_family, 13))
+        self.posting_status_label.setStyleSheet(f"color: #000000; border: none;")
+        posting_status_layout.addWidget(self.posting_status_label)
+
+        self.posting_setup_btn = QPushButton("변경하기")
+        self.posting_setup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.posting_setup_btn.setMinimumHeight(25)
+        self.posting_setup_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {NAVER_GREEN};
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 3px 10px;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background-color: #00C73C;
+            }}
+        """)
+        self.posting_setup_btn.clicked.connect(lambda: self._switch_tab(1))
+        posting_status_layout.addStretch()
+        posting_status_layout.addWidget(self.posting_setup_btn)
+
+        status_card.content_layout.addLayout(posting_status_layout)
         
         # 키워드 개수 상태
         keyword_status_layout = QHBoxLayout()
@@ -3872,10 +3901,10 @@ class NaverBlogGUI(QMainWindow):
 
         # 버튼 레이아웃
         api_button_layout = QHBoxLayout()
-        
+
         api_save_btn = QPushButton("💾 API 키 저장")
         api_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        api_save_btn.setStyleSheet(f"background-color: {NAVER_GREEN}; padding: 10px 24px; font-size: 13px; font-weight: bold;")
+        api_save_btn.setStyleSheet(f"background-color: {NAVER_GREEN}; padding: 7px 16px; font-size: 13px; font-weight: bold;")
         api_save_btn.clicked.connect(self.save_api_key)
         api_button_layout.addWidget(api_save_btn)
         
@@ -4339,7 +4368,27 @@ class NaverBlogGUI(QMainWindow):
                 }}
             """)
             self.api_setup_btn.show()
-        
+
+        # 포스팅 방법 상태
+        method = "home" if (hasattr(self, "posting_home_radio") and self.posting_home_radio.isChecked()) else "search"
+        method_label = "홈판 노출" if method == "home" else "검색 노출"
+        self.posting_status_label.setText(f"📰 포스팅: {method_label}")
+        self.posting_status_label.setStyleSheet(f"color: #000000; border: none;")
+        self.posting_setup_btn.setText("변경하기")
+        self.posting_setup_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {NAVER_GREEN};
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 3px 10px;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background-color: #00C73C;
+            }}
+        """)
+
         # 키워드 개수
         keyword_count = self.count_keywords()
         self.keyword_count_label.setText(f"📦 키워드 개수: {keyword_count}개")
