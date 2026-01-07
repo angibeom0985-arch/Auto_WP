@@ -3888,8 +3888,7 @@ class NaverBlogGUI(QMainWindow):
                 background-color: {NAVER_GREEN_LIGHT};
                 border: 2px solid {NAVER_BORDER};
                 border-radius: 10px;
-                padding: 14px;
-                min-height: 52px;
+                padding: 8px 12px;
             }}
         """)
         self.ai_model_chip.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
