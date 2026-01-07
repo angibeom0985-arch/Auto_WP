@@ -4116,11 +4116,13 @@ class NaverBlogGUI(QMainWindow):
         
         # ===== 함께 보면 좋은 글 제목 설정 카드 =====
         related_posts_card = PremiumCard("📚 함께 보면 좋은 글 제목 설정", "📚", self)
-        
+        related_posts_card.content_layout.setContentsMargins(12, 8, 12, 12)
+        related_posts_card.content_layout.setSpacing(8)
+
         # 2열 그리드 레이아웃 생성
         inputs_grid = QGridLayout()
-        inputs_grid.setHorizontalSpacing(15)
-        inputs_grid.setVerticalSpacing(10)
+        inputs_grid.setHorizontalSpacing(10)
+        inputs_grid.setVerticalSpacing(6)
         
         # 왼쪽 열: 섹션 제목
         section_container = QWidget()
@@ -4186,14 +4188,14 @@ class NaverBlogGUI(QMainWindow):
         inputs_grid.addWidget(blog_container, 0, 1)
         
         related_posts_card.content_layout.addLayout(inputs_grid)
-        
+
         # 설명 라벨
         desc_label = QLabel("💡 블로그 주소를 입력하면 최신글 3개를 자동으로 가져와 포스팅 하단에 추가합니다")
         desc_label.setFont(QFont(self.font_family, 11))
         desc_label.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent;")
         desc_label.setWordWrap(True)
         related_posts_card.content_layout.addWidget(desc_label)
-        
+
         # 저장 버튼
         related_posts_save_btn = QPushButton("💾 설정 저장")
         related_posts_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -4203,10 +4205,10 @@ class NaverBlogGUI(QMainWindow):
                 color: white;
                 border: none;
                 border-radius: 5px;
-                padding: 10px 24px;
+                padding: 7px 16px;
                 font-size: 13px;
                 font-weight: bold;
-                margin-top: 10px;
+                margin-top: 6px;
             }}
             QPushButton:hover {{
                 background-color: #00C73C;
@@ -4217,8 +4219,8 @@ class NaverBlogGUI(QMainWindow):
         """)
         related_posts_save_btn.clicked.connect(self.save_related_posts_settings)
         related_posts_card.content_layout.addWidget(related_posts_save_btn)
-        
-        related_posts_card.setMinimumHeight(300)
+
+        related_posts_card.setMinimumHeight(230)
         
         layout.addWidget(related_posts_card, 4, 0)
         
