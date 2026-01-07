@@ -4219,7 +4219,28 @@ class NaverBlogGUI(QMainWindow):
         """)
         related_posts_save_btn.clicked.connect(self.save_related_posts_settings)
         related_posts_card.content_layout.addWidget(related_posts_save_btn)
-        
+
+        # 헤더/콘텐츠 여백 최소화 (이 카드 전용)
+        header_title = related_posts_card.header_layout.itemAt(0).widget()
+        header_title.setFixedHeight(32)
+        header_title.setStyleSheet(f"""
+            color: #000000;
+            background-color: {NAVER_GREEN_LIGHT};
+            border: 2px solid {NAVER_GREEN};
+            border-radius: 8px;
+            padding: 4px 10px;
+        """)
+        related_posts_card.header.setStyleSheet(f"""
+            QFrame {{
+                background-color: transparent;
+                border: none;
+                border-bottom: 1px solid {NAVER_BORDER};
+                padding: 2px 10px;
+            }}
+        """)
+        related_posts_card.content_layout.setContentsMargins(12, 0, 12, 4)
+        related_posts_card.content_layout.setSpacing(4)
+
         layout.addWidget(related_posts_card, 4, 0)
         
         # 설정 로그 카드를 '함께 보면 좋은 글' 오른쪽에 배치
