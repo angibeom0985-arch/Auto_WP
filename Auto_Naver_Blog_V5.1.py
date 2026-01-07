@@ -3775,7 +3775,7 @@ class NaverBlogGUI(QMainWindow):
         
         link_save_btn = QPushButton("💾 링크 설정 저장")
         link_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        link_save_btn.setStyleSheet(f"background-color: {NAVER_GREEN}; padding: 10px 24px; font-size: 13px; font-weight: bold;")
+        link_save_btn.setStyleSheet(f"background-color: {NAVER_GREEN}; padding: 7px 16px; font-size: 13px; font-weight: bold;")
         link_save_btn.clicked.connect(self.save_link_settings)
         link_card.content_layout.addStretch()
         link_card.content_layout.addWidget(link_save_btn)
@@ -3854,14 +3854,14 @@ class NaverBlogGUI(QMainWindow):
         
         self.gemini_toggle_btn = QPushButton("비공개")
         self.gemini_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.gemini_toggle_btn.setMinimumSize(70, 34)
+        self.gemini_toggle_btn.setMinimumSize(64, 30)
         self.gemini_toggle_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {NAVER_TEXT};
                 color: white;
                 border: none;
                 border-radius: 5px;
-                padding: 5px 10px;
+                padding: 4px 8px;
                 font-size: 12px;
             }}
             QPushButton:hover {{
