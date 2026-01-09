@@ -5601,6 +5601,9 @@ class NaverBlogGUI(QMainWindow):
 
         gemini_web_layout.addLayout(web_provider_row)
         
+        # 웹사이트 섬션 아래 여백
+        gemini_web_layout.addSpacing(12)
+        
         self.web_ai_group = QButtonGroup(self)
         self.web_ai_group.addButton(self.web_ai_gpt_radio)
         self.web_ai_group.addButton(self.web_ai_gemini_radio)
@@ -5612,6 +5615,16 @@ class NaverBlogGUI(QMainWindow):
         gemini_api_layout = QVBoxLayout(gemini_api_widget)
         gemini_api_layout.setSpacing(4)
         gemini_api_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 구분선
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        separator.setStyleSheet(f"QFrame {{ border: 1px solid {NAVER_BORDER}; }}")
+        gemini_api_layout.addWidget(separator)
+        
+        # Gemini API 섬션 위 여백
+        gemini_api_layout.addSpacing(8)
         
         gemini_api_label = PremiumCard.create_section_label("✨ Gemini API (2.5 Flash-Lite)", self.font_family)
         gemini_api_layout.addWidget(gemini_api_label)
@@ -5662,8 +5675,6 @@ class NaverBlogGUI(QMainWindow):
 
         gemini_api_input_layout.addLayout(gemini_toggle_container)
         gemini_api_layout.addLayout(gemini_api_input_layout)
-
-        
 
         self.gemini_mode_group = QButtonGroup(self)
         self.gemini_mode_group.addButton(self.gemini_api_radio)
