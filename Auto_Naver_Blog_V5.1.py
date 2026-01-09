@@ -54,6 +54,34 @@ def utf8_open(*args, **kwargs):
     return _original_open(*args, **kwargs)
 builtins.open = utf8_open
 
+# 안전한 print 함수 (이모지 깨짐 방지)
+_original_print = builtins.print
+def safe_print(*args, **kwargs):
+    """이모지가 포함된 메시지를 안전하게 출력"""
+    try:
+        _original_print(*args, **kwargs)
+    except UnicodeEncodeError:
+        # 이모지 등 특수 문자 출력 실패 시 대체 문자로 변환
+        safe_args = []
+        for arg in args:
+            if isinstance(arg, str):
+                # 출력 가능한 문자만 유지
+                safe_str = arg.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+                safe_args.append(safe_str)
+            else:
+                safe_args.append(arg)
+        try:
+            _original_print(*safe_args, **kwargs)
+        except:
+            # 최후의 수단: ASCII만 출력
+            ascii_args = [str(arg).encode('ascii', errors='ignore').decode('ascii') for arg in args]
+            _original_print(*ascii_args, **kwargs)
+    except Exception:
+        # 모든 출력 실패 시 무시
+        pass
+
+builtins.print = safe_print
+
 from typing import TYPE_CHECKING
 import time
 import os
@@ -723,24 +751,26 @@ class NaverBlogAutomation:
         return sum(marker in text for marker in markers) >= 2
 
     def _ensure_gemini_tab(self):
-        """Gemini 웹 탭을 준비하고 포커스"""
+        """Gemini 웹 탭을 준비하고 포커스 (매번 새로 열기)"""
         if not self.driver:
             return False
         gemini_url = "https://gemini.google.com/app?hl=ko"
         try:
+            # 기존 Gemini 탭이 있으면 닫기
             if self.gemini_tab_handle and self.gemini_tab_handle in self.driver.window_handles:
-                self.driver.switch_to.window(self.gemini_tab_handle)
-                return True
-            try:
-                current_url = (self.driver.current_url or "").lower()
-            except Exception:
-                current_url = ""
-            if current_url.startswith("data:") or current_url.startswith("about:blank"):
-                self.driver.get(gemini_url)
-            else:
-                self.driver.execute_script("window.open(arguments[0], '_blank');", gemini_url)
-                self.driver.switch_to.window(self.driver.window_handles[-1])
+                try:
+                    self.driver.switch_to.window(self.gemini_tab_handle)
+                    self.driver.close()
+                    self._update_status("🔄 기존 Gemini 탭 종료")
+                except Exception:
+                    pass
+            
+            # 항상 새 탭으로 열기
+            self.driver.execute_script("window.open(arguments[0], '_blank');", gemini_url)
+            self.driver.switch_to.window(self.driver.window_handles[-1])
             self.gemini_tab_handle = self.driver.current_window_handle
+            self._update_status("✅ 새 Gemini 탭 생성")
+            time.sleep(2)  # 페이지 로딩 대기
             return True
         except Exception as e:
             self._update_status(f"⚠️ Gemini 탭 준비 실패: {str(e)}")
@@ -748,51 +778,55 @@ class NaverBlogAutomation:
 
 
     def _ensure_chatgpt_tab(self):
-        """ChatGPT ? ?? ???? ???"""
+        """ChatGPT 웹 탭을 준비하고 포커스 (매번 새로 열기)"""
         if not self.driver:
             return False
         chatgpt_url = "https://chatgpt.com/"
         try:
+            # 기존 ChatGPT 탭이 있으면 닫기
             if self.gpt_tab_handle and self.gpt_tab_handle in self.driver.window_handles:
-                self.driver.switch_to.window(self.gpt_tab_handle)
-                return True
-            try:
-                current_url = (self.driver.current_url or "").lower()
-            except Exception:
-                current_url = ""
-            if current_url.startswith("data:") or current_url.startswith("about:blank"):
-                self.driver.get(chatgpt_url)
-            else:
-                self.driver.execute_script("window.open(arguments[0], '_blank');", chatgpt_url)
-                self.driver.switch_to.window(self.driver.window_handles[-1])
+                try:
+                    self.driver.switch_to.window(self.gpt_tab_handle)
+                    self.driver.close()
+                    self._update_status("🔄 기존 ChatGPT 탭 종료")
+                except Exception:
+                    pass
+            
+            # 항상 새 탭으로 열기
+            self.driver.execute_script("window.open(arguments[0], '_blank');", chatgpt_url)
+            self.driver.switch_to.window(self.driver.window_handles[-1])
             self.gpt_tab_handle = self.driver.current_window_handle
+            self._update_status("✅ 새 ChatGPT 탭 생성")
+            time.sleep(2)  # 페이지 로딩 대기
             return True
         except Exception as e:
-            self._update_status(f"?? ChatGPT ? ?? ??: {str(e)}")
+            self._update_status(f"⚠️ ChatGPT 탭 준비 실패: {str(e)}")
             return False
 
     def _ensure_perplexity_tab(self):
-        """Perplexity ? ?? ???? ???"""
+        """Perplexity 웹 탭을 준비하고 포커스 (매번 새로 열기)"""
         if not self.driver:
             return False
         perplexity_url = "https://www.perplexity.ai/"
         try:
+            # 기존 Perplexity 탭이 있으면 닫기
             if self.perplexity_tab_handle and self.perplexity_tab_handle in self.driver.window_handles:
-                self.driver.switch_to.window(self.perplexity_tab_handle)
-                return True
-            try:
-                current_url = (self.driver.current_url or "").lower()
-            except Exception:
-                current_url = ""
-            if current_url.startswith("data:") or current_url.startswith("about:blank"):
-                self.driver.get(perplexity_url)
-            else:
-                self.driver.execute_script("window.open(arguments[0], '_blank');", perplexity_url)
-                self.driver.switch_to.window(self.driver.window_handles[-1])
+                try:
+                    self.driver.switch_to.window(self.perplexity_tab_handle)
+                    self.driver.close()
+                    self._update_status("🔄 기존 Perplexity 탭 종료")
+                except Exception:
+                    pass
+            
+            # 항상 새 탭으로 열기
+            self.driver.execute_script("window.open(arguments[0], '_blank');", perplexity_url)
+            self.driver.switch_to.window(self.driver.window_handles[-1])
             self.perplexity_tab_handle = self.driver.current_window_handle
+            self._update_status("✅ 새 Perplexity 탭 생성")
+            time.sleep(2)  # 페이지 로딩 대기
             return True
         except Exception as e:
-            self._update_status(f"?? Perplexity ? ?? ??: {str(e)}")
+            self._update_status(f"⚠️ Perplexity 탭 준비 실패: {str(e)}")
             return False
 
     def _ensure_blog_tab(self, url=None):
@@ -1159,13 +1193,20 @@ class NaverBlogAutomation:
                 self._update_status("⚪ 썸네일 기능 OFF - 스킵")
                 return None
             
-            # PIL imports
-            from PIL import Image, ImageDraw, ImageFont
+            # PIL imports 확인
+            try:
+                from PIL import Image, ImageDraw, ImageFont
+                self._update_status("✅ PIL 모듈 로드 성공")
+            except ImportError as ie:
+                self._update_status(f"❌ PIL 임포트 실패: {str(ie)}")
+                print(f"[PIL 임포트 오류]\n{traceback.format_exc()}")
+                return None
             
             self._update_status("🎨 썸네일 생성 중...")
             
             # setting/image 폴더의 jpg 파일 찾기
             image_folder = os.path.join(self.data_dir, "setting", "image")
+            self._update_status(f"📁 이미지 폴더 경로: {image_folder}")
             if not os.path.exists(image_folder):
                 self._update_status(f"⚠️ {image_folder} 폴더가 없습니다.")
                 return None
@@ -1306,10 +1347,17 @@ class NaverBlogAutomation:
                 from moviepy import ImageClip
                 import moviepy.video.io.VideoFileClip
                 import moviepy.video.VideoClip
-                # import imageio
-                # import imageio_ffmpeg
-            except ImportError as import_error:
-                raise ImportError(f"moviepy 라이브러리를 import할 수 없습니다: {str(import_error)}")
+                self._update_status("✅ moviepy 모듈 로드 성공")
+            except ImportError as ie:
+                self._update_status(f"❌ moviepy 임포트 실패: {str(ie)}")
+                return None
+            
+            # FFmpeg 경로 확인
+            ffmpeg_path = os.environ.get("IMAGEIO_FFMPEG_EXE", "")
+            if ffmpeg_path and os.path.exists(ffmpeg_path):
+                self._update_status(f"✅ FFmpeg 경로: {ffmpeg_path}")
+            else:
+                self._update_status("⚠️ FFmpeg 경로가 설정되지 않았습니다")
             
             if not thumbnail_path or not os.path.exists(thumbnail_path):
                 raise FileNotFoundError(f"썸네일 이미지를 찾을 수 없습니다: {thumbnail_path}")
@@ -1414,24 +1462,47 @@ class NaverBlogAutomation:
                 except Exception:
                     self._update_status("ℹ️ mainFrame 전환 실패 - 현재 페이지에서 탐색")
 
-                # 최신글 목록에서 링크 찾기 (여러 선택자 시도)
+                # "전체보기" 링크 클릭하여 전체 글 목록으로 이동
+                try:
+                    category_all_selectors = [
+                        "a#category0",  # ID로 찾기
+                        "a[href*='categoryNo=0'][href*='PostList.naver']",  # 전체보기 URL 패턴
+                        "a.on[href*='categoryNo=0']",  # 활성화된 전체보기
+                    ]
+                    
+                    category_clicked = False
+                    for selector in category_all_selectors:
+                        try:
+                            category_link = WebDriverWait(self.driver, 3).until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                            )
+                            category_link.click()
+                            self._update_status("✅ '전체보기' 클릭 완료")
+                            time.sleep(2)
+                            category_clicked = True
+                            break
+                        except Exception:
+                            continue
+                    
+                    if not category_clicked:
+                        self._update_status("ℹ️ 전체보기 버튼 없음 - 현재 페이지에서 크롤링")
+                except Exception as e:
+                    self._update_status(f"ℹ️ 전체보기 클릭 실패: {str(e)[:30]}")
+
+                # 전체보기 목록 테이블에서 최신글 링크 찾기
                 post_selectors = [
-                    "a.post_tit",  # 일반적인 포스트 제목 링크
-                    "a.pcol1",  # 다른 스타일의 블로그
-                    ".blog2_series a",  # 시리즈형 블로그
-                    "a.se-link",  # 최신 UI 링크
-                    "a.link__2",  # 일부 신규 테마
-                    "a[href*='PostView.naver']",
-                    "a[href*='postView.naver']",
-                    "a[href*='logNo=']",
-                    "a[href*='blog.naver.com/']",
+                    "a.pcol2._setTop._setTopListUrl",  # 전체보기 테이블 내 글 링크
+                    "table.blog2_list.blog2_categorylist a.pcol2._setTop",  # 테이블 내 링크
+                    "table.blog2_list a[href*='PostView.naver']",  # 테이블 내 PostView 링크
+                    "a._setTopListUrl",  # _setTopListUrl 클래스
+                    "a.pcol2[href*='PostView.naver'][href*='categoryNo=0']",  # categoryNo=0 포함
                 ]
                 
                 post_elements = []
                 seen_urls = set()
                 for selector in post_selectors:
                     if len(post_elements) >= 6:
-                        break  # 충분히 모이면 종료 (최대 6개까지 확보)
+                        break
                     try:
                         elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
                         if elements:
@@ -1439,6 +1510,9 @@ class NaverBlogAutomation:
                             for el in elements:
                                 href = el.get_attribute("href")
                                 if not href or href in seen_urls:
+                                    continue
+                                # PostView.naver 링크만 허용
+                                if "PostView.naver" not in href and "postView.naver" not in href:
                                     continue
                                 if blog_id and blog_id not in href and "blogId=" not in href:
                                     continue
@@ -1523,6 +1597,27 @@ class NaverBlogAutomation:
                         lower_url = post_url.lower()
                         if ("logno=" not in lower_url) and ("postview" not in lower_url) and ("blog.naver.com" not in lower_url):
                             self._update_status(f"⚠️ 요소 {idx+1}: 포스트 링크 아님 - 스킵")
+                            continue
+
+                        # 카테고리명 제외 (정교한 필터링)
+                        lower_title = post_title.lower()
+                        title_no_space = post_title.replace(" ", "")
+                        
+                        # 1. 카테고리 키워드 포함 여부
+                        category_keywords = ["카테고리", "category", "전체보기", "분류", "목록"]
+                        if any(keyword in lower_title for keyword in category_keywords):
+                            self._update_status(f"⚠️ 요소 {idx+1}: 카테고리 키워드 포함 - 스킵 ('{post_title[:20]}')")
+                            continue
+                        
+                        # 2. 너무 짧은 제목 (공백 제거 후 6자 미만)
+                        if len(title_no_space) < 6:
+                            self._update_status(f"⚠️ 요소 {idx+1}: 제목 너무 짧음 ({len(title_no_space)}자) - 스킵 ('{post_title}')")
+                            continue
+                        
+                        # 3. 카테고리 패턴 (예: "XX 꿀팁", "XX 정보", "XX 모음")
+                        category_patterns = ["꿀팁", "정보", "모음", "tip", "tips", "info"]
+                        if len(title_no_space) <= 10 and any(post_title.endswith(pattern) or post_title.endswith(pattern.upper()) for pattern in category_patterns):
+                            self._update_status(f"⚠️ 요소 {idx+1}: 카테고리 패턴 감지 - 스킵 ('{post_title}')")
                             continue
 
                         # 이미 추가된 URL인지 확인 (중복 방지)
@@ -2624,16 +2719,39 @@ class NaverBlogAutomation:
                                 EC.element_to_be_clickable((By.CSS_SELECTOR, "button.npe_btn_header.npe_btn_submit"))
                             )
                             self.driver.execute_script("arguments[0].click();", done_btn)
-                            self._sleep_with_checks(1)
+                            self._sleep_with_checks(2)
                             self._update_status("✅ 썸네일 편집 완료")
                         except Exception as e:
-                            self._update_status(f"⚠️ 썸네일 편집 실패(진행 계속): {str(e)[:80]}")
+                            error_msg = str(e) if str(e) else type(e).__name__
+                            self._update_status(f"⚠️ 썸네일 편집 실패(진행 계속): {error_msg[:100]}")
+                            print(f"[썸네일 편집 실패 상세]\n{traceback.format_exc()}")
                         
                         try:
                             self._update_status("✍️ 사진 설명 입력 중...")
-                            caption_target = WebDriverWait(self.driver, 5).until(
-                                EC.presence_of_element_located((By.CSS_SELECTOR, "div.se-module.se-module-text.se-caption"))
-                            )
+                            
+                            # 사진 설명 영역 찾기 (다양한 선택자 시도)
+                            caption_target = None
+                            caption_selectors = [
+                                "div.se-module.se-module-text.se-caption",
+                                "div.se-caption",
+                                "div[data-module='caption']",
+                                ".se-section-image + div.se-module-text"
+                            ]
+                            
+                            for selector in caption_selectors:
+                                try:
+                                    caption_target = WebDriverWait(self.driver, 3).until(
+                                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                                    )
+                                    self._update_status(f"✅ 사진 설명 영역 발견: {selector}")
+                                    break
+                                except Exception:
+                                    continue
+                            
+                            if not caption_target:
+                                raise Exception("사진 설명 영역을 찾을 수 없습니다")
+                            
+                            # 사진 설명 영역 클릭 (여러 방법 시도)
                             try:
                                 placeholder = self.driver.find_element(
                                     By.CSS_SELECTOR,
@@ -2646,6 +2764,7 @@ class NaverBlogAutomation:
                                     el.click();
                                     el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
                                 """, placeholder)
+                                self._update_status("✅ placeholder 클릭 성공")
                             except Exception:
                                 try:
                                     caption_p = caption_target.find_element(By.CSS_SELECTOR, "p.se-text-paragraph")
@@ -2656,42 +2775,61 @@ class NaverBlogAutomation:
                                         el.click();
                                         el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
                                     """, caption_p)
+                                    self._update_status("✅ caption_p 클릭 성공")
                                 except Exception:
                                     self.driver.execute_script("""
                                         const el = arguments[0];
                                         el.scrollIntoView({block:'center', inline:'nearest'});
                                         el.click();
                                     """, caption_target)
-                            self._sleep_with_checks(0.2)
+                                    self._update_status("✅ caption_target 클릭 성공")
+                            
+                            self._sleep_with_checks(0.5)
                             
                             desc_text = self.current_keyword if self.current_keyword else title
+                            self._update_status(f"⌨️ 입력할 텍스트: {desc_text}")
+                            
+                            # 텍스트 입력
                             ActionChains(self.driver).send_keys(desc_text).perform()
+                            self._sleep_with_checks(0.3)
+                            
+                            # Enter 2번 입력하여 포커스 이동
+                            ActionChains(self.driver).send_keys(Keys.ENTER).perform()
                             self._sleep_with_checks(0.2)
                             ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                            self._sleep_with_checks(0.1)
-                            ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                            self._sleep_with_checks(0.1)
+                            self._sleep_with_checks(0.3)
+                            
+                            # 입력 확인
                             try:
-                                applied = bool(self.driver.execute_script("""
-                                    const placeholder = document.querySelector("div.se-module.se-caption span.se-placeholder.__se_placeholder");
-                                    if (!placeholder) return true;
-                                    const p = placeholder.closest('p');
-                                    if (!p) return false;
-                                    const text = (p.textContent || '').trim();
-                                    return text && !text.includes('사진 설명을 입력하세요');
-                                """))
-                            except Exception:
-                                applied = False
-                            if applied:
-                                self._update_status(f"✅ 사진 설명 입력 완료: {desc_text}")
-                            else:
-                                self._update_status("⚠️ 사진 설명 입력 확인 실패(계속 진행)")
+                                result = self.driver.execute_script("""
+                                    const captions = document.querySelectorAll("div.se-module.se-caption");
+                                    if (captions.length === 0) return {found: false, reason: 'caption 모듈 없음'};
+                                    
+                                    for (const caption of captions) {
+                                        const text = (caption.textContent || '').trim();
+                                        if (text && !text.includes('사진 설명을 입력하세요')) {
+                                            return {found: true, text: text};
+                                        }
+                                    }
+                                    return {found: false, reason: 'placeholder 텍스트 또는 빈 내용'};
+                                """)
+                                
+                                if result.get('found'):
+                                    actual_text = result.get('text', '')[:50]
+                                    self._update_status(f"✅ 사진 설명 입력 완료: {actual_text}")
+                                else:
+                                    reason = result.get('reason', '알 수 없음')
+                                    self._update_status(f"⚠️ 사진 설명 입력 확인 실패: {reason} (계속 진행)")
+                            except Exception as check_e:
+                                self._update_status(f"⚠️ 사진 설명 확인 중 오류: {str(check_e)[:50]} (계속 진행)")
                             
                             self._set_text_align("left")
                             self._focus_after_image_block()
-                            self._sleep_with_checks(0.2)
+                            self._sleep_with_checks(0.3)
                         except Exception as e:
-                            self._update_status(f"⚠️ 사진 설명 입력 실패(계속 진행): {str(e)[:80]}")
+                            error_msg = str(e) if str(e) else type(e).__name__
+                            self._update_status(f"⚠️ 사진 설명 입력 실패(계속 진행): {error_msg[:100]}")
+                            print(f"[사진 설명 입력 실패 상세]\n{traceback.format_exc()}")
                         
                         # -----------------------------------------------------------
                         # [후속 처리] 혹시 뜰 수 있는 웹 이미지 편집기 팝업 닫기
@@ -2931,14 +3069,12 @@ class NaverBlogAutomation:
                         actions = ActionChains(self.driver)
                         actions.key_down(Keys.SHIFT).send_keys(Keys.HOME).key_up(Keys.SHIFT).perform()
                         self._sleep_with_checks(0.1)
-                        if self._selection_has_text() or self._drag_select_current_paragraph() or self._select_current_paragraph():
-                            # 4. 볼드체(Ctrl+B) 및 소제목 적용
-                            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('b').key_up(Keys.CONTROL).perform()
-                            self._sleep_with_checks(0.1)
-                            self._apply_section_title_format() # 소제목 적용 함수 호출
-                            self._sleep_with_checks(0.2)
-                        else:
-                            self._update_status("⚠️ 섹션 제목 문단 선택 실패(계속 진행)")
+                        
+                        # 4. 볼드체(Ctrl+B) 및 소제목 적용
+                        ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('b').key_up(Keys.CONTROL).perform()
+                        self._sleep_with_checks(0.1)
+                        self._apply_section_title_format() # 소제목 적용 함수 호출
+                        self._sleep_with_checks(0.2)
 
                         # 5. 선택 해제(오른쪽 방향키) 후 Enter 2번
                         ActionChains(self.driver).send_keys(Keys.ARROW_RIGHT).perform()
@@ -2966,43 +3102,49 @@ class NaverBlogAutomation:
                                 ActionChains(self.driver).send_keys(title).perform()
                             self._sleep_with_checks(0.2)
 
-                            # 7. '글 제목' 현재 문단 전체 선택 (Shift+Home 우선)
+                            # 7. '글 제목' 현재 문단 전체 선택 (Shift+Home으로 선택)
                             actions = ActionChains(self.driver)
                             actions.key_down(Keys.SHIFT).send_keys(Keys.HOME).key_up(Keys.SHIFT).perform()
-                            self._sleep_with_checks(0.1)
-                            if self._selection_has_text() or self._drag_select_current_paragraph() or self._select_current_paragraph():
-                                self._save_selection()
-                                # 8. 링크 첨부 로직
+                            self._sleep_with_checks(0.3)
+                            
+                            # 8. 선택된 상태에서 바로 링크 첨부
+                            try:
+                                self._update_status(f"🔗 링크 첨부 시도: {title[:30]}")
+                                
+                                # 링크 버튼 클릭 (선택 유지됨)
+                                link_btn = WebDriverWait(self.driver, 3).until(
+                                    EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-link-toolbar-button"))
+                                )
+                                link_btn.click()
+                                self._sleep_with_checks(0.3)
+
+                                # URL 입력창 대기 및 입력
+                                link_input = WebDriverWait(self.driver, 3).until(
+                                    EC.visibility_of_element_located((By.CSS_SELECTOR, "input.se-custom-layer-link-input"))
+                                )
+                                link_input.clear()
+                                link_input.send_keys(url)
+                                self._sleep_with_checks(0.2)
+
+                                # 적용 버튼 클릭
+                                apply_btn = WebDriverWait(self.driver, 3).until(
+                                    EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-custom-layer-link-apply-button"))
+                                )
+                                apply_btn.click()
+                                self._sleep_with_checks(0.3)
+                                
+                                self._update_status(f"✅ 링크 첨부 완료: {title[:30]}")
+
+                            except Exception as link_e:
+                                error_msg = str(link_e) if str(link_e) else type(link_e).__name__
+                                self._update_status(f"⚠️ 링크 적용 실패: {error_msg[:50]}")
+                                print(f"[링크 적용 실패 상세]\n{traceback.format_exc()}")
+                                # ESC로 팝업 닫기 시도
                                 try:
-                                    # 링크 버튼 클릭 (.se-link-toolbar-button)
-                                    link_btn = WebDriverWait(self.driver, 3).until(
-                                        EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-link-toolbar-button"))
-                                    )
-                                    link_btn.click()
-                                    self._sleep_with_checks(0.3)
-                                    self._restore_selection()
-                                    self._sleep_with_checks(0.1)
-
-                                    # URL 입력창 대기 및 입력 (.se-custom-layer-link-input)
-                                    link_input = WebDriverWait(self.driver, 3).until(
-                                        EC.visibility_of_element_located((By.CSS_SELECTOR, "input.se-custom-layer-link-input"))
-                                    )
-                                    link_input.clear()
-                                    link_input.send_keys(url)
+                                    ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
                                     self._sleep_with_checks(0.2)
-
-                                    # 적용 버튼 클릭 (.se-custom-layer-link-apply-button)
-                                    apply_btn = WebDriverWait(self.driver, 3).until(
-                                        EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-custom-layer-link-apply-button"))
-                                    )
-                                    apply_btn.click()
-                                    self._sleep_with_checks(0.3)
-
-                                except Exception as link_e:
-                                    self._update_status(f"링크 적용 실패(건너뜀): {str(link_e)[:30]}")
-                                    # 실패 시에도 흐름을 위해 선택 해제 등은 진행해야 할 수 있음
-                            else:
-                                self._update_status("⚠️ 글 제목 문단 선택 실패(링크 건너뜀)")
+                                except:
+                                    pass
 
                             # 9. 선택 해제(오른쪽 방향키) 후 Enter 2번
                             ActionChains(self.driver).send_keys(Keys.ARROW_RIGHT).perform()
@@ -3668,6 +3810,27 @@ class NaverBlogAutomation:
             if self.current_keyword:
                 self.move_keyword_to_used(self.current_keyword)
             
+            # 남은 키워드 수 확인
+            keywords_file = os.path.join(self.data_dir, "setting", "keywords.txt")
+            try:
+                with open(keywords_file, 'r', encoding='utf-8') as f:
+                    remaining_keywords = [line.strip() for line in f if line.strip()]
+                    keyword_count = len(remaining_keywords)
+                    
+                    self._update_status(f"📊 남은 키워드: {keyword_count}개")
+                    
+                    # 30개 미만일 때 경고 (콜백으로 GUI에 전달)
+                    if keyword_count < 30 and keyword_count > 0:
+                        if self.callback:
+                            self.callback(f"⚠️ 경고: 키워드가 {keyword_count}개 남았습니다!")
+                    
+                    # 키워드가 없으면 종료 신호
+                    if keyword_count == 0:
+                        self._update_status("✅ 모든 키워드 포스팅 완료!")
+                        return True
+            except Exception as e:
+                self._update_status(f"⚠️ 키워드 파일 확인 실패: {str(e)[:50]}")
+            
             self._update_status("🎊 전체 프로세스 완료! 포스팅 성공!")
             self._update_status("✅ 브라우저는 열린 상태로 유지됩니다")
             time.sleep(2)
@@ -3682,8 +3845,8 @@ class NaverBlogAutomation:
     def _find_chatgpt_editor(self, timeout=12):
         selectors = [
             "div#prompt-textarea[contenteditable='true']",
-            "#prompt-textarea",
-            "textarea[name='prompt-textarea']",
+            "div.ProseMirror#prompt-textarea",
+            "div#prompt-textarea",
         ]
         end_time = time.time() + timeout
         while time.time() < end_time:
@@ -3691,41 +3854,95 @@ class NaverBlogAutomation:
                 try:
                     elem = self.driver.find_element(By.CSS_SELECTOR, selector)
                     if elem and elem.is_displayed():
+                        self._update_status(f"✅ ChatGPT 입력창 발견: {selector}")
                         return elem
                 except Exception:
                     continue
-            time.sleep(0.2)
+            time.sleep(0.3)
         return None
 
     def _submit_chatgpt_prompt(self, prompt):
         try:
             editor = self._find_chatgpt_editor(timeout=12)
             if not editor:
+                self._update_status("❌ ChatGPT 입력창을 찾을 수 없습니다")
                 return False
-            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", editor)
-            editor.click()
-            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL).perform()
-            ActionChains(self.driver).send_keys(Keys.BACKSPACE).perform()
-            pyperclip.copy(prompt)
-            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
-            time.sleep(0.2)
-            ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+            
+            # JavaScript로 직접 입력 (contenteditable div 방식)
+            self.driver.execute_script("""
+                const editor = arguments[0];
+                const text = arguments[1];
+                
+                // 포커스
+                editor.focus();
+                
+                // 기존 내용 삭제
+                editor.innerHTML = '';
+                
+                // 텍스트 입력
+                const p = document.createElement('p');
+                p.textContent = text;
+                editor.appendChild(p);
+                
+                // placeholder 클래스 제거
+                const placeholder = editor.querySelector('.placeholder');
+                if (placeholder) placeholder.remove();
+                
+                // 입력 이벤트 트리거
+                editor.dispatchEvent(new Event('input', { bubbles: true }));
+            """, editor, prompt)
+            
+            time.sleep(0.5)
+            
+            # Enter로 전송
+            editor.send_keys(Keys.ENTER)
+            self._update_status("✅ ChatGPT 프롬프트 전송 성공")
             return True
         except Exception as e:
-            self._update_status(f"?? ChatGPT ???? ?? ??: {str(e)}")
+            error_msg = str(e) if str(e) else type(e).__name__
+            self._update_status(f"❌ ChatGPT 프롬프트 전송 실패: {error_msg[:50]}")
+            print(f"[ChatGPT 프롬프트 전송 실패]\n{traceback.format_exc()}")
             return False
 
     def _count_chatgpt_copy_buttons(self):
         try:
-            return len(self.driver.find_elements(By.CSS_SELECTOR, "button[data-testid='copy-turn-action-button'], button[aria-label='??']"))
+            # 다양한 복사 버튼 선택자
+            selectors = [
+                "button[data-testid='copy-turn-action-button']",
+                "button[aria-label*='Copy']",
+                "button[aria-label*='복사']",
+            ]
+            buttons = []
+            for selector in selectors:
+                try:
+                    btns = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    buttons.extend(btns)
+                except:
+                    continue
+            return len(buttons)
         except Exception:
             return 0
 
     def _click_chatgpt_copy_latest(self):
         try:
-            buttons = self.driver.find_elements(By.CSS_SELECTOR, "button[data-testid='copy-turn-action-button'], button[aria-label='??']")
+            # 다양한 복사 버튼 선택자
+            selectors = [
+                "button[data-testid='copy-turn-action-button']",
+                "button[aria-label*='Copy']",
+                "button[aria-label*='복사']",
+            ]
+            buttons = []
+            for selector in selectors:
+                try:
+                    btns = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    buttons.extend(btns)
+                except:
+                    continue
+            
             if not buttons:
                 return False
+            
+            # 마지막 버튼 클릭
             self.driver.execute_script("arguments[0].click();", buttons[-1])
             return True
         except Exception:
@@ -5302,9 +5519,9 @@ class NaverBlogGUI(QMainWindow):
         gemini_mode_header_layout.setContentsMargins(0, 0, 0, 0)
         gemini_mode_header_layout.setSpacing(12)
 
-        self.gemini_api_radio = QRadioButton("Gemini API")
         self.gemini_web_radio = QRadioButton("웹사이트")
-        for radio in (self.gemini_api_radio, self.gemini_web_radio):
+        self.gemini_api_radio = QRadioButton("Gemini API")
+        for radio in (self.gemini_web_radio, self.gemini_api_radio):
             radio.setFont(QFont(self.font_family, 12))
             radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
             gemini_mode_header_layout.addWidget(radio)
@@ -5314,18 +5531,53 @@ class NaverBlogGUI(QMainWindow):
         api_card.header_layout.addWidget(api_help_btn_header)
         
         api_card.content_layout.setSpacing(12)
-        api_card.content_layout.addStretch()
 
         api_grid = QGridLayout()
         api_grid.setColumnStretch(0, 1)
         api_grid.setHorizontalSpacing(12)
-        api_grid.setVerticalSpacing(12)
+        api_grid.setVerticalSpacing(4)  # 웹사이트와 Gemini API 사이 간격 축소
+
+        gemini_web_widget = QWidget()
+        gemini_web_widget.setStyleSheet("QWidget { background-color: transparent; }")
+        gemini_web_layout = QVBoxLayout(gemini_web_widget)
+        gemini_web_layout.setSpacing(4)
+        gemini_web_layout.setContentsMargins(0, 0, 0, 0)
+        gemini_web_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        web_provider_label = PremiumCard.create_section_label("🌐 웹사이트", self.font_family)
+        web_provider_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        web_provider_header = QHBoxLayout()
+        web_provider_header.setSpacing(8)
+        web_provider_header.setContentsMargins(0, 0, 0, 0)
+        web_provider_header.addWidget(web_provider_label)
+        gemini_web_layout.addLayout(web_provider_header)
+
+        web_provider_row = QHBoxLayout()
+        web_provider_row.setSpacing(10)
+        web_provider_row.setContentsMargins(0, 4, 0, 0)
+
+        self.web_ai_gpt_radio = QRadioButton("GPT")
+        self.web_ai_gemini_radio = QRadioButton("Gemini")
+        self.web_ai_perplexity_radio = QRadioButton("Perplexity")
+        for radio in (self.web_ai_gpt_radio, self.web_ai_gemini_radio, self.web_ai_perplexity_radio):
+            radio.setFont(QFont(self.font_family, 12))
+            radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
+            web_provider_row.addWidget(radio)
+
+        gemini_web_layout.addLayout(web_provider_row)
+        
+        self.web_ai_group = QButtonGroup(self)
+        self.web_ai_group.addButton(self.web_ai_gpt_radio)
+        self.web_ai_group.addButton(self.web_ai_gemini_radio)
+        self.web_ai_group.addButton(self.web_ai_perplexity_radio)
 
         # --- Left: Gemini API 입력 ---
         gemini_api_widget = QWidget()
         gemini_api_widget.setStyleSheet("QWidget { background-color: transparent; }")
         gemini_api_layout = QVBoxLayout(gemini_api_widget)
-        gemini_api_layout.setSpacing(6)
+        gemini_api_layout.setSpacing(4)
+        gemini_api_layout.setContentsMargins(0, 0, 0, 0)
         
         gemini_api_label = PremiumCard.create_section_label("✨ Gemini API (2.5 Flash-Lite)", self.font_family)
         gemini_api_layout.addWidget(gemini_api_label)
@@ -5377,50 +5629,6 @@ class NaverBlogGUI(QMainWindow):
         gemini_api_input_layout.addLayout(gemini_toggle_container)
         gemini_api_layout.addLayout(gemini_api_input_layout)
 
-        separator_line = QFrame()
-        separator_line.setFrameShape(QFrame.Shape.HLine)
-        separator_line.setStyleSheet(f"color: {NAVER_BORDER}; background-color: {NAVER_BORDER};")
-        separator_line.setFixedHeight(1)
-        gemini_api_layout.addWidget(separator_line)
-        gemini_api_layout.addSpacing(4)
-
-        gemini_web_widget = QWidget()
-        gemini_web_widget.setStyleSheet("QWidget { background-color: transparent; }")
-        gemini_web_layout = QVBoxLayout(gemini_web_widget)
-        gemini_web_layout.setSpacing(8)
-        gemini_web_layout.setContentsMargins(0, 6, 0, 6)
-        gemini_web_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-        web_provider_label = PremiumCard.create_section_label("🌐 웹사이트", self.font_family)
-        web_provider_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-
-        web_provider_header = QHBoxLayout()
-        web_provider_header.setSpacing(8)
-        web_provider_header.setContentsMargins(0, 2, 0, 2)
-        web_provider_header.addWidget(web_provider_label)
-        gemini_web_layout.addLayout(web_provider_header)
-
-        web_provider_row = QHBoxLayout()
-        web_provider_row.setSpacing(10)
-        web_provider_row.setContentsMargins(0, 2, 0, 0)
-
-        self.web_ai_gpt_radio = QRadioButton("GPT")
-        self.web_ai_gemini_radio = QRadioButton("Gemini")
-        self.web_ai_perplexity_radio = QRadioButton("Perplexity")
-        for radio in (self.web_ai_gpt_radio, self.web_ai_gemini_radio, self.web_ai_perplexity_radio):
-            radio.setFont(QFont(self.font_family, 12))
-            radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
-            web_provider_row.addWidget(radio)
-
-        gemini_web_layout.addLayout(web_provider_row)
-
-        self.web_ai_group = QButtonGroup(self)
-        self.web_ai_group.addButton(self.web_ai_gpt_radio)
-        self.web_ai_group.addButton(self.web_ai_gemini_radio)
-        self.web_ai_group.addButton(self.web_ai_perplexity_radio)
-
-        gemini_api_layout.addWidget(gemini_web_widget)
-
         
 
         self.gemini_mode_group = QButtonGroup(self)
@@ -5447,7 +5655,8 @@ class NaverBlogGUI(QMainWindow):
         self.web_ai_gemini_radio.toggled.connect(self.on_web_ai_provider_changed)
         self.web_ai_perplexity_radio.toggled.connect(self.on_web_ai_provider_changed)
 
-        api_grid.addWidget(gemini_api_widget, 0, 0)
+        api_grid.addWidget(gemini_web_widget, 0, 0)
+        api_grid.addWidget(gemini_api_widget, 1, 0)
 
         api_card.content_layout.addLayout(api_grid)
 
@@ -6840,6 +7049,13 @@ class NaverBlogGUI(QMainWindow):
                         self.stop_btn.setEnabled(False)
                         self.pause_btn.setEnabled(False)
                         self.resume_btn.setEnabled(False)
+                        
+                        # 키워드 소진 알림
+                        QTimer.singleShot(100, lambda: self.show_message(
+                            "✅ 완료",
+                            "모든 키워드의 포스팅이 완료되었습니다!",
+                            "info"
+                        ))
                         return
                     else:
                         # 키워드는 있지만 다른 이유로 실패 (발행 실패 등)
@@ -6853,12 +7069,47 @@ class NaverBlogGUI(QMainWindow):
                 # UI 상태 갱신 (키워드 개수 등 실시간 업데이트)
                 QTimer.singleShot(0, lambda: self.update_status_display())
                 
+                # 남은 키워드 수 확인 및 30개 미만 경고
+                try:
+                    keywords_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "setting", "keywords.txt")
+                    with open(keywords_file, 'r', encoding='utf-8') as f:
+                        remaining_keywords = [line.strip() for line in f if line.strip()]
+                        keyword_count = len(remaining_keywords)
+                        
+                        if keyword_count < 30 and keyword_count > 0:
+                            # 30개 미만 경고창
+                            QTimer.singleShot(100, lambda: self.show_message(
+                                "⚠️ 경고",
+                                f"키워드가 {keyword_count}개 남았습니다!\n\n키워드를 추가하시기 바랍니다.",
+                                "warning"
+                            ))
+                        elif keyword_count == 0:
+                            # 키워드 소진 시 자동 중지
+                            self.update_progress_status("✅ 모든 키워드 포스팅 완료!")
+                            self.is_running = False
+                            self.start_btn.setEnabled(True)
+                            self.stop_btn.setEnabled(False)
+                            self.pause_btn.setEnabled(False)
+                            self.resume_btn.setEnabled(False)
+                            
+                            QTimer.singleShot(100, lambda: self.show_message(
+                                "✅ 완료",
+                                "모든 키워드의 포스팅이 완료되었습니다!",
+                                "info"
+                            ))
+                            return
+                except Exception as e:
+                    print(f"⚠️ 키워드 파일 확인 실패: {e}")
+                
                 # 포스팅 완료 후 다음 포스팅을 자동으로 시작
                 if self.is_running and not self.is_paused:
-                    self.update_progress_status("🔄 다음 포스팅을 준비합니다...")
-                    print("🔄 다음 포스팅을 준비합니다...")
+                    # 잠깐 대기 (2초)
+                    self.update_progress_status("🔄 2초 후 다음 포스팅을 시작합니다...")
+                    print("🔄 2초 후 다음 포스팅을 시작합니다...")
+                    time.sleep(2)
+                    
                     # 다음 포스팅은 첫 포스팅이 아님 (is_first_start=False)
-                    self.start_posting(is_first_start=False)
+                    QTimer.singleShot(0, lambda: self.start_posting(is_first_start=False))
             except Exception as e:
                 if self.stop_requested:
                     return
