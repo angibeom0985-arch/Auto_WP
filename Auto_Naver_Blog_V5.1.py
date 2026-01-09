@@ -5803,6 +5803,44 @@ class NaverBlogGUI(QMainWindow):
 
         self.use_link_checkbox.stateChanged.connect(_refresh_settings_status)
         self.thumbnail_toggle_btn.clicked.connect(_refresh_settings_status)
+
+        # 설정 탭 클릭 즉시 로그 표시
+        def _log_settings_click(message):
+            self._update_settings_status(message)
+
+        self.gemini_api_radio.toggled.connect(
+            lambda checked: _log_settings_click("🔑 AI 설정: Gemini API 선택") if checked else None
+        )
+        self.gemini_web_radio.toggled.connect(
+            lambda checked: _log_settings_click("🔑 AI 설정: 웹사이트 선택") if checked else None
+        )
+        self.web_ai_gpt_radio.toggled.connect(
+            lambda checked: _log_settings_click("🌐 웹사이트 AI: GPT 선택") if checked else None
+        )
+        self.web_ai_gemini_radio.toggled.connect(
+            lambda checked: _log_settings_click("🌐 웹사이트 AI: Gemini 선택") if checked else None
+        )
+        self.web_ai_perplexity_radio.toggled.connect(
+            lambda checked: _log_settings_click("🌐 웹사이트 AI: Perplexity 선택") if checked else None
+        )
+        self.posting_search_radio.toggled.connect(
+            lambda checked: _log_settings_click("📰 포스팅 방식: 정보성 포스팅 선택") if checked else None
+        )
+        self.posting_home_radio.toggled.connect(
+            lambda checked: _log_settings_click("📰 포스팅 방식: 네쇼커 선택") if checked else None
+        )
+        self.related_posts_mode_latest.toggled.connect(
+            lambda checked: _log_settings_click("📚 관련 글: 최신 글 선택") if checked else None
+        )
+        self.related_posts_mode_popular.toggled.connect(
+            lambda checked: _log_settings_click("📚 관련 글: 인기 글 선택") if checked else None
+        )
+        self.use_link_checkbox.stateChanged.connect(
+            lambda state: _log_settings_click("🔗 외부 링크: 사용" if state else "🔗 외부 링크: 미사용")
+        )
+        self.thumbnail_toggle_btn.clicked.connect(
+            lambda: _log_settings_click("🖼️ 썸네일: ON" if self.thumbnail_toggle_btn.isChecked() else "🖼️ 썸네일: OFF")
+        )
         
         # 설정 로그 카드를 'AI 설정' 오른쪽에 배치
         settings_progress_card.setMinimumHeight(card_min_height)
