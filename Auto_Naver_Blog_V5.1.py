@@ -5389,28 +5389,26 @@ class NaverBlogGUI(QMainWindow):
         gemini_web_layout = QVBoxLayout(gemini_web_widget)
         gemini_web_layout.setSpacing(16)
         gemini_web_layout.setContentsMargins(0, 12, 0, 12)
-        gemini_web_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gemini_web_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         web_provider_label = PremiumCard.create_section_label("🌐 웹사이트", self.font_family)
         web_provider_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        gemini_web_layout.addWidget(web_provider_label)
 
-        web_provider_row = QHBoxLayout()
-        web_provider_row.setSpacing(20)
-        web_provider_row.setContentsMargins(0, 6, 0, 6)
+        web_provider_header = QHBoxLayout()
+        web_provider_header.setSpacing(16)
+        web_provider_header.setContentsMargins(0, 6, 0, 6)
+        web_provider_header.addWidget(web_provider_label)
+        web_provider_header.addStretch()
 
         self.web_ai_gpt_radio = QRadioButton("GPT")
         self.web_ai_gemini_radio = QRadioButton("Gemini")
         self.web_ai_perplexity_radio = QRadioButton("Perplexity")
-        web_provider_row.addStretch()
         for radio in (self.web_ai_gpt_radio, self.web_ai_gemini_radio, self.web_ai_perplexity_radio):
             radio.setFont(QFont(self.font_family, 12))
             radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
-            web_provider_row.addWidget(radio)
+            web_provider_header.addWidget(radio)
 
-        web_provider_row.addStretch()
-        web_provider_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        gemini_web_layout.addLayout(web_provider_row)
+        gemini_web_layout.addLayout(web_provider_header)
 
         self.web_ai_group = QButtonGroup(self)
         self.web_ai_group.addButton(self.web_ai_gpt_radio)
@@ -6202,11 +6200,11 @@ class NaverBlogGUI(QMainWindow):
             self.gemini_toggle_btn.setText("비공개")
 
     def on_gemini_mode_changed(self):
-        """Gemini ?? ??"""
+        """Gemini 방식 변경"""
         mode = "web" if self.gemini_web_radio.isChecked() else "api"
         self.config["gemini_mode"] = mode
         label = "웹사이트" if mode == "web" else "API"
-        self._update_settings_status(f"?? AI ??: {label}")
+        self._update_settings_status(f"🔑 AI 설정: {label}")
         self.save_config_file()
         self.update_status_display()
         self._update_settings_summary()
@@ -6219,7 +6217,7 @@ class NaverBlogGUI(QMainWindow):
         else:
             provider = "gemini"
         self.config["web_ai_provider"] = provider
-        self._update_settings_status(f"?? ???? AI: {provider.upper()}")
+        self._update_settings_status(f"🌐 웹사이트 AI: {provider.upper()}")
         self.save_config_file()
         self.update_status_display()
         self._update_settings_summary()
@@ -6500,7 +6498,7 @@ class NaverBlogGUI(QMainWindow):
             web_provider = "gemini"
 
         if not gemini_key and gemini_mode != "web":
-            self._show_auto_close_message("?? Gemini API ?? ??????", QMessageBox.Icon.Warning)
+            self._show_auto_close_message("⚠️ Gemini API 키를 입력해주세요", QMessageBox.Icon.Warning)
             return
 
         self.config["gemini_api_key"] = gemini_key
@@ -6508,16 +6506,16 @@ class NaverBlogGUI(QMainWindow):
         self.config["ai_model"] = "gemini"
         self.config["web_ai_provider"] = web_provider
         if gemini_key:
-            self._update_settings_status("?? Gemini API ?? ???????")
+            self._update_settings_status("🔑 Gemini API 키가 저장되었습니다")
         else:
-            self._update_settings_status(f"?? ???? ?? ({web_provider.upper()})")
+            self._update_settings_status(f"🌐 웹사이트 모드 ({web_provider.upper()})")
         self.save_config_file()
         self.update_status_display()
         self._update_settings_summary()
         if gemini_key:
-            self._show_auto_close_message("? Gemini API ?? ???????", QMessageBox.Icon.Information)
+            self._show_auto_close_message("✅ Gemini API 키가 저장되었습니다", QMessageBox.Icon.Information)
         else:
-            self._show_auto_close_message("? ???? ??? ???????", QMessageBox.Icon.Information)
+            self._show_auto_close_message("✅ 웹사이트 모드로 저장되었습니다", QMessageBox.Icon.Information)
 
     def on_posting_method_changed(self):
         """포스팅 방법 라디오 변경 시 상태 반영"""
