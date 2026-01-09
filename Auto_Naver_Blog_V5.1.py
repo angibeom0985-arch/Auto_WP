@@ -5403,6 +5403,7 @@ class NaverBlogGUI(QMainWindow):
         self.web_ai_gemini_radio = QRadioButton("Gemini")
         self.web_ai_perplexity_radio = QRadioButton("Perplexity")
         web_provider_row.addStretch()
+        for radio in (self.web_ai_gpt_radio, self.web_ai_gemini_radio, self.web_ai_perplexity_radio):
             radio.setFont(QFont(self.font_family, 12))
             radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
             web_provider_row.addWidget(radio)
