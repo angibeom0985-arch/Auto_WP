@@ -1223,7 +1223,7 @@ class NaverBlogAutomation:
                 raise FileNotFoundError(f"썸네일 이미지를 찾을 수 없습니다: {thumbnail_path}")
             
             self._update_status("🎬 동영상 생성 시작...")
-            print(f"VIDEO: Creating video from {thumbnail_path}")
+            print(f"VIDEO: 동영상 생성 시작 (이미지: {thumbnail_path})")
             
             # 결과 파일 경로 설정
             result_folder = os.path.join("setting", "result")
@@ -1234,7 +1234,7 @@ class NaverBlogAutomation:
             video_filename = f"{base_name}.mp4"
             video_filepath = os.path.join(result_folder, video_filename)
             
-            print(f"VIDEO: Saving to {video_filepath}")
+            print(f"VIDEO: 동영상 저장 중: {video_filepath}")
             
             # exe 환경에서 stdout/stderr가 None일 때 처리
             import sys
@@ -1275,7 +1275,7 @@ class NaverBlogAutomation:
                 raise FileNotFoundError(f"동영상 파일 생성 실패: {video_filepath}")
             
             self._update_status(f"✅ 동영상 생성 완료: {video_filename}")
-            print(f"VIDEO: Successfully created {video_filepath}")
+            print(f"VIDEO: 동영상 생성 완료: {video_filepath}")
             return video_filepath
             
         except Exception as e:
