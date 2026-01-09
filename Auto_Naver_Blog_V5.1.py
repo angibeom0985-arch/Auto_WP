@@ -2874,8 +2874,11 @@ class NaverBlogAutomation:
                                 ActionChains(self.driver).send_keys(title).perform()
                             self._sleep_with_checks(0.2)
 
-                            # 7. '글 제목' 현재 문단 전체 선택 (드래그 우선)
-                            if self._drag_select_current_paragraph() or self._select_current_paragraph():
+                            # 7. '글 제목' 현재 문단 전체 선택 (Shift+Home 우선)
+                            actions = ActionChains(self.driver)
+                            actions.key_down(Keys.SHIFT).send_keys(Keys.HOME).key_up(Keys.SHIFT).perform()
+                            self._sleep_with_checks(0.1)
+                            if self._selection_has_text() or self._drag_select_current_paragraph() or self._select_current_paragraph():
                                 self._save_selection()
                                 # 8. 링크 첨부 로직
                                 try:
