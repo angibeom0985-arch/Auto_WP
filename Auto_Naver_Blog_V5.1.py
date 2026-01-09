@@ -757,23 +757,27 @@ class NaverBlogAutomation:
         gemini_url = "https://gemini.google.com/app?hl=ko"
         try:
             # 기존 Gemini 탭이 있으면 닫기
-            if self.gemini_tab_handle and self.gemini_tab_handle in self.driver.window_handles:
+            if self.gemini_tab_handle:
                 try:
-                    self.driver.switch_to.window(self.gemini_tab_handle)
-                    self.driver.close()
-                    self._update_status("🔄 기존 Gemini 탭 종료")
+                    if self.gemini_tab_handle in self.driver.window_handles:
+                        self.driver.switch_to.window(self.gemini_tab_handle)
+                        self.driver.close()
+                        self._update_status("🔄 기존 Gemini 탭 종료")
+                        time.sleep(0.5)
                 except Exception:
-                    pass
+                    pass  # 이미 닫힌 경우 무시
             
             # 항상 새 탭으로 열기
             self.driver.execute_script("window.open(arguments[0], '_blank');", gemini_url)
+            time.sleep(0.5)
             self.driver.switch_to.window(self.driver.window_handles[-1])
             self.gemini_tab_handle = self.driver.current_window_handle
             self._update_status("✅ 새 Gemini 탭 생성")
             time.sleep(2)  # 페이지 로딩 대기
             return True
         except Exception as e:
-            self._update_status(f"⚠️ Gemini 탭 준비 실패: {str(e)}")
+            error_msg = str(e).split('\n')[0][:100]  # 첫 줄만 가져오기
+            self._update_status(f"⚠️ Gemini 탭 준비 실패: {error_msg}")
             return False
 
 
@@ -784,23 +788,27 @@ class NaverBlogAutomation:
         chatgpt_url = "https://chatgpt.com/"
         try:
             # 기존 ChatGPT 탭이 있으면 닫기
-            if self.gpt_tab_handle and self.gpt_tab_handle in self.driver.window_handles:
+            if self.gpt_tab_handle:
                 try:
-                    self.driver.switch_to.window(self.gpt_tab_handle)
-                    self.driver.close()
-                    self._update_status("🔄 기존 ChatGPT 탭 종료")
+                    if self.gpt_tab_handle in self.driver.window_handles:
+                        self.driver.switch_to.window(self.gpt_tab_handle)
+                        self.driver.close()
+                        self._update_status("🔄 기존 ChatGPT 탭 종료")
+                        time.sleep(0.5)
                 except Exception:
-                    pass
+                    pass  # 이미 닫힌 경우 무시
             
             # 항상 새 탭으로 열기
             self.driver.execute_script("window.open(arguments[0], '_blank');", chatgpt_url)
+            time.sleep(0.5)
             self.driver.switch_to.window(self.driver.window_handles[-1])
             self.gpt_tab_handle = self.driver.current_window_handle
             self._update_status("✅ 새 ChatGPT 탭 생성")
             time.sleep(2)  # 페이지 로딩 대기
             return True
         except Exception as e:
-            self._update_status(f"⚠️ ChatGPT 탭 준비 실패: {str(e)}")
+            error_msg = str(e).split('\n')[0][:100]
+            self._update_status(f"⚠️ ChatGPT 탭 준비 실패: {error_msg}")
             return False
 
     def _ensure_perplexity_tab(self):
@@ -810,23 +818,27 @@ class NaverBlogAutomation:
         perplexity_url = "https://www.perplexity.ai/"
         try:
             # 기존 Perplexity 탭이 있으면 닫기
-            if self.perplexity_tab_handle and self.perplexity_tab_handle in self.driver.window_handles:
+            if self.perplexity_tab_handle:
                 try:
-                    self.driver.switch_to.window(self.perplexity_tab_handle)
-                    self.driver.close()
-                    self._update_status("🔄 기존 Perplexity 탭 종료")
+                    if self.perplexity_tab_handle in self.driver.window_handles:
+                        self.driver.switch_to.window(self.perplexity_tab_handle)
+                        self.driver.close()
+                        self._update_status("🔄 기존 Perplexity 탭 종료")
+                        time.sleep(0.5)
                 except Exception:
-                    pass
+                    pass  # 이미 닫힌 경우 무시
             
             # 항상 새 탭으로 열기
             self.driver.execute_script("window.open(arguments[0], '_blank');", perplexity_url)
+            time.sleep(0.5)
             self.driver.switch_to.window(self.driver.window_handles[-1])
             self.perplexity_tab_handle = self.driver.current_window_handle
             self._update_status("✅ 새 Perplexity 탭 생성")
             time.sleep(2)  # 페이지 로딩 대기
             return True
         except Exception as e:
-            self._update_status(f"⚠️ Perplexity 탭 준비 실패: {str(e)}")
+            error_msg = str(e).split('\n')[0][:100]
+            self._update_status(f"⚠️ Perplexity 탭 준비 실패: {error_msg}")
             return False
 
     def _ensure_blog_tab(self, url=None):
