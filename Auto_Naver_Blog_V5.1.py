@@ -173,7 +173,10 @@ class NaverBlogAutomation:
         self.callback = callback
         self.config = config or {}  # config 저장
         self.gemini_mode = self.config.get("gemini_mode", "api")
+        self.web_ai_provider = (self.config.get("web_ai_provider", "gemini") or "gemini").lower()
         self.gemini_tab_handle = None
+        self.gpt_tab_handle = None
+        self.perplexity_tab_handle = None
         self.gemini_logged_in = False
         self.blog_tab_handle = None
         self.posting_method = self.config.get(
@@ -514,7 +517,13 @@ class NaverBlogAutomation:
             # Gemini 호출
             self._update_status(f"🔄 AI에게 글 생성 요청 중... (모델: {model_name})")
             if self.gemini_mode == "web":
-                content = self._generate_content_with_gemini_web(full_prompt)
+                provider = (self.config.get("web_ai_provider", "gemini") or "gemini").lower()
+                if provider == "gpt":
+                    content = self._generate_content_with_chatgpt_web(full_prompt)
+                elif provider == "perplexity":
+                    content = self._generate_content_with_perplexity_web(full_prompt)
+                else:
+                    content = self._generate_content_with_gemini_web(full_prompt)
             else:
                 response = self.model.generate_content(full_prompt)  # type: ignore
                 content = getattr(response, "text", "")  # type: ignore
@@ -737,6 +746,55 @@ class NaverBlogAutomation:
             self._update_status(f"⚠️ Gemini 탭 준비 실패: {str(e)}")
             return False
 
+
+    def _ensure_chatgpt_tab(self):
+        """ChatGPT ? ?? ???? ???"""
+        if not self.driver:
+            return False
+        chatgpt_url = "https://chatgpt.com/"
+        try:
+            if self.gpt_tab_handle and self.gpt_tab_handle in self.driver.window_handles:
+                self.driver.switch_to.window(self.gpt_tab_handle)
+                return True
+            try:
+                current_url = (self.driver.current_url or "").lower()
+            except Exception:
+                current_url = ""
+            if current_url.startswith("data:") or current_url.startswith("about:blank"):
+                self.driver.get(chatgpt_url)
+            else:
+                self.driver.execute_script("window.open(arguments[0], '_blank');", chatgpt_url)
+                self.driver.switch_to.window(self.driver.window_handles[-1])
+            self.gpt_tab_handle = self.driver.current_window_handle
+            return True
+        except Exception as e:
+            self._update_status(f"?? ChatGPT ? ?? ??: {str(e)}")
+            return False
+
+    def _ensure_perplexity_tab(self):
+        """Perplexity ? ?? ???? ???"""
+        if not self.driver:
+            return False
+        perplexity_url = "https://www.perplexity.ai/"
+        try:
+            if self.perplexity_tab_handle and self.perplexity_tab_handle in self.driver.window_handles:
+                self.driver.switch_to.window(self.perplexity_tab_handle)
+                return True
+            try:
+                current_url = (self.driver.current_url or "").lower()
+            except Exception:
+                current_url = ""
+            if current_url.startswith("data:") or current_url.startswith("about:blank"):
+                self.driver.get(perplexity_url)
+            else:
+                self.driver.execute_script("window.open(arguments[0], '_blank');", perplexity_url)
+                self.driver.switch_to.window(self.driver.window_handles[-1])
+            self.perplexity_tab_handle = self.driver.current_window_handle
+            return True
+        except Exception as e:
+            self._update_status(f"?? Perplexity ? ?? ??: {str(e)}")
+            return False
+
     def _ensure_blog_tab(self, url=None):
         """블로그 작업용 탭을 준비하고 포커스"""
         if not self.driver:
@@ -798,57 +856,14 @@ class NaverBlogAutomation:
             return False
 
     def _ensure_gemini_logged_in(self):
-        """Gemini 로그인 시도 (웹 모드 전용)"""
+        """Gemini ??? ?? (? ?? ??)"""
         if self._find_gemini_editor(timeout=3):
             self.gemini_logged_in = True
             return True
         if self.gemini_logged_in:
             return bool(self._find_gemini_editor(timeout=3))
-
-        gemini_id = (self.config.get("gemini_web_id") or "").strip()
-        gemini_pw = self.config.get("gemini_web_pw") or ""
-        if not gemini_id or not gemini_pw:
-            self._update_status("⚠️ Gemini 로그인 정보가 필요합니다")
-            return False
-
-        self._update_status("🔄 Gemini 로그인 시도 중...")
-        self._click_gemini_login()
-
-        try:
-            id_input = WebDriverWait(self.driver, 8).until(
-                EC.presence_of_element_located((By.ID, "identifierId"))
-            )
-            id_input.click()
-            id_input.clear()
-            id_input.send_keys(gemini_id)
-            self._click_google_next()
-        except Exception as e:
-            self._update_status(f"⚠️ Gemini 아이디 입력 실패: {str(e)}")
-            return False
-
-        try:
-            pw_input = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.NAME, "Passwd"))
-            )
-            pw_input.click()
-            pw_input.clear()
-            pw_input.send_keys(gemini_pw)
-            self._click_google_next()
-        except Exception as e:
-            self._update_status(f"⚠️ Gemini 비밀번호 입력 실패: {str(e)}")
-            return False
-
-        # 2차 인증 대기 (최대 1분)
-        end_time = time.time() + 60
-        while time.time() < end_time:
-            if self._find_gemini_editor(timeout=2):
-                self.gemini_logged_in = True
-                return True
-            self._click_google_later()
-            time.sleep(2)
-
-        self.gemini_logged_in = bool(self._find_gemini_editor(timeout=5))
-        return self.gemini_logged_in
+        self._update_status("?? Gemini ???? ????? (?????? ??? ? ?? ??)")
+        return False
 
     def _find_gemini_editor(self, timeout=10):
         """Gemini 입력창 요소 찾기"""
@@ -1059,6 +1074,83 @@ class NaverBlogAutomation:
             self._update_status(f"⚠️ Gemini 웹 모드 오류: {str(e)}")
             return ""
     
+
+    def _generate_content_with_chatgpt_web(self, prompt):
+        try:
+            self._wait_if_paused()
+            if not self.driver:
+                self._update_status("?? ChatGPT ? ??: ???? ?? ?...")
+                if not self.setup_driver():
+                    self._update_status("? ChatGPT ? ??: ???? ?? ??")
+                    return ""
+
+            if not self._ensure_chatgpt_tab():
+                return ""
+
+            self._update_status("?? ChatGPT ??? ?? ?...")
+            before_copy_count = self._count_chatgpt_copy_buttons()
+            if not self._submit_chatgpt_prompt(prompt):
+                self._update_status("? ChatGPT ?? ?? - ??? ??? ??????")
+                return ""
+
+            self._update_status("? ChatGPT ?? ?? ?...")
+            content = ""
+            if self._wait_for_chatgpt_copy_button(before_copy_count, timeout=180):
+                if self._click_chatgpt_copy_latest():
+                    time.sleep(0.3)
+                    try:
+                        copied = pyperclip.paste().strip()
+                        if copied and not self._looks_like_status_text(copied) and not self._looks_like_prompt_echo(copied):
+                            content = copied
+                    except Exception:
+                        pass
+            if not content:
+                self._update_status("?? ChatGPT ?? ?? ?? - ???/???? ?? ??")
+            return content
+        except StopRequested:
+            return ""
+        except Exception as e:
+            self._update_status(f"?? ChatGPT ? ?? ??: {str(e)}")
+            return ""
+
+    def _generate_content_with_perplexity_web(self, prompt):
+        try:
+            self._wait_if_paused()
+            if not self.driver:
+                self._update_status("?? Perplexity ? ??: ???? ?? ?...")
+                if not self.setup_driver():
+                    self._update_status("? Perplexity ? ??: ???? ?? ??")
+                    return ""
+
+            if not self._ensure_perplexity_tab():
+                return ""
+
+            self._update_status("?? Perplexity ??? ?? ?...")
+            before_copy_count = self._count_perplexity_copy_buttons()
+            if not self._submit_perplexity_prompt(prompt):
+                self._update_status("? Perplexity ?? ?? - ??? ??? ??????")
+                return ""
+
+            self._update_status("? Perplexity ?? ?? ?...")
+            content = ""
+            if self._wait_for_perplexity_copy_button(before_copy_count, timeout=180):
+                if self._click_perplexity_copy_latest():
+                    time.sleep(0.3)
+                    try:
+                        copied = pyperclip.paste().strip()
+                        if copied and not self._looks_like_status_text(copied) and not self._looks_like_prompt_echo(copied):
+                            content = copied
+                    except Exception:
+                        pass
+            if not content:
+                self._update_status("?? Perplexity ?? ?? ?? - ???/???? ?? ??")
+            return content
+        except StopRequested:
+            return ""
+        except Exception as e:
+            self._update_status(f"?? Perplexity ? ?? ??: {str(e)}")
+            return ""
+
     def create_thumbnail(self, title):
         """setting/image 폴더의 jpg를 배경으로 300x300 썸네일 생성"""
         try:
@@ -3587,6 +3679,127 @@ class NaverBlogAutomation:
             self._update_status(f"❌ 실행 오류: {str(e)}")
             return False
     
+    def _find_chatgpt_editor(self, timeout=12):
+        selectors = [
+            "div#prompt-textarea[contenteditable='true']",
+            "#prompt-textarea",
+            "textarea[name='prompt-textarea']",
+        ]
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            for selector in selectors:
+                try:
+                    elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if elem and elem.is_displayed():
+                        return elem
+                except Exception:
+                    continue
+            time.sleep(0.2)
+        return None
+
+    def _submit_chatgpt_prompt(self, prompt):
+        try:
+            editor = self._find_chatgpt_editor(timeout=12)
+            if not editor:
+                return False
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", editor)
+            editor.click()
+            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL).perform()
+            ActionChains(self.driver).send_keys(Keys.BACKSPACE).perform()
+            pyperclip.copy(prompt)
+            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
+            time.sleep(0.2)
+            ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+            return True
+        except Exception as e:
+            self._update_status(f"?? ChatGPT ???? ?? ??: {str(e)}")
+            return False
+
+    def _count_chatgpt_copy_buttons(self):
+        try:
+            return len(self.driver.find_elements(By.CSS_SELECTOR, "button[data-testid='copy-turn-action-button'], button[aria-label='??']"))
+        except Exception:
+            return 0
+
+    def _click_chatgpt_copy_latest(self):
+        try:
+            buttons = self.driver.find_elements(By.CSS_SELECTOR, "button[data-testid='copy-turn-action-button'], button[aria-label='??']")
+            if not buttons:
+                return False
+            self.driver.execute_script("arguments[0].click();", buttons[-1])
+            return True
+        except Exception:
+            return False
+
+    def _wait_for_chatgpt_copy_button(self, before_count, timeout=180):
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            self._wait_if_paused()
+            if self._count_chatgpt_copy_buttons() > before_count:
+                return True
+            self._sleep_with_checks(1)
+        return False
+
+    def _find_perplexity_editor(self, timeout=12):
+        selectors = [
+            "div#ask-input[contenteditable='true']",
+            "#ask-input",
+        ]
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            for selector in selectors:
+                try:
+                    elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if elem and elem.is_displayed():
+                        return elem
+                except Exception:
+                    continue
+            time.sleep(0.2)
+        return None
+
+    def _submit_perplexity_prompt(self, prompt):
+        try:
+            editor = self._find_perplexity_editor(timeout=12)
+            if not editor:
+                return False
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", editor)
+            editor.click()
+            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL).perform()
+            ActionChains(self.driver).send_keys(Keys.BACKSPACE).perform()
+            pyperclip.copy(prompt)
+            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
+            time.sleep(0.2)
+            ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+            return True
+        except Exception as e:
+            self._update_status(f"?? Perplexity ???? ?? ??: {str(e)}")
+            return False
+
+    def _count_perplexity_copy_buttons(self):
+        try:
+            return len(self.driver.find_elements(By.CSS_SELECTOR, "button[aria-label='??']"))
+        except Exception:
+            return 0
+
+    def _click_perplexity_copy_latest(self):
+        try:
+            buttons = self.driver.find_elements(By.CSS_SELECTOR, "button[aria-label='??']")
+            if not buttons:
+                return False
+            self.driver.execute_script("arguments[0].click();", buttons[-1])
+            return True
+        except Exception:
+            return False
+
+    def _wait_for_perplexity_copy_button(self, before_count, timeout=180):
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            self._wait_if_paused()
+            if self._count_perplexity_copy_buttons() > before_count:
+                return True
+            self._sleep_with_checks(1)
+        return False
+
     def close(self):
         """브라우저 종료 (프로그램 종료 시에도 브라우저 유지)"""
         if self.driver:
@@ -4031,10 +4244,13 @@ class NaverBlogGUI(QMainWindow):
                 self.config["gemini_mode"] = "web"
             else:
                 self.config["gemini_mode"] = "api"
-            if hasattr(self, "gemini_web_id_entry"):
-                self.config["gemini_web_id"] = self.gemini_web_id_entry.text()
-            if hasattr(self, "gemini_web_pw_entry"):
-                self.config["gemini_web_pw"] = self.gemini_web_pw_entry.text()
+            if hasattr(self, "web_ai_gpt_radio"):
+                if self.web_ai_gpt_radio.isChecked():
+                    self.config["web_ai_provider"] = "gpt"
+                elif self.web_ai_perplexity_radio.isChecked():
+                    self.config["web_ai_provider"] = "perplexity"
+                else:
+                    self.config["web_ai_provider"] = "gemini"
             self.config["naver_id"] = self.naver_id_entry.text()
             self.config["naver_pw"] = self.naver_pw_entry.text()
             self.config["interval"] = int(self.interval_entry.text()) if self.interval_entry.text() else 30
@@ -5088,7 +5304,7 @@ class NaverBlogGUI(QMainWindow):
         gemini_mode_header_layout.setSpacing(12)
 
         self.gemini_api_radio = QRadioButton("Gemini API")
-        self.gemini_web_radio = QRadioButton("Gemini 로그인")
+        self.gemini_web_radio = QRadioButton("웹사이트")
         for radio in (self.gemini_api_radio, self.gemini_web_radio):
             radio.setFont(QFont(self.font_family, 12))
             radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
@@ -5169,67 +5385,31 @@ class NaverBlogGUI(QMainWindow):
 
         gemini_web_widget = QWidget()
         gemini_web_widget.setStyleSheet("QWidget { background-color: transparent; }")
-        gemini_web_layout = QGridLayout(gemini_web_widget)
-        gemini_web_layout.setHorizontalSpacing(12)
-        gemini_web_layout.setVerticalSpacing(6)
+        gemini_web_layout = QVBoxLayout(gemini_web_widget)
+        gemini_web_layout.setSpacing(8)
         gemini_web_layout.setContentsMargins(0, 0, 0, 6)
 
-        gemini_web_layout.setColumnStretch(0, 1)
-        gemini_web_layout.setColumnStretch(1, 1)
+        web_provider_label = PremiumCard.create_section_label("🌐 웹사이트", self.font_family)
+        gemini_web_layout.addWidget(web_provider_label)
 
-        gemini_web_id_widget = QWidget()
-        gemini_web_id_widget.setStyleSheet("QWidget { background-color: transparent; }")
-        gemini_web_id_layout = QVBoxLayout(gemini_web_id_widget)
-        gemini_web_id_label = PremiumCard.create_section_label("🆔 Gemini 아이디", self.font_family)
-        gemini_web_id_layout.addWidget(gemini_web_id_label)
-        self.gemini_web_id_entry = QLineEdit()
-        self.gemini_web_id_entry.setPlaceholderText("Gemini 계정 아이디")
-        self.gemini_web_id_entry.setCursorPosition(0)
-        self.gemini_web_id_entry.setStyleSheet(f"""
-            QLineEdit {{
-                border: 2px solid {NAVER_BORDER};
-                border-radius: 8px;
-                padding: 6px 10px;
-                background-color: white;
-                color: {NAVER_TEXT};
-                font-size: 13px;
-                min-height: 28px;
-            }}
-            QLineEdit:focus {{
-                border-color: {NAVER_GREEN};
-            }}
-        """)
-        self.gemini_web_id_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
-        gemini_web_id_layout.addWidget(self.gemini_web_id_entry)
+        web_provider_row = QHBoxLayout()
+        web_provider_row.setSpacing(12)
 
-        gemini_web_pw_widget = QWidget()
-        gemini_web_pw_widget.setStyleSheet("QWidget { background-color: transparent; }")
-        gemini_web_pw_layout = QVBoxLayout(gemini_web_pw_widget)
-        gemini_web_pw_label = PremiumCard.create_section_label("🔒 Gemini 비밀번호", self.font_family)
-        gemini_web_pw_layout.addWidget(gemini_web_pw_label)
-        self.gemini_web_pw_entry = QLineEdit()
-        self.gemini_web_pw_entry.setPlaceholderText("Gemini 계정 비밀번호")
-        self.gemini_web_pw_entry.setEchoMode(QLineEdit.EchoMode.Password)
-        self.gemini_web_pw_entry.setCursorPosition(0)
-        self.gemini_web_pw_entry.setStyleSheet(f"""
-            QLineEdit {{
-                border: 2px solid {NAVER_BORDER};
-                border-radius: 8px;
-                padding: 6px 10px;
-                background-color: white;
-                color: {NAVER_TEXT};
-                font-size: 13px;
-                min-height: 28px;
-            }}
-            QLineEdit:focus {{
-                border-color: {NAVER_GREEN};
-            }}
-        """)
-        self.gemini_web_pw_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
-        gemini_web_pw_layout.addWidget(self.gemini_web_pw_entry)
+        self.web_ai_gpt_radio = QRadioButton("GPT")
+        self.web_ai_gemini_radio = QRadioButton("Gemini")
+        self.web_ai_perplexity_radio = QRadioButton("Perplexity")
+        for radio in (self.web_ai_gpt_radio, self.web_ai_gemini_radio, self.web_ai_perplexity_radio):
+            radio.setFont(QFont(self.font_family, 12))
+            radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
+            web_provider_row.addWidget(radio)
 
-        gemini_web_layout.addWidget(gemini_web_id_widget, 0, 0)
-        gemini_web_layout.addWidget(gemini_web_pw_widget, 0, 1)
+        web_provider_row.addStretch()
+        gemini_web_layout.addLayout(web_provider_row)
+
+        self.web_ai_group = QButtonGroup(self)
+        self.web_ai_group.addButton(self.web_ai_gpt_radio)
+        self.web_ai_group.addButton(self.web_ai_gemini_radio)
+        self.web_ai_group.addButton(self.web_ai_perplexity_radio)
 
         gemini_api_layout.addWidget(gemini_web_widget)
 
@@ -5247,14 +5427,19 @@ class NaverBlogGUI(QMainWindow):
         self.gemini_api_radio.toggled.connect(self.on_gemini_mode_changed)
         self.gemini_web_radio.toggled.connect(self.on_gemini_mode_changed)
 
-        api_grid.addWidget(gemini_api_widget, 0, 0)
-
-        if self.config.get("gemini_mode", "api") == "web":
-            self.gemini_web_id_entry.setEnabled(True)
-            self.gemini_web_pw_entry.setEnabled(True)
+        web_provider = (self.config.get("web_ai_provider", "gemini") or "gemini").lower()
+        if web_provider == "gpt":
+            self.web_ai_gpt_radio.setChecked(True)
+        elif web_provider == "perplexity":
+            self.web_ai_perplexity_radio.setChecked(True)
         else:
-            self.gemini_web_id_entry.setEnabled(False)
-            self.gemini_web_pw_entry.setEnabled(False)
+            self.web_ai_gemini_radio.setChecked(True)
+
+        self.web_ai_gpt_radio.toggled.connect(self.on_web_ai_provider_changed)
+        self.web_ai_gemini_radio.toggled.connect(self.on_web_ai_provider_changed)
+        self.web_ai_perplexity_radio.toggled.connect(self.on_web_ai_provider_changed)
+
+        api_grid.addWidget(gemini_api_widget, 0, 0)
 
         api_card.content_layout.addLayout(api_grid)
 
@@ -5601,21 +5786,26 @@ class NaverBlogGUI(QMainWindow):
         # AI 모델 (고정)
         self.config["ai_model"] = "gemini"
         
-        # Gemini 모드
+        # Gemini ??
         gemini_mode = self.config.get("gemini_mode", "api")
         if hasattr(self, "gemini_web_radio"):
             if gemini_mode == "web":
                 self.gemini_web_radio.setChecked(True)
             else:
                 self.gemini_api_radio.setChecked(True)
-        if hasattr(self, "gemini_web_id_entry") and "gemini_web_id" in self.config:
-            self.gemini_web_id_entry.setText(self.config["gemini_web_id"])
-        if hasattr(self, "gemini_web_pw_entry") and "gemini_web_pw" in self.config:
-            self.gemini_web_pw_entry.setText(self.config["gemini_web_pw"])
-        if hasattr(self, "gemini_web_id_entry"):
-            self.gemini_web_id_entry.setEnabled(gemini_mode == "web")
-        if hasattr(self, "gemini_web_pw_entry"):
-            self.gemini_web_pw_entry.setEnabled(gemini_mode == "web")
+
+        web_provider = (self.config.get("web_ai_provider", "gemini") or "gemini").lower()
+        if hasattr(self, "web_ai_gpt_radio"):
+            if web_provider == "gpt":
+                self.web_ai_gpt_radio.setChecked(True)
+            elif web_provider == "perplexity":
+                self.web_ai_perplexity_radio.setChecked(True)
+            else:
+                self.web_ai_gemini_radio.setChecked(True)
+            web_enabled = gemini_mode == "web"
+            for radio in (self.web_ai_gpt_radio, self.web_ai_gemini_radio, self.web_ai_perplexity_radio):
+                radio.setEnabled(web_enabled)
+
 
         # 포스팅 방법
         posting_method = self.config.get("posting_method", "search")
@@ -5711,12 +5901,14 @@ class NaverBlogGUI(QMainWindow):
             """)
             self.login_setup_btn.show()
         
-        # API 키 상태 (UI 입력창에서 직접 읽기)
+        # API ? ?? (UI ????? ?? ??)
         gemini_key = self.gemini_api_entry.text().strip() if hasattr(self, 'gemini_api_entry') else ""
         gemini_mode = self.config.get("gemini_mode", "api")
-        
+        web_provider = (self.config.get("web_ai_provider", "gemini") or "gemini").lower()
+        provider_label = "GPT" if web_provider == "gpt" else ("Perplexity" if web_provider == "perplexity" else "Gemini")
+
         if gemini_mode == "web":
-            self.api_status_label.setText("🔑 API: Gemini 웹")
+            self.api_status_label.setText(f"🔑 API: 웹사이트({provider_label})")
             self.api_status_label.setStyleSheet(f"color: #000000; border: none;")
             self.api_setup_btn.setText("변경하기")
             self.api_setup_btn.setStyleSheet(f"""
@@ -5770,9 +5962,6 @@ class NaverBlogGUI(QMainWindow):
             """)
             self.api_setup_btn.show()
 
-        # 포스팅 방법 상태
-        method = "home" if (hasattr(self, "posting_home_radio") and self.posting_home_radio.isChecked()) else "search"
-        method_label = "네쇼커" if method == "home" else "검색 노출"
         self.posting_status_label.setText(f"📰 포스팅: {method_label}")
         self.posting_status_label.setStyleSheet(f"color: #000000; border: none;")
         self.posting_setup_btn.setText("변경하기")
@@ -6008,19 +6197,31 @@ class NaverBlogGUI(QMainWindow):
             self.gemini_toggle_btn.setText("비공개")
 
     def on_gemini_mode_changed(self):
-        """Gemini 방식 변경"""
+        """Gemini ?? ??"""
         mode = "web" if self.gemini_web_radio.isChecked() else "api"
         self.config["gemini_mode"] = mode
-        if hasattr(self, "gemini_web_id_entry"):
-            self.gemini_web_id_entry.setEnabled(mode == "web")
-        if hasattr(self, "gemini_web_pw_entry"):
-            self.gemini_web_pw_entry.setEnabled(mode == "web")
-        label = "웹(셀레니움)" if mode == "web" else "API"
-        self._update_settings_status(f"🤖 Gemini 방식: {label}")
+        web_enabled = mode == "web"
+        for radio in (self.web_ai_gpt_radio, self.web_ai_gemini_radio, self.web_ai_perplexity_radio):
+            radio.setEnabled(web_enabled)
+        label = "????" if mode == "web" else "API"
+        self._update_settings_status(f"?? AI ??: {label}")
         self.save_config_file()
         self.update_status_display()
         self._update_settings_summary()
-    
+
+    def on_web_ai_provider_changed(self):
+        if self.web_ai_gpt_radio.isChecked():
+            provider = "gpt"
+        elif self.web_ai_perplexity_radio.isChecked():
+            provider = "perplexity"
+        else:
+            provider = "gemini"
+        self.config["web_ai_provider"] = provider
+        self._update_settings_status(f"?? ???? AI: {provider.upper()}")
+        self.save_config_file()
+        self.update_status_display()
+        self._update_settings_summary()
+
     def toggle_password(self):
         """비밀번호 표시/숨김"""
         if self.naver_pw_entry.echoMode() == QLineEdit.EchoMode.Password:
@@ -6161,14 +6362,16 @@ class NaverBlogGUI(QMainWindow):
         """설정 상태 요약 업데이트"""
         if not hasattr(self, 'settings_api_status'):
             return
-        
         try:
-            # API 키 상태
+        
+            # API ? ??
             gemini_key = self.gemini_api_entry.text() if hasattr(self, 'gemini_api_entry') else ""
             gemini_mode = self.config.get("gemini_mode", "api")
-            
+            web_provider = (self.config.get("web_ai_provider", "gemini") or "gemini").lower()
+            provider_label = "GPT" if web_provider == "gpt" else ("Perplexity" if web_provider == "perplexity" else "Gemini")
+
             if gemini_mode == "web":
-                api_text = "🔑 API: Gemini 웹"
+                api_text = f"🔑 API: 웹사이트({provider_label})"
                 api_color = NAVER_GREEN
             elif gemini_key:
                 api_text = "🔑 API: Gemini"
@@ -6176,6 +6379,7 @@ class NaverBlogGUI(QMainWindow):
             else:
                 api_text = "🔑 API: 미설정"
                 api_color = NAVER_RED
+
             
             self.settings_api_status.setText(api_text)
             self.settings_api_status.setStyleSheet(f"color: {api_color}; background-color: transparent; border: none; font-weight: bold;")
@@ -6283,32 +6487,35 @@ class NaverBlogGUI(QMainWindow):
             self._update_settings_status(f"❌ 파일 열기 실패: {str(e)}")
     
     def save_api_key(self):
-        """API 키 저장"""
+        """API ? ??"""
         gemini_key = self.gemini_api_entry.text().strip()
         gemini_mode = self.config.get("gemini_mode", "api")
+        if self.web_ai_gpt_radio.isChecked():
+            web_provider = "gpt"
+        elif self.web_ai_perplexity_radio.isChecked():
+            web_provider = "perplexity"
+        else:
+            web_provider = "gemini"
 
         if not gemini_key and gemini_mode != "web":
-            self._show_auto_close_message("⚠️ Gemini API 키를 입력해주세요", QMessageBox.Icon.Warning)
+            self._show_auto_close_message("?? Gemini API ?? ??????", QMessageBox.Icon.Warning)
             return
-        
+
         self.config["gemini_api_key"] = gemini_key
         self.config["api_key"] = gemini_key
         self.config["ai_model"] = "gemini"
-        if hasattr(self, "gemini_web_id_entry"):
-            self.config["gemini_web_id"] = self.gemini_web_id_entry.text().strip()
-        if hasattr(self, "gemini_web_pw_entry"):
-            self.config["gemini_web_pw"] = self.gemini_web_pw_entry.text()
+        self.config["web_ai_provider"] = web_provider
         if gemini_key:
-            self._update_settings_status("🔑 Gemini API 키가 저장되었습니다")
+            self._update_settings_status("?? Gemini API ?? ???????")
         else:
-            self._update_settings_status("🔑 Gemini 웹 모드 (API 키 미사용)")
+            self._update_settings_status(f"?? ???? ?? ({web_provider.upper()})")
         self.save_config_file()
         self.update_status_display()
         self._update_settings_summary()
         if gemini_key:
-            self._show_auto_close_message("✅ Gemini API 키가 저장되었습니다", QMessageBox.Icon.Information)
+            self._show_auto_close_message("? Gemini API ?? ???????", QMessageBox.Icon.Information)
         else:
-            self._show_auto_close_message("✅ Gemini 웹 모드로 저장되었습니다", QMessageBox.Icon.Information)
+            self._show_auto_close_message("? ???? ??? ???????", QMessageBox.Icon.Information)
 
     def on_posting_method_changed(self):
         """포스팅 방법 라디오 변경 시 상태 반영"""
