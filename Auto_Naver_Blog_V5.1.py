@@ -4754,7 +4754,7 @@ class NaverBlogGUI(QMainWindow):
         
         # 함께 보면 좋은 글 상태
         related_posts_status_layout = QHBoxLayout()
-        self.related_posts_status_label = QLabel("📚 함께 보면 좋은 글: 미설정")
+        self.related_posts_status_label = QLabel("📚 관련 글: 미설정")
         self.related_posts_status_label.setFont(QFont(self.font_family, 13))
         self.related_posts_status_label.setStyleSheet(f"color: #000000; border: none;")
         related_posts_status_layout.addWidget(self.related_posts_status_label)
@@ -5766,6 +5766,39 @@ class NaverBlogGUI(QMainWindow):
 
         related_posts_card.setMinimumHeight(card_min_height)
         layout.addWidget(related_posts_card, 3, 1)
+
+        # 설정 변경 시 모니터링 상태를 실시간으로 갱신
+        def _refresh_settings_status():
+            self.update_status_display()
+            self._update_settings_summary()
+
+        for widget in (
+            self.naver_id_entry,
+            self.naver_pw_entry,
+            self.gemini_api_entry,
+            self.interval_entry,
+            self.link_url_entry,
+            self.link_text_entry,
+            self.related_posts_title_entry,
+            self.blog_address_entry,
+        ):
+            widget.textChanged.connect(_refresh_settings_status)
+
+        for radio in (
+            self.gemini_api_radio,
+            self.gemini_web_radio,
+            self.web_ai_gpt_radio,
+            self.web_ai_gemini_radio,
+            self.web_ai_perplexity_radio,
+            self.posting_search_radio,
+            self.posting_home_radio,
+            self.related_posts_mode_latest,
+            self.related_posts_mode_popular,
+        ):
+            radio.toggled.connect(_refresh_settings_status)
+
+        self.use_link_checkbox.stateChanged.connect(_refresh_settings_status)
+        self.thumbnail_toggle_btn.clicked.connect(_refresh_settings_status)
         
         # 설정 로그 카드를 'AI 설정' 오른쪽에 배치
         settings_progress_card.setMinimumHeight(card_min_height)
@@ -6095,12 +6128,14 @@ class NaverBlogGUI(QMainWindow):
                 }}
             """)
         
-        # 함께 보면 좋은 글 상태
-        blog_address = self.config.get("blog_address", "").strip()
+        # 관련 글 상태
+        blog_address = (self.blog_address_entry.text().strip() if hasattr(self, "blog_address_entry") else "").strip()
         if blog_address:
-            mode_value = self.config.get("related_posts_mode", "latest")
-            mode_text = "인기 글" if mode_value == "popular" else "최신 글"
-            self.related_posts_status_label.setText(f"📚 함께 보면 좋은 글: ON ({mode_text})")
+            if self.related_posts_mode_popular.isChecked():
+                mode_text = "인기 글"
+            else:
+                mode_text = "최신 글"
+            self.related_posts_status_label.setText(f"📚 관련 글: ON ({mode_text})")
             self.related_posts_setup_btn.setText("변경하기")
             self.related_posts_setup_btn.setStyleSheet(f"""
                 QPushButton {{
@@ -6116,7 +6151,7 @@ class NaverBlogGUI(QMainWindow):
                 }}
             """)
         else:
-            self.related_posts_status_label.setText("📚 함께 보면 좋은 글: 미설정")
+            self.related_posts_status_label.setText("📚 관련 글: 미설정")
             self.related_posts_setup_btn.setText("설정하기")
             self.related_posts_setup_btn.setStyleSheet(f"""
                 QPushButton {{
