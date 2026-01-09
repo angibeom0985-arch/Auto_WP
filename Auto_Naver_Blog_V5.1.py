@@ -5629,11 +5629,11 @@ class NaverBlogGUI(QMainWindow):
         posting_layout = QHBoxLayout()
         posting_layout.setSpacing(20)
 
-        self.posting_search_radio = QRadioButton("검색 노출 (기존 방식)")
+        self.posting_search_radio = QRadioButton("정보성 포스팅")
         self.posting_search_radio.setFont(QFont(self.font_family, 13))
         self.posting_search_radio.setChecked(True)
 
-        self.posting_home_radio = QRadioButton("네쇼커 (제목·썸네일 커스텀 예정)")
+        self.posting_home_radio = QRadioButton("네쇼커 (업뎻 예정)")
         self.posting_home_radio.setFont(QFont(self.font_family, 13))
 
         for radio in (self.posting_search_radio, self.posting_home_radio):
