@@ -2719,9 +2719,11 @@ class NaverBlogAutomation:
                     related_posts = self._load_related_posts_from_file()
                     section_title = ""
                     if self.config:
-                        section_title = self.config.get("related_posts_title", "")
+                        section_title = self.config.get("related_posts_title", "").strip()
                     if not section_title:
-                        section_title = self.related_posts_title or "관련 글"
+                        mode_value = (self.config.get("related_posts_mode", "latest") if self.config else "latest")
+                        mode_text = "인기 글" if mode_value == "popular" else "최신 글"
+                        section_title = mode_text if mode_text else "함께 보면 좋은 글"
 
                     if related_posts and section_title:
                         self._update_status("관련 글 섹션 추가 중...")
