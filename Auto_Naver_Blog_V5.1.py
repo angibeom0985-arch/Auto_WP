@@ -2481,14 +2481,37 @@ class NaverBlogAutomation:
                         
                         try:
                             self._update_status("✍️ 사진 설명 입력 중...")
-                            caption_div = WebDriverWait(self.driver, 5).until(
+                            caption_target = WebDriverWait(self.driver, 5).until(
                                 EC.presence_of_element_located((By.CSS_SELECTOR, "div.se-module.se-module-text.se-caption"))
                             )
-                            self.driver.execute_script("""
-                                const el = arguments[0];
-                                el.scrollIntoView({block:'center', inline:'nearest'});
-                                el.click();
-                            """, caption_div)
+                            try:
+                                placeholder = self.driver.find_element(
+                                    By.CSS_SELECTOR,
+                                    "div.se-module.se-caption span.se-placeholder.__se_placeholder"
+                                )
+                                self.driver.execute_script("""
+                                    const el = arguments[0];
+                                    el.scrollIntoView({block:'center', inline:'nearest'});
+                                    el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+                                    el.click();
+                                    el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
+                                """, placeholder)
+                            except Exception:
+                                try:
+                                    caption_p = caption_target.find_element(By.CSS_SELECTOR, "p.se-text-paragraph")
+                                    self.driver.execute_script("""
+                                        const el = arguments[0];
+                                        el.scrollIntoView({block:'center', inline:'nearest'});
+                                        el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+                                        el.click();
+                                        el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
+                                    """, caption_p)
+                                except Exception:
+                                    self.driver.execute_script("""
+                                        const el = arguments[0];
+                                        el.scrollIntoView({block:'center', inline:'nearest'});
+                                        el.click();
+                                    """, caption_target)
                             self._sleep_with_checks(0.2)
                             
                             desc_text = self.current_keyword if self.current_keyword else title
