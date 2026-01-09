@@ -5962,7 +5962,8 @@ class NaverBlogGUI(QMainWindow):
             """)
             self.api_setup_btn.show()
 
-        method_label = "???" if method == "home" else "??? ???"
+        method = "home" if self.posting_home_radio.isChecked() else "search"
+        method_label = "네쇼커" if method == "home" else "정보성 포스팅"
         self.posting_status_label.setText(f"📰 포스팅: {method_label}")
         self.posting_status_label.setStyleSheet(f"color: #000000; border: none;")
         self.posting_setup_btn.setText("변경하기")
