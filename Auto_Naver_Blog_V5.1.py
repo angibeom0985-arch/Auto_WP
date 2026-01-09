@@ -5382,28 +5382,33 @@ class NaverBlogGUI(QMainWindow):
         separator_line.setStyleSheet(f"color: {NAVER_BORDER}; background-color: {NAVER_BORDER};")
         separator_line.setFixedHeight(1)
         gemini_api_layout.addWidget(separator_line)
+        gemini_api_layout.addSpacing(8)
 
         gemini_web_widget = QWidget()
         gemini_web_widget.setStyleSheet("QWidget { background-color: transparent; }")
         gemini_web_layout = QVBoxLayout(gemini_web_widget)
-        gemini_web_layout.setSpacing(8)
-        gemini_web_layout.setContentsMargins(0, 0, 0, 6)
+        gemini_web_layout.setSpacing(16)
+        gemini_web_layout.setContentsMargins(0, 12, 0, 12)
+        gemini_web_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         web_provider_label = PremiumCard.create_section_label("🌐 웹사이트", self.font_family)
+        web_provider_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         gemini_web_layout.addWidget(web_provider_label)
 
         web_provider_row = QHBoxLayout()
-        web_provider_row.setSpacing(12)
+        web_provider_row.setSpacing(20)
+        web_provider_row.setContentsMargins(0, 6, 0, 6)
 
         self.web_ai_gpt_radio = QRadioButton("GPT")
         self.web_ai_gemini_radio = QRadioButton("Gemini")
         self.web_ai_perplexity_radio = QRadioButton("Perplexity")
-        for radio in (self.web_ai_gpt_radio, self.web_ai_gemini_radio, self.web_ai_perplexity_radio):
+        web_provider_row.addStretch()
             radio.setFont(QFont(self.font_family, 12))
             radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
             web_provider_row.addWidget(radio)
 
         web_provider_row.addStretch()
+        web_provider_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
         gemini_web_layout.addLayout(web_provider_row)
 
         self.web_ai_group = QButtonGroup(self)
@@ -5802,9 +5807,6 @@ class NaverBlogGUI(QMainWindow):
                 self.web_ai_perplexity_radio.setChecked(True)
             else:
                 self.web_ai_gemini_radio.setChecked(True)
-            web_enabled = gemini_mode == "web"
-            for radio in (self.web_ai_gpt_radio, self.web_ai_gemini_radio, self.web_ai_perplexity_radio):
-                radio.setEnabled(web_enabled)
 
 
         # 포스팅 방법
@@ -6202,10 +6204,7 @@ class NaverBlogGUI(QMainWindow):
         """Gemini ?? ??"""
         mode = "web" if self.gemini_web_radio.isChecked() else "api"
         self.config["gemini_mode"] = mode
-        web_enabled = mode == "web"
-        for radio in (self.web_ai_gpt_radio, self.web_ai_gemini_radio, self.web_ai_perplexity_radio):
-            radio.setEnabled(web_enabled)
-        label = "????" if mode == "web" else "API"
+        label = "웹사이트" if mode == "web" else "API"
         self._update_settings_status(f"?? AI ??: {label}")
         self.save_config_file()
         self.update_status_display()
