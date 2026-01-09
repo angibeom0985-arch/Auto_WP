@@ -757,7 +757,7 @@ class NaverBlogAutomation:
         gemini_url = "https://gemini.google.com/app?hl=ko"
         try:
             # 기존 Gemini 탭이 있고 유효하면 닫기
-            if self.gemini_tab_handle:
+            if self.gemini_tab_handle is not None:
                 try:
                     current_handles = self.driver.window_handles
                     if self.gemini_tab_handle in current_handles and len(current_handles) > 1:
@@ -796,7 +796,7 @@ class NaverBlogAutomation:
         chatgpt_url = "https://chatgpt.com/"
         try:
             # 기존 ChatGPT 탭이 있고 유효하면 닫기
-            if self.gpt_tab_handle:
+            if self.gpt_tab_handle is not None:
                 try:
                     current_handles = self.driver.window_handles
                     if self.gpt_tab_handle in current_handles and len(current_handles) > 1:
@@ -833,7 +833,7 @@ class NaverBlogAutomation:
         perplexity_url = "https://www.perplexity.ai/"
         try:
             # 기존 Perplexity 탭이 있고 유효하면 닫기
-            if self.perplexity_tab_handle:
+            if self.perplexity_tab_handle is not None:
                 try:
                     current_handles = self.driver.window_handles
                     if self.perplexity_tab_handle in current_handles and len(current_handles) > 1:
