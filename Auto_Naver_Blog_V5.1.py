@@ -754,23 +754,28 @@ class NaverBlogAutomation:
         return sum(marker in text for marker in markers) >= 2
 
     def _ensure_gemini_tab(self):
-        """Gemini 웹 탭을 준비하고 포커스"""
+        """Gemini 웹 탭을 준비하고 포커스 (매번 새 탭 생성)"""
         if not self.driver:
             return False
         gemini_url = "https://gemini.google.com/app?hl=ko"
         try:
-            # 기존 탭이 있고 유효하면 해당 탭으로 전환
+            # 기존 탭이 있으면 안전하게 닫기
             if self.gemini_tab_handle:
                 try:
                     current_handles = self.driver.window_handles
-                    if self.gemini_tab_handle in current_handles:
+                    # 탭이 존재하고 2개 이상일 때만 닫기
+                    if self.gemini_tab_handle in current_handles and len(current_handles) > 1:
                         self.driver.switch_to.window(self.gemini_tab_handle)
-                        self._update_status("✅ Gemini 탭으로 전환")
-                        return True
+                        self.driver.close()
+                        # 네이버 탭으로 전환 (첨번째 탭)
+                        remaining = [h for h in self.driver.window_handles if h != self.gemini_tab_handle]
+                        if remaining:
+                            self.driver.switch_to.window(remaining[0])
+                        time.sleep(0.3)
                 except Exception:
-                    pass  # 탭이 유효하지 않으면 새로 생성
+                    pass  # 닫기 실패해도 계속
             
-            # 탭이 없거나 유효하지 않으면 새로 열기
+            # 항상 새 탭으로 열기
             try:
                 self.driver.execute_script("window.open(arguments[0], '_blank');", gemini_url)
                 time.sleep(0.5)
@@ -788,23 +793,28 @@ class NaverBlogAutomation:
 
 
     def _ensure_chatgpt_tab(self):
-        """ChatGPT 웹 탭을 준비하고 포커스"""
+        """ChatGPT 웹 탭을 준비하고 포커스 (매번 새 탭 생성)"""
         if not self.driver:
             return False
         chatgpt_url = "https://chatgpt.com/"
         try:
-            # 기존 탭이 있고 유효하면 해당 탭으로 전환
+            # 기존 탭이 있으면 안전하게 닫기
             if self.gpt_tab_handle:
                 try:
                     current_handles = self.driver.window_handles
-                    if self.gpt_tab_handle in current_handles:
+                    # 탭이 존재하고 2개 이상일 때만 닫기
+                    if self.gpt_tab_handle in current_handles and len(current_handles) > 1:
                         self.driver.switch_to.window(self.gpt_tab_handle)
-                        self._update_status("✅ ChatGPT 탭으로 전환")
-                        return True
+                        self.driver.close()
+                        # 네이버 탭으로 전환
+                        remaining = [h for h in self.driver.window_handles if h != self.gpt_tab_handle]
+                        if remaining:
+                            self.driver.switch_to.window(remaining[0])
+                        time.sleep(0.3)
                 except Exception:
-                    pass  # 탭이 유효하지 않으면 새로 생성
+                    pass  # 닫기 실패해도 계속
             
-            # 탭이 없거나 유효하지 않으면 새로 열기
+            # 항상 새 탭으로 열기
             try:
                 self.driver.execute_script("window.open(arguments[0], '_blank');", chatgpt_url)
                 time.sleep(0.5)
@@ -821,23 +831,28 @@ class NaverBlogAutomation:
             return False
 
     def _ensure_perplexity_tab(self):
-        """Perplexity 웹 탭을 준비하고 포커스"""
+        """Perplexity 웹 탭을 준비하고 포커스 (매번 새 탭 생성)"""
         if not self.driver:
             return False
         perplexity_url = "https://www.perplexity.ai/"
         try:
-            # 기존 탭이 있고 유효하면 해당 탭으로 전환
+            # 기존 탭이 있으면 안전하게 닫기
             if self.perplexity_tab_handle:
                 try:
                     current_handles = self.driver.window_handles
-                    if self.perplexity_tab_handle in current_handles:
+                    # 탭이 존재하고 2개 이상일 때만 닫기
+                    if self.perplexity_tab_handle in current_handles and len(current_handles) > 1:
                         self.driver.switch_to.window(self.perplexity_tab_handle)
-                        self._update_status("✅ Perplexity 탭으로 전환")
-                        return True
+                        self.driver.close()
+                        # 네이버 탭으로 전환
+                        remaining = [h for h in self.driver.window_handles if h != self.perplexity_tab_handle]
+                        if remaining:
+                            self.driver.switch_to.window(remaining[0])
+                        time.sleep(0.3)
                 except Exception:
-                    pass  # 탭이 유효하지 않으면 새로 생성
+                    pass  # 닫기 실패해도 계속
             
-            # 탭이 없거나 유효하지 않으면 새로 열기
+            # 항상 새 탭으로 열기
             try:
                 self.driver.execute_script("window.open(arguments[0], '_blank');", perplexity_url)
                 time.sleep(0.5)
