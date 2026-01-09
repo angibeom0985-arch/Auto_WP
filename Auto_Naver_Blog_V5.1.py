@@ -5911,7 +5911,7 @@ class NaverBlogGUI(QMainWindow):
         provider_label = "GPT" if web_provider == "gpt" else ("Perplexity" if web_provider == "perplexity" else "Gemini")
 
         if gemini_mode == "web":
-            self.api_status_label.setText(f"🔑 API: 웹사이트({provider_label})")
+            self.api_status_label.setText(f"🔑 AI 설정: 웹사이트({provider_label})")
             self.api_status_label.setStyleSheet(f"color: #000000; border: none;")
             self.api_setup_btn.setText("변경하기")
             self.api_setup_btn.setStyleSheet(f"""
@@ -5929,7 +5929,7 @@ class NaverBlogGUI(QMainWindow):
             """)
             self.api_setup_btn.show()
         elif gemini_key:
-            self.api_status_label.setText("🔑 API: Gemini")
+            self.api_status_label.setText("🔑 AI 설정: Gemini")
             self.api_status_label.setStyleSheet(f"color: #000000; border: none;")
             self.api_setup_btn.setText("변경하기")
             self.api_setup_btn.setStyleSheet(f"""
@@ -5947,7 +5947,7 @@ class NaverBlogGUI(QMainWindow):
             """)
             self.api_setup_btn.show()
         else:
-            self.api_status_label.setText("🔑 API: 미설정")
+            self.api_status_label.setText("🔑 AI 설정: 미설정")
             self.api_status_label.setStyleSheet(f"color: #000000; border: none;")
             self.api_setup_btn.setText("설정하기")
             self.api_setup_btn.setStyleSheet(f"""
@@ -6373,13 +6373,13 @@ class NaverBlogGUI(QMainWindow):
             provider_label = "GPT" if web_provider == "gpt" else ("Perplexity" if web_provider == "perplexity" else "Gemini")
 
             if gemini_mode == "web":
-                api_text = f"🔑 API: 웹사이트({provider_label})"
+                api_text = f"🔑 AI 설정: 웹사이트({provider_label})"
                 api_color = NAVER_GREEN
             elif gemini_key:
-                api_text = "🔑 API: Gemini"
+                api_text = "🔑 AI 설정: Gemini"
                 api_color = NAVER_GREEN
             else:
-                api_text = "🔑 API: 미설정"
+                api_text = "🔑 AI 설정: 미설정"
                 api_color = NAVER_RED
 
             
