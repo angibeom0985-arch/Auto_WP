@@ -754,31 +754,23 @@ class NaverBlogAutomation:
         return sum(marker in text for marker in markers) >= 2
 
     def _ensure_gemini_tab(self):
-        """Gemini 웹 탭을 준비하고 포커스 (매번 새로 열기)"""
+        """Gemini 웹 탭을 준비하고 포커스"""
         if not self.driver:
             return False
         gemini_url = "https://gemini.google.com/app?hl=ko"
         try:
-            # 기존 Gemini 탭이 있고 유효하면 닫기 (첫 생성이 아닐 때만)
-            if self.gemini_tab_handle is not None and not self.gemini_first_open:
+            # 기존 탭이 있고 유효하면 해당 탭으로 전환
+            if self.gemini_tab_handle:
                 try:
                     current_handles = self.driver.window_handles
-                    if self.gemini_tab_handle in current_handles and len(current_handles) > 1:
+                    if self.gemini_tab_handle in current_handles:
                         self.driver.switch_to.window(self.gemini_tab_handle)
-                        self.driver.close()
-                        self._update_status("🔄 기존 Gemini 탭 종료")
-                        time.sleep(0.5)
-                        # 남은 탭 중 하나로 전환
-                        remaining_handles = [h for h in self.driver.window_handles]
-                        if remaining_handles:
-                            self.driver.switch_to.window(remaining_handles[0])
-                except Exception as e:
-                    pass  # 이미 닫힌 경우 무시
+                        self._update_status("✅ Gemini 탭으로 전환")
+                        return True
+                except Exception:
+                    pass  # 탭이 유효하지 않으면 새로 생성
             
-            # 첫 생성 플래그 해제
-            self.gemini_first_open = False
-            
-            # 항상 새 탭으로 열기
+            # 탭이 없거나 유효하지 않으면 새로 열기
             try:
                 self.driver.execute_script("window.open(arguments[0], '_blank');", gemini_url)
                 time.sleep(0.5)
@@ -796,30 +788,23 @@ class NaverBlogAutomation:
 
 
     def _ensure_chatgpt_tab(self):
-        """ChatGPT 웹 탭을 준비하고 포커스 (매번 새로 열기)"""
+        """ChatGPT 웹 탭을 준비하고 포커스"""
         if not self.driver:
             return False
         chatgpt_url = "https://chatgpt.com/"
         try:
-            # 기존 ChatGPT 탭이 있고 유효하면 닫기 (첫 생성이 아닐 때만)
-            if self.gpt_tab_handle is not None and not self.gpt_first_open:
+            # 기존 탭이 있고 유효하면 해당 탭으로 전환
+            if self.gpt_tab_handle:
                 try:
                     current_handles = self.driver.window_handles
-                    if self.gpt_tab_handle in current_handles and len(current_handles) > 1:
+                    if self.gpt_tab_handle in current_handles:
                         self.driver.switch_to.window(self.gpt_tab_handle)
-                        self.driver.close()
-                        self._update_status("🔄 기존 ChatGPT 탭 종료")
-                        time.sleep(0.5)
-                        remaining_handles = [h for h in self.driver.window_handles]
-                        if remaining_handles:
-                            self.driver.switch_to.window(remaining_handles[0])
+                        self._update_status("✅ ChatGPT 탭으로 전환")
+                        return True
                 except Exception:
-                    pass
+                    pass  # 탭이 유효하지 않으면 새로 생성
             
-            # 첫 생성 플래그 해제
-            self.gpt_first_open = False
-            
-            # 항상 새 탭으로 열기
+            # 탭이 없거나 유효하지 않으면 새로 열기
             try:
                 self.driver.execute_script("window.open(arguments[0], '_blank');", chatgpt_url)
                 time.sleep(0.5)
@@ -836,30 +821,23 @@ class NaverBlogAutomation:
             return False
 
     def _ensure_perplexity_tab(self):
-        """Perplexity 웹 탭을 준비하고 포커스 (매번 새로 열기)"""
+        """Perplexity 웹 탭을 준비하고 포커스"""
         if not self.driver:
             return False
         perplexity_url = "https://www.perplexity.ai/"
         try:
-            # 기존 Perplexity 탭이 있고 유효하면 닫기 (첫 생성이 아닐 때만)
-            if self.perplexity_tab_handle is not None and not self.perplexity_first_open:
+            # 기존 탭이 있고 유효하면 해당 탭으로 전환
+            if self.perplexity_tab_handle:
                 try:
                     current_handles = self.driver.window_handles
-                    if self.perplexity_tab_handle in current_handles and len(current_handles) > 1:
+                    if self.perplexity_tab_handle in current_handles:
                         self.driver.switch_to.window(self.perplexity_tab_handle)
-                        self.driver.close()
-                        self._update_status("🔄 기존 Perplexity 탭 종료")
-                        time.sleep(0.5)
-                        remaining_handles = [h for h in self.driver.window_handles]
-                        if remaining_handles:
-                            self.driver.switch_to.window(remaining_handles[0])
+                        self._update_status("✅ Perplexity 탭으로 전환")
+                        return True
                 except Exception:
-                    pass
+                    pass  # 탭이 유효하지 않으면 새로 생성
             
-            # 첫 생성 플래그 해제
-            self.perplexity_first_open = False
-            
-            # 항상 새 탭으로 열기
+            # 탭이 없거나 유효하지 않으면 새로 열기
             try:
                 self.driver.execute_script("window.open(arguments[0], '_blank');", perplexity_url)
                 time.sleep(0.5)
@@ -7000,8 +6978,12 @@ class NaverBlogGUI(QMainWindow):
         """포스팅 시작"""
         self.stop_requested = False
         
-        if not self.is_running:
-            # 첫 시작일 때만 상태 초기화
+        if self.is_running:
+            # 이미 실행 중이면 자동 재시작 (카운트다운 후)
+            pass
+        else:
+            # 첫 시작
+            is_first_start = True
             self.is_running = True
             self.is_paused = False
             
@@ -7041,8 +7023,8 @@ class NaverBlogGUI(QMainWindow):
                 external_link = self.link_url_entry.text() if self.use_link_checkbox.isChecked() else ""
                 external_link_text = self.link_text_entry.text() if self.use_link_checkbox.isChecked() else ""
                 
-                # 자동화 인스턴스가 없으면 생성 (첫 실행 또는 초기화 후)
-                if not hasattr(self, 'automation') or self.automation is None:
+                # 첫 실행시에만 자동화 인스턴스 생성
+                if is_first_start:
                     # 블로그 주소 처음 (아이디만 있으면 전체 URL로 변환)
                     blog_address = self.config.get("blog_address", "")
                     related_posts_title = self.config.get("related_posts_title", "함께 보면 좋은 글")
