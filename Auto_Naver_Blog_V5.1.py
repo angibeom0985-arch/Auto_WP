@@ -1741,7 +1741,8 @@ class NaverBlogAutomation:
                 start_y = max(5, int(rect.get("height", 20) / 2))
                 end_x = max(10, int(rect.get("width", 200)) - 10)
                 end_y = max(10, int(rect.get("height", 20)) - 5)
-                ActionChains(self.driver).move_to_element_with_offset(
+                actions = ActionChains(self.driver)
+                actions.move_to_element_with_offset(
                     block, start_x, start_y
                 ).click_and_hold().move_by_offset(
                     end_x - start_x, end_y - start_y
@@ -1753,7 +1754,8 @@ class NaverBlogAutomation:
 
             try:
                 actions = ActionChains(self.driver)
-                actions.key_down(Keys.SHIFT).send_keys(Keys.HOME).send_keys(Keys.END).key_up(Keys.SHIFT).perform()
+                # Shift+Home으로 문단 시작까지 드래그 선택
+                actions.key_down(Keys.SHIFT).send_keys(Keys.HOME).key_up(Keys.SHIFT).perform()
                 time.sleep(0.05)
                 return True
             except Exception:
@@ -2833,9 +2835,11 @@ class NaverBlogAutomation:
                             ActionChains(self.driver).send_keys(section_title).perform()
                         self._sleep_with_checks(0.2)
 
-                        # 3. '섹션 제목' 현재 문단 전체 선택
-                        # (참고: _select_current_paragraph 내부가 Home -> Shift+End 방식이어야 정확합니다)
-                        if self._select_current_paragraph():
+                        # 3. '섹션 제목' 현재 문단 전체 선택 (Shift+Home 우선)
+                        actions = ActionChains(self.driver)
+                        actions.key_down(Keys.SHIFT).send_keys(Keys.HOME).key_up(Keys.SHIFT).perform()
+                        self._sleep_with_checks(0.1)
+                        if self._selection_has_text() or self._drag_select_current_paragraph() or self._select_current_paragraph():
                             # 4. 볼드체(Ctrl+B) 및 소제목 적용
                             ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('b').key_up(Keys.CONTROL).perform()
                             self._sleep_with_checks(0.1)
@@ -2870,8 +2874,8 @@ class NaverBlogAutomation:
                                 ActionChains(self.driver).send_keys(title).perform()
                             self._sleep_with_checks(0.2)
 
-                            # 7. '글 제목' 현재 문단 전체 선택
-                            if self._select_current_paragraph():
+                            # 7. '글 제목' 현재 문단 전체 선택 (드래그 우선)
+                            if self._drag_select_current_paragraph() or self._select_current_paragraph():
                                 self._save_selection()
                                 # 8. 링크 첨부 로직
                                 try:
