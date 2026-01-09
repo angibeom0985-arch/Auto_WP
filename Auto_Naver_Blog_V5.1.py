@@ -5295,7 +5295,6 @@ class NaverBlogGUI(QMainWindow):
             }}
         """)
         api_help_btn_header.clicked.connect(self.show_api_help)
-        api_card.header_layout.addWidget(api_help_btn_header)
 
         gemini_mode_header_container = QWidget()
         gemini_mode_header_container.setStyleSheet("QWidget { background-color: transparent; }")
@@ -5310,8 +5309,9 @@ class NaverBlogGUI(QMainWindow):
             radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
             gemini_mode_header_layout.addWidget(radio)
 
+        api_card.header_layout.insertWidget(1, gemini_mode_header_container)
         api_card.header_layout.addStretch()
-        api_card.header_layout.addWidget(gemini_mode_header_container)
+        api_card.header_layout.addWidget(api_help_btn_header)
         
         api_card.content_layout.setSpacing(12)
         api_card.content_layout.addStretch()
@@ -5682,8 +5682,8 @@ class NaverBlogGUI(QMainWindow):
             radio.toggled.connect(lambda checked, r=radio: self._sync_related_posts_title(r.text()) if checked else None)
             mode_header_layout.addWidget(radio)
 
+        related_posts_card.header_layout.insertWidget(1, mode_header_container)
         related_posts_card.header_layout.addStretch()
-        related_posts_card.header_layout.addWidget(mode_header_container)
 
         # 2열 그리드 레이아웃 생성
         inputs_grid = QGridLayout()
