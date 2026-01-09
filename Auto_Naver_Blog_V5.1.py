@@ -5325,7 +5325,7 @@ class NaverBlogGUI(QMainWindow):
         gemini_api_widget = QWidget()
         gemini_api_widget.setStyleSheet("QWidget { background-color: transparent; }")
         gemini_api_layout = QVBoxLayout(gemini_api_widget)
-        gemini_api_layout.setSpacing(8)
+        gemini_api_layout.setSpacing(6)
         
         gemini_api_label = PremiumCard.create_section_label("✨ Gemini API (2.5 Flash-Lite)", self.font_family)
         gemini_api_layout.addWidget(gemini_api_label)
@@ -5382,7 +5382,7 @@ class NaverBlogGUI(QMainWindow):
         separator_line.setStyleSheet(f"color: {NAVER_BORDER}; background-color: {NAVER_BORDER};")
         separator_line.setFixedHeight(1)
         gemini_api_layout.addWidget(separator_line)
-        gemini_api_layout.addSpacing(8)
+        gemini_api_layout.addSpacing(4)
 
         gemini_web_widget = QWidget()
         gemini_web_widget.setStyleSheet("QWidget { background-color: transparent; }")
@@ -5401,8 +5401,8 @@ class NaverBlogGUI(QMainWindow):
         gemini_web_layout.addLayout(web_provider_header)
 
         web_provider_row = QHBoxLayout()
-        web_provider_row.setSpacing(12)
-        web_provider_row.setContentsMargins(0, 2, 0, 2)
+        web_provider_row.setSpacing(10)
+        web_provider_row.setContentsMargins(0, 2, 0, 0)
 
         self.web_ai_gpt_radio = QRadioButton("GPT")
         self.web_ai_gemini_radio = QRadioButton("Gemini")
