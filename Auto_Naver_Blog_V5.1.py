@@ -205,6 +205,9 @@ class NaverBlogAutomation:
         self.gemini_tab_handle = None
         self.gpt_tab_handle = None
         self.perplexity_tab_handle = None
+        self.gemini_first_open = True  # 첫 생성 여부 추적
+        self.gpt_first_open = True
+        self.perplexity_first_open = True
         self.gemini_logged_in = False
         self.blog_tab_handle = None
         self.posting_method = self.config.get(
@@ -756,8 +759,8 @@ class NaverBlogAutomation:
             return False
         gemini_url = "https://gemini.google.com/app?hl=ko"
         try:
-            # 기존 Gemini 탭이 있고 유효하면 닫기
-            if self.gemini_tab_handle is not None:
+            # 기존 Gemini 탭이 있고 유효하면 닫기 (첫 생성이 아닐 때만)
+            if self.gemini_tab_handle is not None and not self.gemini_first_open:
                 try:
                     current_handles = self.driver.window_handles
                     if self.gemini_tab_handle in current_handles and len(current_handles) > 1:
@@ -771,6 +774,9 @@ class NaverBlogAutomation:
                             self.driver.switch_to.window(remaining_handles[0])
                 except Exception as e:
                     pass  # 이미 닫힌 경우 무시
+            
+            # 첫 생성 플래그 해제
+            self.gemini_first_open = False
             
             # 항상 새 탭으로 열기
             try:
@@ -795,8 +801,8 @@ class NaverBlogAutomation:
             return False
         chatgpt_url = "https://chatgpt.com/"
         try:
-            # 기존 ChatGPT 탭이 있고 유효하면 닫기
-            if self.gpt_tab_handle is not None:
+            # 기존 ChatGPT 탭이 있고 유효하면 닫기 (첫 생성이 아닐 때만)
+            if self.gpt_tab_handle is not None and not self.gpt_first_open:
                 try:
                     current_handles = self.driver.window_handles
                     if self.gpt_tab_handle in current_handles and len(current_handles) > 1:
@@ -809,6 +815,9 @@ class NaverBlogAutomation:
                             self.driver.switch_to.window(remaining_handles[0])
                 except Exception:
                     pass
+            
+            # 첫 생성 플래그 해제
+            self.gpt_first_open = False
             
             # 항상 새 탭으로 열기
             try:
@@ -832,8 +841,8 @@ class NaverBlogAutomation:
             return False
         perplexity_url = "https://www.perplexity.ai/"
         try:
-            # 기존 Perplexity 탭이 있고 유효하면 닫기
-            if self.perplexity_tab_handle is not None:
+            # 기존 Perplexity 탭이 있고 유효하면 닫기 (첫 생성이 아닐 때만)
+            if self.perplexity_tab_handle is not None and not self.perplexity_first_open:
                 try:
                     current_handles = self.driver.window_handles
                     if self.perplexity_tab_handle in current_handles and len(current_handles) > 1:
@@ -846,6 +855,9 @@ class NaverBlogAutomation:
                             self.driver.switch_to.window(remaining_handles[0])
                 except Exception:
                     pass
+            
+            # 첫 생성 플래그 해제
+            self.perplexity_first_open = False
             
             # 항상 새 탭으로 열기
             try:
