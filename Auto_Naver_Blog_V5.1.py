@@ -5625,7 +5625,7 @@ class NaverBlogGUI(QMainWindow):
         posting_card = PremiumCard("포스팅 방법", "📰")
         posting_card.content_layout.addStretch()
 
-        posting_desc = QLabel("블로그 노출 방식을 선택하세요.")
+        posting_desc = QLabel("포스팅 작성 방식을 선택하세요.")
         posting_desc.setFont(QFont(self.font_family, 12))
         posting_desc.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent;")
         posting_card.content_layout.addWidget(posting_desc)
