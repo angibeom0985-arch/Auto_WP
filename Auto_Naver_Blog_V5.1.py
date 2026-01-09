@@ -1852,8 +1852,13 @@ class NaverBlogAutomation:
             return bool(self.driver.execute_script("""
                 const body = document.querySelector("div.se-editor, div.se-content, .se-container");
                 if (!body) return false;
+                const candidates = body.querySelectorAll(
+                  ".se-section-text p, .se-section-text, .se-component-content, .se-section"
+                );
+                const target = candidates && candidates.length ? candidates[candidates.length - 1] : body;
+                try { target.scrollIntoView({block:'end', inline:'nearest'}); } catch (e) {}
                 const range = document.createRange();
-                range.selectNodeContents(body);
+                range.selectNodeContents(target);
                 range.collapse(false);
                 const sel = window.getSelection();
                 if (!sel) return false;
