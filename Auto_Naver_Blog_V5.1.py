@@ -7041,8 +7041,8 @@ class NaverBlogGUI(QMainWindow):
                 external_link = self.link_url_entry.text() if self.use_link_checkbox.isChecked() else ""
                 external_link_text = self.link_text_entry.text() if self.use_link_checkbox.isChecked() else ""
                 
-                # 첫 실행시에만 자동화 인스턴스 생성
-                if is_first_start:
+                # 자동화 인스턴스가 없으면 생성 (첫 실행 또는 초기화 후)
+                if not hasattr(self, 'automation') or self.automation is None:
                     # 블로그 주소 처음 (아이디만 있으면 전체 URL로 변환)
                     blog_address = self.config.get("blog_address", "")
                     related_posts_title = self.config.get("related_posts_title", "함께 보면 좋은 글")
