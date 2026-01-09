@@ -5325,7 +5325,7 @@ class NaverBlogGUI(QMainWindow):
         gemini_api_widget = QWidget()
         gemini_api_widget.setStyleSheet("QWidget { background-color: transparent; }")
         gemini_api_layout = QVBoxLayout(gemini_api_widget)
-        gemini_api_layout.setSpacing(12)
+        gemini_api_layout.setSpacing(8)
         
         gemini_api_label = PremiumCard.create_section_label("✨ Gemini API (2.5 Flash-Lite)", self.font_family)
         gemini_api_layout.addWidget(gemini_api_label)
@@ -5387,18 +5387,22 @@ class NaverBlogGUI(QMainWindow):
         gemini_web_widget = QWidget()
         gemini_web_widget.setStyleSheet("QWidget { background-color: transparent; }")
         gemini_web_layout = QVBoxLayout(gemini_web_widget)
-        gemini_web_layout.setSpacing(16)
-        gemini_web_layout.setContentsMargins(0, 12, 0, 12)
+        gemini_web_layout.setSpacing(8)
+        gemini_web_layout.setContentsMargins(0, 6, 0, 6)
         gemini_web_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         web_provider_label = PremiumCard.create_section_label("🌐 웹사이트", self.font_family)
         web_provider_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
         web_provider_header = QHBoxLayout()
-        web_provider_header.setSpacing(16)
-        web_provider_header.setContentsMargins(0, 6, 0, 6)
+        web_provider_header.setSpacing(8)
+        web_provider_header.setContentsMargins(0, 2, 0, 2)
         web_provider_header.addWidget(web_provider_label)
-        web_provider_header.addStretch()
+        gemini_web_layout.addLayout(web_provider_header)
+
+        web_provider_row = QHBoxLayout()
+        web_provider_row.setSpacing(12)
+        web_provider_row.setContentsMargins(0, 2, 0, 2)
 
         self.web_ai_gpt_radio = QRadioButton("GPT")
         self.web_ai_gemini_radio = QRadioButton("Gemini")
@@ -5406,9 +5410,9 @@ class NaverBlogGUI(QMainWindow):
         for radio in (self.web_ai_gpt_radio, self.web_ai_gemini_radio, self.web_ai_perplexity_radio):
             radio.setFont(QFont(self.font_family, 12))
             radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
-            web_provider_header.addWidget(radio)
+            web_provider_row.addWidget(radio)
 
-        gemini_web_layout.addLayout(web_provider_header)
+        gemini_web_layout.addLayout(web_provider_row)
 
         self.web_ai_group = QButtonGroup(self)
         self.web_ai_group.addButton(self.web_ai_gpt_radio)
