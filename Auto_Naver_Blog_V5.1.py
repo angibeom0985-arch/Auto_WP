@@ -1398,12 +1398,7 @@ class NaverBlogAutomation:
                 self._update_status(f"❌ moviepy 임포트 실패: {str(ie)}")
                 return None
             
-            # FFmpeg 경로 확인
-            ffmpeg_path = os.environ.get("IMAGEIO_FFMPEG_EXE", "")
-            if ffmpeg_path and os.path.exists(ffmpeg_path):
-                self._update_status(f"✅ FFmpeg 경로: {ffmpeg_path}")
-            else:
-                self._update_status("⚠️ FFmpeg 경로가 설정되지 않았습니다")
+            # FFmpeg는 moviepy가 자동으로 처리하므로 경로 확인 불필요
             
             if not thumbnail_path or not os.path.exists(thumbnail_path):
                 raise FileNotFoundError(f"썸네일 이미지를 찾을 수 없습니다: {thumbnail_path}")
