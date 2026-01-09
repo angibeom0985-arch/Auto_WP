@@ -1300,6 +1300,7 @@ class NaverBlogAutomation:
             self._update_status(f"🔍 블로그 크롤링 시작: {blog_url}")
 
             posts = []
+            blog_id = self._get_blog_id()
 
             # 현재 창 핸들 저장
             original_window = self.driver.current_window_handle
@@ -1326,8 +1327,12 @@ class NaverBlogAutomation:
                     "a.post_tit",  # 일반적인 포스트 제목 링크
                     "a.pcol1",  # 다른 스타일의 블로그
                     ".blog2_series a",  # 시리즈형 블로그
-                    "a[href*='PostView']",  # PostView가 포함된 모든 링크
-                    "a[href*='logNo=']",  # logNo가 포함된 모든 링크
+                    "a.se-link",  # 최신 UI 링크
+                    "a.link__2",  # 일부 신규 테마
+                    "a[href*='PostView.naver']",
+                    "a[href*='postView.naver']",
+                    "a[href*='logNo=']",
+                    "a[href*='blog.naver.com/']",
                 ]
                 
                 post_elements = []
@@ -1343,6 +1348,8 @@ class NaverBlogAutomation:
                                 href = el.get_attribute("href")
                                 if not href or href in seen_urls:
                                     continue
+                                if blog_id and blog_id not in href and "blogId=" not in href:
+                                    continue
                                 seen_urls.add(href)
                                 post_elements.append(el)
                                 if len(post_elements) >= 6:
@@ -1351,6 +1358,49 @@ class NaverBlogAutomation:
                         self._update_status(f"⚠️ 셀렉터 '{selector}' 실패: {str(e)[:30]}")
                         continue
                 
+                if not post_elements:
+                    try:
+                        self._update_status("🧭 셀렉터 실패 - JS 수집 시도")
+                        candidates = self.driver.execute_script("""
+                            const blogId = arguments[0] || '';
+                            const anchors = Array.from(document.querySelectorAll("a"));
+                            const results = [];
+                            const seen = new Set();
+                            for (const a of anchors) {
+                                const href = a.href || '';
+                                if (!href) continue;
+                                if (!/logno=|postview\\.naver|blog\\.naver\\.com\\//i.test(href)) continue;
+                                if (blogId && !href.includes(blogId) && !href.includes('blogId=' + blogId)) continue;
+                                if (seen.has(href)) continue;
+                                const text = (a.textContent || '').trim();
+                                if (!text) continue;
+                                seen.add(href);
+                                results.push({title: text, url: href});
+                            }
+                            return results.slice(0, 10);
+                        """, blog_id)
+                        if candidates:
+                            self._update_status(f"🧭 JS 수집 {len(candidates)}개 발견")
+                            for item in candidates:
+                                post_elements.append(item)
+                    except Exception as e:
+                        self._update_status(f"⚠️ JS 수집 실패: {str(e)[:30]}")
+
+                if not post_elements and blog_id:
+                    try:
+                        mobile_url = f"https://m.blog.naver.com/{blog_id}"
+                        self._update_status(f"📱 모바일 페이지 재시도: {mobile_url}")
+                        self.driver.get(mobile_url)
+                        time.sleep(3)
+                        mobile_elements = self.driver.find_elements(
+                            By.CSS_SELECTOR,
+                            "a[href*='logNo='], a[href*='PostView.naver'], a[href*='m.blog.naver.com']"
+                        )
+                        if mobile_elements:
+                            post_elements = mobile_elements[:10]
+                    except Exception as e:
+                        self._update_status(f"⚠️ 모바일 재시도 실패: {str(e)[:30]}")
+
                 if not post_elements:
                     self._update_status("⚠️ 블로그 포스트를 찾을 수 없습니다")
                     return []
@@ -1363,8 +1413,14 @@ class NaverBlogAutomation:
                         break
                         
                     try:
-                        post_title = element.text.strip()
-                        post_url = element.get_attribute("href")
+                        if isinstance(element, dict):
+                            post_title = (element.get("title") or "").strip()
+                            post_url = (element.get("url") or "").strip()
+                        else:
+                            post_title = (element.text or "").strip()
+                            if not post_title:
+                                post_title = (element.get_attribute("textContent") or "").strip()
+                            post_url = element.get_attribute("href")
 
                         # 제목과 URL이 유효한지 확인
                         if not post_title or not post_url:
@@ -1373,7 +1429,7 @@ class NaverBlogAutomation:
 
                         # 카테고리/목록 링크 제외 (실제 포스트만 사용)
                         lower_url = post_url.lower()
-                        if ("logno=" not in lower_url) and ("postview" not in lower_url):
+                        if ("logno=" not in lower_url) and ("postview" not in lower_url) and ("blog.naver.com" not in lower_url):
                             self._update_status(f"⚠️ 요소 {idx+1}: 포스트 링크 아님 - 스킵")
                             continue
 
@@ -2816,6 +2872,7 @@ class NaverBlogAutomation:
 
                             # 7. '글 제목' 현재 문단 전체 선택
                             if self._select_current_paragraph():
+                                self._save_selection()
                                 # 8. 링크 첨부 로직
                                 try:
                                     # 링크 버튼 클릭 (.se-link-toolbar-button)
@@ -2824,6 +2881,8 @@ class NaverBlogAutomation:
                                     )
                                     link_btn.click()
                                     self._sleep_with_checks(0.3)
+                                    self._restore_selection()
+                                    self._sleep_with_checks(0.1)
 
                                     # URL 입력창 대기 및 입력 (.se-custom-layer-link-input)
                                     link_input = WebDriverWait(self.driver, 3).until(
