@@ -7000,12 +7000,8 @@ class NaverBlogGUI(QMainWindow):
         """포스팅 시작"""
         self.stop_requested = False
         
-        if self.is_running:
-            # 이미 실행 중이면 자동 재시작 (카운트다운 후)
-            pass
-        else:
-            # 첫 시작
-            is_first_start = True
+        if not self.is_running:
+            # 첫 시작일 때만 상태 초기화
             self.is_running = True
             self.is_paused = False
             
