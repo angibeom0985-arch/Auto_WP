@@ -4838,7 +4838,7 @@ class NaverBlogGUI(QMainWindow):
         log_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         
         self.log_label = QLabel("⏸️ 대기 중...")
-        self.log_label.setFont(QFont(self.font_family, 13))
+        self.log_label.setFont(QFont("Segoe UI Emoji, " + self.font_family, 13))
         self.log_label.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; padding: 10px;")
         self.log_label.setWordWrap(True)  # 자동 줄바꿈
         self.log_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -4949,7 +4949,7 @@ class NaverBlogGUI(QMainWindow):
         settings_log_layout.setSpacing(3)
         
         self.settings_log_label = QLabel("⏸️ 대기 중...")
-        self.settings_log_label.setFont(QFont(self.font_family, 11))
+        self.settings_log_label.setFont(QFont("Segoe UI Emoji, " + self.font_family, 11))
         self.settings_log_label.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent; padding: 5px;")
         self.settings_log_label.setWordWrap(True)
         self.settings_log_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -5392,7 +5392,7 @@ class NaverBlogGUI(QMainWindow):
         gemini_web_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         web_provider_label = PremiumCard.create_section_label("🌐 웹사이트", self.font_family)
-        web_provider_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        web_provider_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         gemini_web_layout.addWidget(web_provider_label)
 
         web_provider_row = QHBoxLayout()
