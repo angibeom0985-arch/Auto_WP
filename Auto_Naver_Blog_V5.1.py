@@ -146,13 +146,20 @@ class NaverBlogAutomation:
         """Lazy load heavy imports"""
         global webdriver, By, WebDriverWait, EC, Service, ChromeDriverManager
         global TimeoutException, NoSuchElementException, Keys, ActionChains
-        global genai, pyautogui
+        global genai, pyautogui, uc
 
         if 'webdriver' not in globals() or 'genai' not in globals():
             print("⏳ Loading heavy libraries...")
             try:
                 import google.generativeai as genai
                 from selenium import webdriver
+                # undetected_chromedriver 시도
+                try:
+                    import undetected_chromedriver as uc
+                except ImportError:
+                    uc = None
+                    print("⚠️ undetected-chromedriver not found. Using standard selenium.")
+                
                 from selenium.webdriver.common.by import By
                 from selenium.webdriver.support.ui import WebDriverWait
                 from selenium.webdriver.support import expected_conditions as EC
@@ -173,6 +180,33 @@ class NaverBlogAutomation:
             imageio_ffmpeg_exe = os.path.join(sys._MEIPASS, 'imageio_ffmpeg', 'binaries', 'ffmpeg-win64-v4.2.2.exe')
             if os.path.exists(imageio_ffmpeg_exe):
                 os.environ["IMAGEIO_FFMPEG_EXE"] = imageio_ffmpeg_exe
+
+    def _cleanup_working_tabs(self):
+        """포스팅 완료 후 작업 탭 정리 (로그인 탭만 유지)"""
+        if not self.driver:
+            return
+
+        try:
+            handles = self.driver.window_handles
+            keep_handle = self.login_tab_handle
+            
+            # 로그인 탭 핸들이 없으면 첫 번째 탭 유지
+            if not keep_handle or keep_handle not in handles:
+                if len(handles) > 0:
+                    keep_handle = handles[0]
+                    self.login_tab_handle = keep_handle
+            
+            if keep_handle:
+                self._update_status(f"🧹 작업 탭 정리 시작 (로그인 탭 유지)")
+                for handle in handles:
+                    if handle != keep_handle:
+                        self.driver.switch_to.window(handle)
+                        self.driver.close()
+                        time.sleep(0.1)
+                self.driver.switch_to.window(keep_handle)
+                self._update_status("✅ 작업 탭 정리 완료")
+        except Exception as e:
+            self._update_status(f"⚠️ 탭 정리 오류: {str(e)}")
 
     def __init__(self, naver_id, naver_pw, api_key, ai_model="gemini", posting_method="search", theme="일상",
                  open_type="전체공개", external_link=None, external_link_text="더 알아보기",
@@ -210,6 +244,7 @@ class NaverBlogAutomation:
         self.perplexity_first_open = True
         self.gemini_logged_in = False
         self.blog_tab_handle = None
+        self.login_tab_handle = None
         self.posting_method = self.config.get(
             "posting_method",
             posting_method if posting_method in ("search", "home") else "search"
@@ -2224,72 +2259,75 @@ class NaverBlogAutomation:
     def write_post(self, title, content, thumbnail_path=None, video_path=None, is_first_post=True):
         """블로그 글 작성"""
         try:
-            if not self._ensure_blog_tab():
-                return False
-            # 첫 포스팅인 경우 블로그 홈으로 바로 이동
-            if is_first_post:
-                self._update_status("📝 첫 포스팅: 블로그 홈으로 이동 중...")
-                if not self._ensure_blog_tab("https://section.blog.naver.com/BlogHome.naver?directoryNo=0&currentPage=1&groupId=0"):
-                    return False
-                self._sleep_with_checks(3)
-                self._wait_if_paused()
+            # [수정] 탭 관리 및 새 탭 루틴 강제 적용 (is_first_post 무시)
+            
+            # 1. 탭 관리 (이전 작업 탭 정리)
+            self._cleanup_working_tabs()
+            
+            # 2. 크롤링 (항상 수행) - 먼저 수행하여 탭 열고 닫기 완료
+            # 블로그 주소가 설정되어 있으면 최신글/인기글 크롤링
+            if self.blog_address:
+                if self.related_posts_mode == "popular":
+                    self._update_status("📊 블로그 인기글 크롤링 시작...")
+                    latest_posts = self.crawl_popular_blog_posts()
+                else:
+                    self._update_status("🔍 블로그 최신글 크롤링 시작...")
+                    latest_posts = self.crawl_latest_blog_posts()
                 
-                # 블로그 주소가 설정되어 있으면 최신글 크롤링
-                if self.blog_address:
-                    if self.related_posts_mode == "popular":
-                        self._update_status("📊 블로그 인기글 크롤링 시작...")
-                        latest_posts = self.crawl_popular_blog_posts()
-                    else:
-                        self._update_status("🔍 블로그 최신글 크롤링 시작...")
-                        latest_posts = self.crawl_latest_blog_posts()
-                    if latest_posts:
-                        self.save_latest_posts_to_file(latest_posts)
-                        label = "인기글" if self.related_posts_mode == "popular" else "최신글"
-                        self._update_status(f"✅ {len(latest_posts)}개 {label} 저장 완료")
-                    else:
-                        label = "인기글" if self.related_posts_mode == "popular" else "최신글"
-                        self._update_status(f"⚠️ {label} 크롤링 실패 - '함께 보면 좋은 글' 섹션 생략")
-                
-
-                # 글쓰기 버튼 찾기
-                write_btn_selectors = [
-                    "a.item[ng-href*='GoBlogWrite']",
-                    "a[href*='GoBlogWrite.naver']",
-                    ".sp_common.icon_write"
-                ]
-                
-                for selector in write_btn_selectors:
-                    try:
-                        write_btn = WebDriverWait(self.driver, 5).until(
-                            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                        )
-                        if write_btn:
-                            write_btn.click()
-                            self._sleep_with_checks(3)
-                            self._update_status("✅ 블로그 홈에서 글쓰기 버튼 클릭 성공")
-                            
-                            # 새 창이 열렸다면 전환
-                            if len(self.driver.window_handles) > 1:
-                                self.driver.switch_to.window(self.driver.window_handles[-1])
-                                self._sleep_with_checks(2)
-                            break
-                    except:
-                        continue
-            else:
-                # 두 번째 이후 포스팅: 페이지 확인만
-                self._update_status("📝 글쓰기 페이지 확인 중...")
-                
-                # 프레임에서 빠져나오기 (이전 포스팅에서 프레임 안에 있을 수 있음)
+                if latest_posts:
+                    self.save_latest_posts_to_file(latest_posts)
+                    label = "인기글" if self.related_posts_mode == "popular" else "최신글"
+                    self._update_status(f"✅ {len(latest_posts)}개 {label} 저장 완료")
+                else:
+                    self._update_status("⚠️ 크롤링 데이터 없음")
+            
+            # 3. 블로그 홈(글쓰기 진입점) 새 탭으로 열기
+            self._update_status("📝 포스팅 프로세스 시작: 블로그 홈 접속 (새 탭)")
+            
+            # 블로그 홈 URL (이곳에서 글쓰기 버튼 클릭 진행)
+            home_url = "https://section.blog.naver.com/BlogHome.naver?directoryNo=0&currentPage=1&groupId=0"
+            self.driver.execute_script("window.open(arguments[0], '_blank');", home_url)
+            self.driver.switch_to.window(self.driver.window_handles[-1])
+            
+            self._sleep_with_checks(3)
+            self._wait_if_paused()
+            
+            # 4. 글쓰기 버튼 클릭
+            self._update_status("🖊️ 글쓰기 버튼 찾는 중...")
+            write_btn_selectors = [
+                "a.item[ng-href*='GoBlogWrite']",
+                "a[href*='GoBlogWrite.naver']",
+                ".sp_common.icon_write"
+            ]
+            
+            write_clicked = False
+            for selector in write_btn_selectors:
                 try:
-                    self.driver.switch_to.default_content()
+                    write_btn = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                    )
+                    if write_btn:
+                        write_btn.click()
+                        self._sleep_with_checks(3)
+                        self._update_status("✅ 블로그 홈에서 글쓰기 버튼 클릭 성공")
+                        
+                        # 새 창이 열렸다면 전환
+                        if len(self.driver.window_handles) > 1:
+                            self.driver.switch_to.window(self.driver.window_handles[-1])
+                            self._sleep_with_checks(2)
+                        write_clicked = True
+                        break
                 except:
-                    pass
-                
-                # 새 창이 열렸다면 전환
-                if len(self.driver.window_handles) > 1:
-                    self._update_status("🪟 새 창으로 전환 중...")
-                    self.driver.switch_to.window(self.driver.window_handles[-1])
-                    self._sleep_with_checks(2)
+                    continue
+            
+            if not write_clicked:
+                self._update_status("⚠️ 글쓰기 버튼 실패 -> URL 직접 접속 (새 탭)")
+                # 직접 접속 시도 (새 탭)
+                direct_url = f"https://blog.naver.com/{self.naver_id}/PostWriteForm.naver"
+                self.driver.execute_script("window.open(arguments[0], '_blank');", direct_url)
+                self.driver.switch_to.window(self.driver.window_handles[-1])
+                self._sleep_with_checks(3)
+
             
             # mainFrame으로 전환
             self._update_status("🖼️ 에디터 프레임으로 전환 중...")
@@ -3500,7 +3538,7 @@ class NaverBlogAutomation:
             return False
     
     def setup_driver(self):
-        """크롬 드라이버 설정"""
+        """크롬 드라이버 설정 (undetected-chromedriver 적용)"""
         try:
             if self.driver:
                 try:
@@ -3511,91 +3549,73 @@ class NaverBlogAutomation:
 
             self._update_status("🌐 브라우저 실행 준비 중...")
             
-            options = webdriver.ChromeOptions()
+            # uc(undetected-chromedriver) 사용 여부 결정
+            use_uc = (globals().get('uc') is not None)
+            
+            if use_uc:
+                self._update_status("🛡️ undetected-chromedriver 모드 활성화")
+                options = uc.ChromeOptions()
+            else:
+                options = webdriver.ChromeOptions()
             
             self._update_status("🔧 브라우저 옵션 설정 중...")
-            # 봇 탐지 우회 설정
-            options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-            options.add_experimental_option('useAutomationExtension', False)
-            options.add_argument("--disable-blink-features=AutomationControlled")
             
-            # 📐 창 크기 설정
+            # 공통 설정
             options.add_argument("--window-size=1920,1080")
             options.add_argument("--start-maximized")
-            
-            # 🔕 추가 설정
             options.add_argument("--disable-gpu")
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-web-security")
-            options.add_argument("--disable-features=IsolateOrigins,site-per-process")
+            
+            # 일반 Selenium일 때만 추가 우회 설정 (uc는 자동 처리됨)
+            if not use_uc:
+                options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+                options.add_experimental_option('useAutomationExtension', False)
+                options.add_argument("--disable-blink-features=AutomationControlled")
 
-            # 🔕 알림 및 권한 비활성화
+            # 알림 및 비밀번호 관리자 비활성화
             prefs = {
                 "profile.default_content_setting_values.notifications": 2,
                 "credentials_enable_service": False,
                 "profile.password_manager_enabled": False
             }
-            options.add_experimental_option("prefs", prefs)
-            # 브라우저 종료 방지 (프로세스는 사용자가 직접 종료)
-            options.add_experimental_option("detach", True)
-            
-            # 크롬 드라이버 설치 (캐시 사용하여 매번 설치 방지)
-            try:
-                # ChromeDriverManager는 이미 설치된 드라이버를 캐시에서 가져옴
-                driver_path = ChromeDriverManager().install()
-                self._update_status("✅ 크롬 드라이버 준비 완료")
-                service = Service(driver_path)
-            except PermissionError as pe:
-                # 권한 오류 시 기존 캐시된 드라이버 사용
-                self._update_status("⚠️ 드라이버 업데이트 권한 없음 - 캐시된 버전 사용")
-                import os
-                cache_path = os.path.expanduser("~/.wdm/drivers/chromedriver")
-                if os.path.exists(cache_path):
-                    # 캐시 디렉토리에서 가장 최신 버전 찾기
-                    versions = [d for d in os.listdir(cache_path) if os.path.isdir(os.path.join(cache_path, d))]
-                    if versions:
-                        latest_version = sorted(versions)[-1]
-                        cached_driver = os.path.join(cache_path, latest_version, "chromedriver.exe")
-                        if os.path.exists(cached_driver):
-                            service = Service(cached_driver)
-                            self._update_status(f"✅ 캐시된 드라이버 사용: {latest_version}")
-                        else:
-                            service = Service()
-                    else:
-                        service = Service()
-                else:
-                    service = Service()
-            except Exception as e:
-                self._update_status(f"⚠️ 드라이버 준비 중 오류: {str(e)[:80]}")
-                self._update_status("🔄 시스템 기본 드라이버 사용 시도")
-                service = Service()
+            if not use_uc:
+                options.add_experimental_option("prefs", prefs)
             
             self._update_status("🚀 브라우저 시작 중...")
             try:
-                self.driver = webdriver.Chrome(service=service, options=options)
-                self.driver.maximize_window()  # Ensure window is maximized
+                if use_uc:
+                    # uc는 내부적으로 드라이버를 자동 다운로드/관리함
+                    self.driver = uc.Chrome(options=options)
+                else:
+                    try:
+                        driver_path = ChromeDriverManager().install()
+                        service = Service(driver_path)
+                    except:
+                        service = Service()
+                    self.driver = webdriver.Chrome(service=service, options=options)
+                
+                self.driver.maximize_window()
             except Exception as e:
                 self._update_status(f"❌ 브라우저 시작 오류: {str(e)}")
                 raise
             
-            self._update_status("🎭 봇 탐지 우회 설정 적용 중...")
-            # 🎭 User-Agent 위장 (최신 Chrome)
-            self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {
-                "userAgent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-            })
-            
-            # 🔧 navigator.webdriver 및 기타 속성 숨기기
-            self.driver.execute_script("""
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                Object.defineProperty(navigator, 'languages', {get: () => ['ko-KR', 'ko', 'en-US', 'en']});
-                window.chrome = {runtime: {}};
-            """)
+            self._update_status("🎭 봇 탐지 우회 추가 설정 중...")
+            # 🎭 User-Agent 위장
+            ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+            if use_uc:
+                self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": ua})
+            else:
+                self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": ua})
+                # 🔧 일반 모드에서만 JS 주입
+                self.driver.execute_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                    Object.defineProperty(navigator, 'languages', {get: () => ['ko-KR', 'ko', 'en-US', 'en']});
+                    window.chrome = {runtime: {}};
+                """)
             
             self._update_status("✅ 브라우저 실행 완료!")
-            if self.gemini_mode == "web":
-                self._ensure_gemini_tab()
             return True
             
         except Exception as e:
@@ -3666,6 +3686,7 @@ class NaverBlogAutomation:
             
             if "nidlogin" not in current_url:
                 self._update_status("✅ 로그인 성공!")
+                self.login_tab_handle = self.driver.current_window_handle
                 return True
             else:
                 # 2단계 인증 또는 오류 체크
@@ -3692,6 +3713,7 @@ class NaverBlogAutomation:
                         time.sleep(1)
                     if "nidlogin" not in self.driver.current_url:
                         self._update_status("✅ 로그인 성공!")
+                        self.login_tab_handle = self.driver.current_window_handle
                         return True
                 self._update_status("❌ 로그인 실패: 아이디/비밀번호를 확인하거나 2단계 인증을 완료해주세요")
                 return False
@@ -3817,6 +3839,7 @@ class NaverBlogAutomation:
                 self._update_status(f"⚠️ 키워드 파일 확인 실패: {str(e)[:50]}")
             
             self._update_status("🎊 전체 프로세스 완료! 포스팅 성공!")
+            self._cleanup_working_tabs()
             self._update_status("✅ 브라우저는 열린 상태로 유지됩니다")
             time.sleep(2)
             return True
@@ -3979,16 +4002,35 @@ class NaverBlogAutomation:
 
     def _count_perplexity_copy_buttons(self):
         try:
-            return len(self.driver.find_elements(By.CSS_SELECTOR, "button[aria-label='??']"))
+            return len(self.driver.find_elements(By.CSS_SELECTOR, "button[aria-label='복사']"))
         except Exception:
             return 0
 
     def _click_perplexity_copy_latest(self):
         try:
-            buttons = self.driver.find_elements(By.CSS_SELECTOR, "button[aria-label='??']")
+            buttons = self.driver.find_elements(By.CSS_SELECTOR, "button[aria-label='복사']")
             if not buttons:
                 return False
+            
+            # 복사 버튼 클릭
             self.driver.execute_script("arguments[0].click();", buttons[-1])
+            time.sleep(0.5)
+            
+            # 클립보드 허용 팝업 처리 (허용 버튼 찾아서 클릭)
+            try:
+                # 브라우저 알림 창의 "허용" 버튼 찾기
+                allow_buttons = self.driver.find_elements(By.XPATH, "//button[contains(text(), '허용')]")
+                if not allow_buttons:
+                    # 영어 버전
+                    allow_buttons = self.driver.find_elements(By.XPATH, "//button[contains(text(), 'Allow')]")
+                
+                if allow_buttons:
+                    allow_buttons[0].click()
+                    self._update_status("✅ 클립보드 허용 완료")
+                    time.sleep(0.3)
+            except Exception:
+                pass  # 허용 버튼이 없거나 이미 허용된 경우
+            
             return True
         except Exception:
             return False
