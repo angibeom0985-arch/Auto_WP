@@ -7051,12 +7051,19 @@ class NaverBlogGUI(QMainWindow):
         wait_interval = interval
         
         # 진행 상태 업데이트
-        self.update_progress_status("🚀 포스팅 프로세스를 시작합니다...")
-        print("🚀 포스팅 프로세스를 시작합니다...")
+        if is_first_start:
+            self.update_progress_status("🚀 포스팅 프로세스를 시작합니다...")
+            print("🚀 포스팅 프로세스를 시작합니다...")
+        else:
+            self.update_progress_status("🔄 다음 포스팅을 시작합니다...")
+            print("🔄 다음 포스팅을 시작합니다...")
         
         # 자동화 바로 시작 (별도 스레드)
         def run_automation():
             try:
+                if not is_first_start:
+                    print("🔄 [DEBUG] 두 번째 포스팅 run_automation() 시작")
+                
                 external_link = self.link_url_entry.text() if self.use_link_checkbox.isChecked() else ""
                 external_link_text = self.link_text_entry.text() if self.use_link_checkbox.isChecked() else ""
                 
@@ -7091,6 +7098,9 @@ class NaverBlogGUI(QMainWindow):
                         print("⚠️ 자동화 인스턴스가 없어서 재생성했습니다")
                 
                 # 자동화 실행 (첫 실행 여부 전달)
+                if not is_first_start:
+                    print(f"🔄 [DEBUG] automation.run(is_first_run={is_first_start}) 호출")
+                
                 result = self.automation.run(is_first_run=is_first_start)
                 
                 # 실패 시 원인 구분하여 처리
