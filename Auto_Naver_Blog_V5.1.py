@@ -7060,135 +7060,142 @@ class NaverBlogGUI(QMainWindow):
         
         # 자동화 바로 시작 (별도 스레드)
         def run_automation():
-            try:
-                if not is_first_start:
-                    print("🔄 [DEBUG] 두 번째 포스팅 run_automation() 시작")
-                
-                external_link = self.link_url_entry.text() if self.use_link_checkbox.isChecked() else ""
-                external_link_text = self.link_text_entry.text() if self.use_link_checkbox.isChecked() else ""
-                
-                # 첫 실행시 또는 인스턴스가 없을 때 자동화 인스턴스 생성
-                if is_first_start or not self.automation:
-                    # 블로그 주소 처음 (아이디만 있으면 전체 URL로 변환)
-                    blog_address = self.config.get("blog_address", "")
-                    related_posts_title = self.config.get("related_posts_title", "함께 보면 좋은 글")
-                    posting_method = "home" if self.config.get("posting_method") == "home" else "search"
-
-                    self.automation = NaverBlogAutomation(
-                        naver_id=self.naver_id_entry.text(),
-                        naver_pw=self.naver_pw_entry.text(),
-                        api_key=api_key,
-                        ai_model=ai_model,
-                        posting_method=posting_method,
-                        theme="",
-                        open_type="전체공개",
-                        external_link=external_link,
-                        external_link_text=external_link_text,
-                        publish_time="now",
-                        scheduled_hour="00",
-                        scheduled_minute="00",
-                        related_posts_title=related_posts_title,
-                        related_posts_mode=self.config.get("related_posts_mode", "latest"),
-                        blog_address=blog_address,
-                        callback=self.log_message,
-                        config=self.config
-                    )
-                    
-                    if not is_first_start:
-                        print("⚠️ 자동화 인스턴스가 없어서 재생성했습니다")
-                
-                # 자동화 실행 (첫 실행 여부 전달)
-                if not is_first_start:
-                    print(f"🔄 [DEBUG] automation.run(is_first_run={is_first_start}) 호출")
-                
-                result = self.automation.run(is_first_run=is_first_start)
-                
-                # 실패 시 원인 구분하여 처리
-                if result is False:
-                    if self.stop_requested or not self.is_running or not self.automation:
-                        return
-                    # 키워드가 없어서 실패한 경우
-                    if not self.automation.current_keyword:
-                        self.update_progress_status("⏹️ 키워드가 없어 프로그램을 중지합니다.")
-                        print("⏹️ 키워드 부족으로 자동 중지됨")
-                        
-                        # 중지 처리
-                        self.is_running = False
-                        self.start_btn.setEnabled(True)
-                        self.stop_btn.setEnabled(False)
-                        self.pause_btn.setEnabled(False)
-                        self.resume_btn.setEnabled(False)
-                        
-                        # 키워드 소진 알림
-                        QTimer.singleShot(100, lambda: self.show_message(
-                            "✅ 완료",
-                            "모든 키워드의 포스팅이 완료되었습니다!",
-                            "info"
-                        ))
-                        return
-                    else:
-                        # 키워드는 있지만 다른 이유로 실패 (발행 실패 등)
-                        self.update_progress_status("⚠️ 포스팅 중 오류가 발생했습니다.")
-                        print("⚠️ 포스팅 실패 - 키워드는 유지되고 다음 시도에서 재사용됩니다")
-                        return
-                
-                self.update_progress_status("✅ 포스팅이 완료되었습니다!")
-                print("✅ 포스팅이 완료되었습니다!")
-                
-                # UI 상태 갱신 (키워드 개수 등 실시간 업데이트)
-                QTimer.singleShot(0, lambda: self.update_status_display())
-                
-                # 남은 키워드 수 확인 및 30개 미만 경고
+            # 무한 반복 (is_running이 False가 될 때까지)
+            is_first_run_flag = is_first_start
+            
+            while self.is_running and not self.stop_requested:
                 try:
-                    keywords_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "setting", "keywords.txt")
-                    with open(keywords_file, 'r', encoding='utf-8') as f:
-                        remaining_keywords = [line.strip() for line in f if line.strip()]
-                        keyword_count = len(remaining_keywords)
+                    if not is_first_run_flag:
+                        print("🔄 [DEBUG] 다음 포스팅 시작")
+                    
+                    external_link = self.link_url_entry.text() if self.use_link_checkbox.isChecked() else ""
+                    external_link_text = self.link_text_entry.text() if self.use_link_checkbox.isChecked() else ""
+                    
+                    # 첫 실행시 또는 인스턴스가 없을 때 자동화 인스턴스 생성
+                    if is_first_run_flag or not self.automation:
+                        # 블로그 주소 처음 (아이디만 있으면 전체 URL로 변환)
+                        blog_address = self.config.get("blog_address", "")
+                        related_posts_title = self.config.get("related_posts_title", "함께 보면 좋은 글")
+                        posting_method = "home" if self.config.get("posting_method") == "home" else "search"
+
+                        self.automation = NaverBlogAutomation(
+                            naver_id=self.naver_id_entry.text(),
+                            naver_pw=self.naver_pw_entry.text(),
+                            api_key=api_key,
+                            ai_model=ai_model,
+                            posting_method=posting_method,
+                            theme="",
+                            open_type="전체공개",
+                            external_link=external_link,
+                            external_link_text=external_link_text,
+                            publish_time="now",
+                            scheduled_hour="00",
+                            scheduled_minute="00",
+                            related_posts_title=related_posts_title,
+                            related_posts_mode=self.config.get("related_posts_mode", "latest"),
+                            blog_address=blog_address,
+                            callback=self.log_message,
+                            config=self.config
+                        )
                         
-                        if keyword_count < 30 and keyword_count > 0:
-                            # 30개 미만 경고창
-                            QTimer.singleShot(100, lambda: self.show_message(
-                                "⚠️ 경고",
-                                f"키워드가 {keyword_count}개 남았습니다!\n\n키워드를 추가하시기 바랍니다.",
-                                "warning"
-                            ))
-                        elif keyword_count == 0:
-                            # 키워드 소진 시 자동 중지
-                            self.update_progress_status("✅ 모든 키워드 포스팅 완료!")
+                        if not is_first_run_flag:
+                            print("⚠️ 자동화 인스턴스가 없어서 재생성했습니다")
+                    
+                    # 자동화 실행
+                    if not is_first_run_flag:
+                        print(f"🔄 [DEBUG] automation.run(is_first_run={is_first_run_flag}) 호출")
+                    
+                    result = self.automation.run(is_first_run=is_first_run_flag)
+                    
+                    # 첫 실행 플래그 해제 (두 번째부터는 False)
+                    is_first_run_flag = False
+                    
+                    # 실패 시 원인 구분하여 처리
+                    if result is False:
+                        if self.stop_requested or not self.is_running or not self.automation:
+                            break
+                        # 키워드가 없어서 실패한 경우
+                        if not self.automation.current_keyword:
+                            self.update_progress_status("⏹️ 키워드가 없어 프로그램을 중지합니다.")
+                            print("⏹️ 키워드 부족으로 자동 중지됨")
+                            
+                            # 중지 처리
                             self.is_running = False
                             self.start_btn.setEnabled(True)
                             self.stop_btn.setEnabled(False)
                             self.pause_btn.setEnabled(False)
                             self.resume_btn.setEnabled(False)
                             
+                            # 키워드 소진 알림
                             QTimer.singleShot(100, lambda: self.show_message(
                                 "✅ 완료",
                                 "모든 키워드의 포스팅이 완료되었습니다!",
                                 "info"
                             ))
-                            return
-                except Exception as e:
-                    print(f"⚠️ 키워드 파일 확인 실패: {e}")
-                
-                # 포스팅 완료 후 다음 포스팅을 자동으로 시작
-                if self.is_running and not self.is_paused:
-                    # 잠깐 대기 (2초)
-                    self.update_progress_status("🔄 2초 후 다음 포스팅을 시작합니다...")
-                    print("🔄 2초 후 다음 포스팅을 시작합니다...")
-                    time.sleep(2)
+                            break
+                        else:
+                            # 키워드는 있지만 다른 이유로 실패 (발행 실패 등)
+                            self.update_progress_status("⚠️ 포스팅 중 오류가 발생했습니다.")
+                            print("⚠️ 포스팅 실패 - 키워드는 유지되고 다음 시도에서 재사용됩니다")
+                            break
                     
-                    # 다음 포스팅은 첫 포스팅이 아님 (is_first_start=False)
-                    QTimer.singleShot(0, lambda: self.start_posting(is_first_start=False))
-            except Exception as e:
-                if self.stop_requested:
-                    return
-                self.update_progress_status(f"❌ 오류: {e}")
-                print(f"❌ 자동화 오류: {e}")
-                # 오류 발생 시에만 중지
-                self.is_running = False
-                self.stop_btn.setEnabled(False)
-                self.pause_btn.setEnabled(False)
-                self.start_btn.setEnabled(True)
+                    self.update_progress_status("✅ 포스팅이 완료되었습니다!")
+                    print("✅ 포스팅이 완료되었습니다!")
+                    
+                    # UI 상태 갱신 (키워드 개수 등 실시간 업데이트)
+                    QTimer.singleShot(0, lambda: self.update_status_display())
+                    
+                    # 남은 키워드 수 확인 및 30개 미만 경고
+                    try:
+                        keywords_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "setting", "keywords.txt")
+                        with open(keywords_file, 'r', encoding='utf-8') as f:
+                            remaining_keywords = [line.strip() for line in f if line.strip()]
+                            keyword_count = len(remaining_keywords)
+                            
+                            if keyword_count < 30 and keyword_count > 0:
+                                # 30개 미만 경고창
+                                QTimer.singleShot(100, lambda: self.show_message(
+                                    "⚠️ 경고",
+                                    f"키워드가 {keyword_count}개 남았습니다!\n\n키워드를 추가하시기 바랍니다.",
+                                    "warning"
+                                ))
+                            elif keyword_count == 0:
+                                # 키워드 소진 시 자동 중지
+                                self.update_progress_status("✅ 모든 키워드 포스팅 완료!")
+                                self.is_running = False
+                                self.start_btn.setEnabled(True)
+                                self.stop_btn.setEnabled(False)
+                                self.pause_btn.setEnabled(False)
+                                self.resume_btn.setEnabled(False)
+                                
+                                QTimer.singleShot(100, lambda: self.show_message(
+                                    "✅ 완료",
+                                    "모든 키워드의 포스팅이 완료되었습니다!",
+                                    "info"
+                                ))
+                                break
+                    except Exception as e:
+                        print(f"⚠️ 키워드 파일 확인 실패: {e}")
+                    
+                    # 다음 포스팅 대기
+                    if self.is_running and not self.is_paused:
+                        self.update_progress_status("🔄 2초 후 다음 포스팅을 시작합니다...")
+                        print("🔄 2초 후 다음 포스팅을 시작합니다...")
+                        time.sleep(2)
+                        # 루프 계속 (다시 while 조건 체크 후 automation.run 실행)
+                        
+                except Exception as e:
+                    if self.stop_requested:
+                        break
+                    self.update_progress_status(f"❌ 오류: {e}")
+                    print(f"❌ 자동화 오류: {e}")
+                    traceback.print_exc()
+                    # 오류 발생 시에만 중지
+                    self.is_running = False
+                    self.stop_btn.setEnabled(False)
+                    self.pause_btn.setEnabled(False)
+                    self.start_btn.setEnabled(True)
+                    break
         
         thread = threading.Thread(target=run_automation, daemon=True)
         thread.start()
