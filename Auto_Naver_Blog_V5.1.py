@@ -3611,13 +3611,35 @@ class NaverBlogAutomation:
             # 브라우저 종료 방지 (프로세스는 사용자가 직접 종료)
             options.add_experimental_option("detach", True)
             
-            self._update_status("⚙️ 크롬 드라이버 설치 중...")
+            # 크롬 드라이버 설치 (캐시 사용하여 매번 설치 방지)
             try:
-                service = Service(ChromeDriverManager().install())
-                self._update_status("✅ 크롬 드라이버 설치 완료")
+                # ChromeDriverManager는 이미 설치된 드라이버를 캐시에서 가져옴
+                driver_path = ChromeDriverManager().install()
+                self._update_status("✅ 크롬 드라이버 준비 완료")
+                service = Service(driver_path)
+            except PermissionError as pe:
+                # 권한 오류 시 기존 캐시된 드라이버 사용
+                self._update_status("⚠️ 드라이버 업데이트 권한 없음 - 캐시된 버전 사용")
+                import os
+                cache_path = os.path.expanduser("~/.wdm/drivers/chromedriver")
+                if os.path.exists(cache_path):
+                    # 캐시 디렉토리에서 가장 최신 버전 찾기
+                    versions = [d for d in os.listdir(cache_path) if os.path.isdir(os.path.join(cache_path, d))]
+                    if versions:
+                        latest_version = sorted(versions)[-1]
+                        cached_driver = os.path.join(cache_path, latest_version, "chromedriver.exe")
+                        if os.path.exists(cached_driver):
+                            service = Service(cached_driver)
+                            self._update_status(f"✅ 캐시된 드라이버 사용: {latest_version}")
+                        else:
+                            service = Service()
+                    else:
+                        service = Service()
+                else:
+                    service = Service()
             except Exception as e:
-                self._update_status(f"⚠️ 크롬 드라이버 설치 오류: {str(e)}")
-                self._update_status("🔄 기본 크롬 드라이버 사용 시도 중...")
+                self._update_status(f"⚠️ 드라이버 준비 중 오류: {str(e)[:80]}")
+                self._update_status("🔄 시스템 기본 드라이버 사용 시도")
                 service = Service()
             
             self._update_status("🚀 브라우저 시작 중...")
