@@ -1101,6 +1101,8 @@ class NaverBlogAutomation:
         """Gemini 웹앱을 사용해 콘텐츠 생성"""
         try:
             self._wait_if_paused()
+            self._update_status("🌐 Gemini 웹 사이트로 이동 중...")
+            
             if not self.driver:
                 self._update_status("🔄 Gemini 웹 모드: 브라우저 실행 중...")
                 if not self.setup_driver():
@@ -1118,6 +1120,8 @@ class NaverBlogAutomation:
                 before_count = 0
 
             before_copy_count = self._count_gemini_copy_buttons()
+            
+            self._update_status("📤 프롬프트 입력 중...")
             if not self._submit_gemini_prompt(prompt):
                 self._update_status("❌ Gemini 웹앱 입력 실패 - 로그인 상태를 확인해주세요")
                 return ""
@@ -1132,14 +1136,18 @@ class NaverBlogAutomation:
                         copied = pyperclip.paste().strip()
                         if copied and not self._looks_like_status_text(copied) and not self._looks_like_prompt_echo(copied):
                             content = copied
+                            self._update_status("✅ Gemini 응답 복사 완료")
                     except Exception:
                         pass
             if not content:
+                self._update_status("📝 응답 텍스트 직접 추출 중...")
                 content = self._wait_for_gemini_response(before_count, timeout=120)
                 if self._looks_like_prompt_echo(content):
                     content = ""
             if not content:
                 self._update_status("❌ Gemini 응답 대기 실패 - 로그인/네트워크 확인 필요")
+            else:
+                self._update_status(f"✅ AI 글 생성 완료 (길이: {len(content)}자)")
             return content
         except StopRequested:
             return ""
@@ -1151,22 +1159,26 @@ class NaverBlogAutomation:
     def _generate_content_with_chatgpt_web(self, prompt):
         try:
             self._wait_if_paused()
+            self._update_status("🌐 ChatGPT 웹 사이트로 이동 중...")
+            
             if not self.driver:
-                self._update_status("?? ChatGPT ? ??: ???? ?? ?...")
+                self._update_status("🔄 ChatGPT 웹 모드: 브라우저 실행 중...")
                 if not self.setup_driver():
-                    self._update_status("? ChatGPT ? ??: ???? ?? ??")
+                    self._update_status("❌ ChatGPT 웹 모드: 브라우저 실행 실패")
                     return ""
 
             if not self._ensure_chatgpt_tab():
                 return ""
 
-            self._update_status("?? ChatGPT ??? ?? ?...")
+            self._update_status("🔄 ChatGPT 입력창 확인 중...")
             before_copy_count = self._count_chatgpt_copy_buttons()
+            
+            self._update_status("📤 프롬프트 입력 중...")
             if not self._submit_chatgpt_prompt(prompt):
-                self._update_status("? ChatGPT ?? ?? - ??? ??? ??????")
+                self._update_status("❌ ChatGPT 입력 실패 - 로그인 상태 확인 필요")
                 return ""
 
-            self._update_status("? ChatGPT ?? ?? ?...")
+            self._update_status("🔄 ChatGPT 응답 대기 중...")
             content = ""
             if self._wait_for_chatgpt_copy_button(before_copy_count, timeout=180):
                 if self._click_chatgpt_copy_latest():
@@ -1175,36 +1187,43 @@ class NaverBlogAutomation:
                         copied = pyperclip.paste().strip()
                         if copied and not self._looks_like_status_text(copied) and not self._looks_like_prompt_echo(copied):
                             content = copied
+                            self._update_status("✅ ChatGPT 응답 복사 완료")
                     except Exception:
                         pass
             if not content:
-                self._update_status("?? ChatGPT ?? ?? ?? - ???/???? ?? ??")
+                self._update_status("❌ ChatGPT 응답 대기 실패 - 로그인/네트워크 확인 필요")
+            else:
+                self._update_status(f"✅ AI 글 생성 완료 (길이: {len(content)}자)")
             return content
         except StopRequested:
             return ""
         except Exception as e:
-            self._update_status(f"?? ChatGPT ? ?? ??: {str(e)}")
+            self._update_status(f"⚠️ ChatGPT 웹 모드 오류: {str(e)}")
             return ""
 
     def _generate_content_with_perplexity_web(self, prompt):
         try:
             self._wait_if_paused()
+            self._update_status("🌐 Perplexity 웹 사이트로 이동 중...")
+            
             if not self.driver:
-                self._update_status("?? Perplexity ? ??: ???? ?? ?...")
+                self._update_status("🔄 Perplexity 웹 모드: 브라우저 실행 중...")
                 if not self.setup_driver():
-                    self._update_status("? Perplexity ? ??: ???? ?? ??")
+                    self._update_status("❌ Perplexity 웹 모드: 브라우저 실행 실패")
                     return ""
 
             if not self._ensure_perplexity_tab():
                 return ""
 
-            self._update_status("?? Perplexity ??? ?? ?...")
+            self._update_status("🔄 Perplexity 입력창 확인 중...")
             before_copy_count = self._count_perplexity_copy_buttons()
+            
+            self._update_status("📤 프롬프트 입력 중...")
             if not self._submit_perplexity_prompt(prompt):
-                self._update_status("? Perplexity ?? ?? - ??? ??? ??????")
+                self._update_status("❌ Perplexity 입력 실패 - 로그인 상태 확인 필요")
                 return ""
 
-            self._update_status("? Perplexity ?? ?? ?...")
+            self._update_status("🔄 Perplexity 응답 대기 중...")
             content = ""
             if self._wait_for_perplexity_copy_button(before_copy_count, timeout=180):
                 if self._click_perplexity_copy_latest():
@@ -1213,15 +1232,18 @@ class NaverBlogAutomation:
                         copied = pyperclip.paste().strip()
                         if copied and not self._looks_like_status_text(copied) and not self._looks_like_prompt_echo(copied):
                             content = copied
+                            self._update_status("✅ Perplexity 응답 복사 완료")
                     except Exception:
                         pass
             if not content:
-                self._update_status("?? Perplexity ?? ?? ?? - ???/???? ?? ??")
+                self._update_status("❌ Perplexity 응답 대기 실패 - 로그인/네트워크 확인 필요")
+            else:
+                self._update_status(f"✅ AI 글 생성 완료 (길이: {len(content)}자)")
             return content
         except StopRequested:
             return ""
         except Exception as e:
-            self._update_status(f"?? Perplexity ? ?? ??: {str(e)}")
+            self._update_status(f"⚠️ Perplexity 웹 모드 오류: {str(e)}")
             return ""
 
     def create_thumbnail(self, title):
