@@ -3542,45 +3542,12 @@ class NaverBlogAutomation:
                             self._update_status("🪟 발행 완료 - 글쓰기 창 닫는 중...")
                             self.driver.close()
                             self.driver.switch_to.window(self.driver.window_handles[0])
-                            time.sleep(2)
+                            time.sleep(1)
                             self._update_status(f"🪟 메인 창으로 전환 완료")
                         
-                        # 블로그 홈으로 이동 후 글쓰기 버튼 클릭
-                        self._update_status("📝 블로그 홈으로 이동 중...")
-                        self.driver.get("https://section.blog.naver.com/BlogHome.naver?directoryNo=0&currentPage=1&groupId=0")
-                        time.sleep(3)
-                        
-                        # 글쓰기 버튼 찾기
-                        write_btn_selectors = [
-                            "a.item[ng-href*='GoBlogWrite']",
-                            "a[href*='GoBlogWrite.naver']",
-                            ".sp_common.icon_write"
-                        ]
-                        
-                        for selector in write_btn_selectors:
-                            try:
-                                write_btn = WebDriverWait(self.driver, 5).until(
-                                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                                )
-                                if write_btn:
-                                    self._update_status(f"✅ 글쓰기 버튼 발견 - 클릭 시도")
-                                    write_btn.click()
-                                    time.sleep(3)
-                                    self._update_status("✅ 블로그 홈에서 글쓰기 버튼 클릭 성공")
-                                    
-                                    # 새 창이 열렸다면 전환
-                                    if len(self.driver.window_handles) > 1:
-                                        self._update_status("🪟 새 창으로 전환 중...")
-                                        self.driver.switch_to.window(self.driver.window_handles[-1])
-                                        time.sleep(2)
-                                    break
-                            except Exception as e:
-                                self._update_status(f"⚠️ 선택자 실패: {selector[:30]}...")
-                                continue
-                        
-                        self._update_status("✅ 발행 완료 - 다음 포스팅 준비 완료")
+                        self._update_status("✅ 발행 완료")
                     except Exception as e:
-                        self._update_status(f"⚠️ 글쓰기 준비 중 오류 (계속 진행): {str(e)[:50]}")
+                        self._update_status(f"⚠️ 창 정리 중 오류 (계속 진행): {str(e)[:50]}")
                     
                     return True
                 except:
