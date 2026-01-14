@@ -43,7 +43,7 @@
 
 【형식1】다운로드 관련 키워드가 아닌 경우:
 <p style="text-align:center;" data-ke-size="size16"><b>🎁 아래 <span style="color:#ee2323;">버튼</span>을 통해, 지금 바로 해보세요!</b></p>
-<div><center><a class="blink" href="실제 유용한 URL">구체적인 앵커 텍스트<br>바로가기</a></center></div>
+<div><center><a class="blink" href="실제 유용한 URL" target="_blank">구체적인 앵커 텍스트<br>바로가기</a></center></div>
 
 【형식2】'앱', '설치', '다운로드' 등 다운로드 관련 키워드인 경우:
 <p style="text-align:center;" data-ke-size="size16"><b>🎁 지금 바로 <span style="color:#ee2323;">다운로드</span>해서, 사용해보세요!</b></p>

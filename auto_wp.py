@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QGridLayout, QSpinBox, QComboBox, QCheckBox, QListWidget,
     QFileDialog, QMessageBox, QProgressBar, QSplitter, QFrame,
     QListWidgetItem, QDialog, QDialogButtonBox, QFormLayout, QProgressDialog,
-    QSizePolicy
+    QSizePolicy, QStackedWidget
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize
 from PyQt6.QtGui import QFont, QPixmap, QIcon, QPalette, QColor
@@ -300,7 +300,6 @@ class PostingWorker(QThread):
             # ContentGenerator 인스턴스 생성
             from datetime import datetime
             config_data = {
-                'openai_api_key': self.config_manager.data.get("api_keys", {}).get("openai", ""),
                 'gemini_api_key': self.config_manager.data.get("api_keys", {}).get("gemini", "")
             }
             
@@ -431,7 +430,7 @@ class PostingWorker(QThread):
                 return
             
             base_path = get_base_path()
-            keyword_path = os.path.join(base_path, "keywords", keyword_file)
+            keyword_path = os.path.join(base_path, "setting", "keywords", keyword_file)
             
             if not os.path.exists(keyword_path):
                 return
@@ -460,11 +459,11 @@ class PostingWorker(QThread):
                 return False
                 
             base_path = get_base_path()
-            keywords_path = os.path.join(base_path, "keywords", keyword_file)
+            keywords_path = os.path.join(base_path, "setting", "keywords", keyword_file)
             
             # 'used_' 접두사가 붙은 파일명 생성 (예: ai-news_keywords.txt -> used_ai-news_keywords.txt)
             used_filename = f"used_{keyword_file}"
-            used_path = os.path.join(base_path, "keywords", used_filename)
+            used_path = os.path.join(base_path, "setting", "keywords", used_filename)
             
             # 원본 파일이 존재하는지 확인
             if not os.path.exists(keywords_path):
@@ -543,12 +542,7 @@ import re
 import subprocess
 
 # AI API 라이브러리들
-try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-    OpenAI = None
+# OpenAI는 사용하지 않으므로 제거됨
 
 def install_package(package_name):
     """패키지 동적 설치"""
@@ -660,11 +654,11 @@ def get_requests_session():
     return session
 
 # 설정 파일 경로
-SETTING_FILE = os.path.join(get_base_path(), "setting.json")
+SETTING_FILE = os.path.join(get_base_path(), "setting", "setting.json")
 
-# 기본 디렉토리 생성
-for directory in ['keywords', 'thumbnails', 'fonts', 'prompts', 'output']:
-    dir_path = os.path.join(get_base_path(), directory)
+# 기본 디렉토리 생성 (setting 폴더 내부로 변경)
+for directory in ['keywords', 'thumbnails', 'fonts', 'prompts', 'output', 'images']:
+    dir_path = os.path.join(get_base_path(), "setting", directory)
     os.makedirs(dir_path, exist_ok=True)
 
 # 다크 모드 색상 테마 (Nord Theme 기반)
@@ -927,9 +921,9 @@ class ResourceScanner:
     def scan_prompts(self):
         """프롬프트 파일 스캔"""
         prompts_dir = os.path.join(self.base_path, "prompts")
-        self.prompt_files = {'gpt': [], 'gemini': []}
+        self.prompt_files = {'gemini': []}
 
-        for ai_type in ['gpt', 'gemini']:
+        for ai_type in ['gemini']:
             ai_dir = os.path.join(prompts_dir, ai_type)
             if os.path.exists(ai_dir):
                 for file in os.listdir(ai_dir):
@@ -979,7 +973,6 @@ class ResourceScanner:
             'images_count': len(self.images),
             'keyword_files_count': len(self.keyword_files),
             'total_keywords': sum(kf['keywords_count'] for kf in self.keyword_files),
-            'gpt_prompts': len(self.prompt_files['gpt']),
             'gemini_prompts': len(self.prompt_files['gemini'])
         }
 
@@ -1000,7 +993,6 @@ class ContentGenerator:
 
         # Web AI 관련 핸들
         self.gemini_tab_handle = None
-        self.gpt_tab_handle = None
         self.perplexity_tab_handle = None
         self.gemini_logged_in = False
 
@@ -1020,13 +1012,6 @@ class ContentGenerator:
         # 요청 제한 추적
         self.request_tracker = {
             'gemini': {
-                'requests': [],
-                'daily_requests': 0,
-                'max_per_minute': 60,
-                'max_per_day': 1000,
-                'daily_reset_time': None
-            },
-            'gpt': {
                 'requests': [],
                 'daily_requests': 0,
                 'max_per_minute': 60,
@@ -1186,7 +1171,7 @@ class ContentGenerator:
         # 현재 사이트의 썸네일 이미지 사용
         if self.current_site and self.current_site.get('thumbnail_image'):
             thumbnail_filename = self.current_site.get('thumbnail_image')
-            thumbnail_path = os.path.join(get_base_path(), 'images', thumbnail_filename)
+            thumbnail_path = os.path.join(get_base_path(), 'setting', 'images', thumbnail_filename)
             if os.path.exists(thumbnail_path):
                 return thumbnail_filename
         
@@ -1198,7 +1183,7 @@ class ContentGenerator:
         # 존재하는 파일 중에서만 선택
         existing_thumbnails = []
         for thumb in available_thumbnails:
-            thumb_path = os.path.join(get_base_path(), 'images', thumb)
+            thumb_path = os.path.join(get_base_path(), 'setting', 'images', thumb)
             if os.path.exists(thumb_path):
                 existing_thumbnails.append(thumb)
         
@@ -1274,8 +1259,6 @@ class ContentGenerator:
             content = ""
             if "gemini" in provider:
                 content = self._generate_content_with_gemini_web(prompt)
-            elif "gpt" in provider:
-                content = self._generate_content_with_chatgpt_web(prompt)
             elif "perplexity" in provider:
                 content = self._generate_content_with_perplexity_web(prompt)
             
@@ -1379,11 +1362,7 @@ class ContentGenerator:
         except Exception:
             return None
 
-    # --- Web AI Helper Methods (ChatGPT/Perplexity) - Placeholder ---
-    def _generate_content_with_chatgpt_web(self, prompt):
-        self.log("⚠️ ChatGPT Web 기능은 아직 구현되지 않았습니다.")
-        return None
-
+    # --- Web AI Helper Methods (Perplexity) - Placeholder ---
     def _generate_content_with_perplexity_web(self, prompt):
         self.log("⚠️ Perplexity Web 기능은 아직 구현되지 않았습니다.")
         return None
@@ -2446,7 +2425,7 @@ class ContentGenerator:
 
             # 3개 승인용 프롬프트 파일을 순차적으로 적용
             for i, approval_file in enumerate(approval_files, 1):
-                prompt_path = os.path.join(get_base_path(), "prompts", approval_file)
+                prompt_path = os.path.join(get_base_path(), "setting", "prompts", approval_file)
 
                 if os.path.exists(prompt_path):
                     # UTF-8 BOM 처리를 위해 utf-8-sig 사용
@@ -2880,7 +2859,7 @@ class ContentGenerator:
             prompt = f"""키워드 '{keyword}'를 사용하여 승인용 제목을 생성해줘.
 
 형식: [메인 키워드]: [소제목1 키워드], [소제목2 키워드], [소제목3 키워드]
-예시: "gpt chat 무료 한국어: 활용법, 글쓰기 지원, 창의적 작업"
+예시: "건강한 식습관: 영양소, 식단 관리, 생활 습관"
 
 요구사항:
 - 메인 키워드 '{keyword}' 필수 포함
@@ -2915,7 +2894,7 @@ class ContentGenerator:
             self.is_posting = True
 
             # 사용 가능한 AI 모델 확인
-            if not self.api_status.get('gemini', False) and not self.api_status.get('openai', False):
+            if not self.api_status.get('gemini', False):
                 self.log("🔥 사용 가능한 AI 모델이 없습니다.")
                 self.is_posting = False
                 return None, None, None
@@ -3604,8 +3583,8 @@ class ContentGenerator:
     def create_thumbnail(self, title, keyword):
         """썸네일 이미지를 생성합니다."""
         try:
-            # images 폴더에서 사이트별 또는 무작위 배경 이미지 선택
-            images_dir = os.path.join(get_base_path(), "images")
+            # images 폴더에서 사이트별 또는 무작위 배경 이미지 선택 (setting 폴더 내부로 변경)
+            images_dir = os.path.join(get_base_path(), "setting", "images")
             background_path = None
             
             if os.path.exists(images_dir):
@@ -3640,8 +3619,8 @@ class ContentGenerator:
             
             # 폰트 설정 - 본문과 동일한 timon.ttf 사용
             try:
-                # fonts 폴더의 timon.ttf 폰트 사용 (본문과 동일)
-                font_path = os.path.join(get_base_path(), "fonts", "timon.ttf")
+                # fonts 폴더의 timon.ttf 폰트 사용 (본문과 동일) (setting 폴더 내부로 변경)
+                font_path = os.path.join(get_base_path(), "setting", "fonts", "timon.ttf")
                 large_font = ImageFont.truetype(font_path, 24)  # | 앞 제목용 (32→24로 축소)
                 small_font = ImageFont.truetype(font_path, 18)  # | 뒤 제목용 (22→18로 축소)
             except Exception as font_error:
@@ -3749,7 +3728,7 @@ class ContentGenerator:
             
             # 최종 이미지를 WebP 형식으로 저장
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filepath = os.path.join(get_base_path(), "thumbnails", f"thumbnail_{timestamp}.webp")
+            filepath = os.path.join(get_base_path(), "setting", "thumbnails", f"thumbnail_{timestamp}.webp")
             background.save(filepath, 'WEBP', quality=85)
             return filepath
         except Exception as e:
@@ -3886,7 +3865,7 @@ class ContentGenerator:
                 try:
                     from datetime import datetime
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    output_dir = os.path.join(get_base_path(), "output")
+                    output_dir = os.path.join(get_base_path(), "setting", "output")
                     os.makedirs(output_dir, exist_ok=True)
                     
                     # 사이트 이름에서 파일명에 사용할 수 없는 문자 제거
@@ -4632,8 +4611,8 @@ class ContentGenerator:
     def get_revenue_system_prompt(self, step_num, keyword):
         """수익용 시스템 프롬프트 생성 - prompt 파일 읽어서 사용"""
         try:
-            # prompt 파일 경로
-            prompt_file = f"prompts/prompt{step_num}.txt"
+            # prompt 파일 경로 (setting 폴더 내부로 변경)
+            prompt_file = os.path.join(get_base_path(), "setting", "prompts", f"prompt{step_num}.txt")
             
             # 파일 읽기
             with open(prompt_file, 'r', encoding='utf-8') as f:
@@ -4668,7 +4647,7 @@ class ConfigManager:
     """단일 JSON 구조 설정 관리 클래스 (setting.json)"""
 
     def __init__(self):
-        self.setting_file = os.path.join(get_base_path(), "setting.json")
+        self.setting_file = os.path.join(get_base_path(), "setting", "setting.json")
         self.data = self.load_setting()
 
     # property 완전 제거 - 직접 접근 방식
@@ -4677,7 +4656,6 @@ class ConfigManager:
         """단일 JSON 파일에서 모든 설정 로드"""
         default_data = {
             "api_keys": {
-                "openai": "",
                 "gemini": ""
             },
             "global_settings": {
@@ -4866,7 +4844,7 @@ class ConfigManager:
             # 키워드 파일 생성
             keyword_file = site_data.get("keyword_file", "")
             if keyword_file:
-                keyword_path = os.path.join(get_base_path(), "keywords", keyword_file)
+                keyword_path = os.path.join(get_base_path(), "setting", "keywords", keyword_file)
                 if not os.path.exists(keyword_path):
                     # 기본 키워드 템플릿 생성
                     default_keywords = [
@@ -4891,7 +4869,7 @@ class ConfigManager:
             # 썸네일 이미지 파일 확인 (존재하지 않으면 경고 메시지만)
             thumbnail_image = site_data.get("thumbnail_image", "")
             if thumbnail_image:
-                thumbnail_path = os.path.join(get_base_path(), "images", thumbnail_image)
+                thumbnail_path = os.path.join(get_base_path(), "setting", "images", thumbnail_image)
                 if not os.path.exists(thumbnail_path):
                     print(f"경고: 썸네일 이미지가 없습니다. 다음 경로에 이미지를 추가해주세요: {thumbnail_path}")
 
@@ -4971,7 +4949,7 @@ class ConfigManager:
                 return []
 
             base_path = get_base_path()
-            keyword_path = os.path.join(base_path, "keywords", keyword_file)
+            keyword_path = os.path.join(base_path, "setting", "keywords", keyword_file)
             if not os.path.exists(keyword_path):
                 print(f"❌ 키워드 파일이 존재하지 않습니다: {keyword_path}")
                 return []
@@ -4989,7 +4967,7 @@ class ConfigManager:
 
             # used 키워드 파일이 있다면 이미 사용된 키워드들을 확인
             used_filename = f"used_{keyword_file}"
-            used_path = os.path.join(base_path, "keywords", used_filename)
+            used_path = os.path.join(base_path, "setting", "keywords", used_filename)
             used_keywords = set()
             
             if os.path.exists(used_path):
@@ -5019,7 +4997,7 @@ class ConfigManager:
         """사이트별 썸네일 이미지 경로 반환"""
         thumbnail_image = site_data.get("thumbnail_image", "")
         if thumbnail_image:
-            thumbnail_path = os.path.join(get_base_path(), "images", thumbnail_image)
+            thumbnail_path = os.path.join(get_base_path(), "setting", "images", thumbnail_image)
             if os.path.exists(thumbnail_path):
                 return thumbnail_path
         return None
@@ -5129,7 +5107,7 @@ class SiteEditDialog(QDialog):
     def populate_thumbnail_combo(self):
         """썸네일 콤보박스에 사용 가능한 이미지 목록 추가"""
         try:
-            images_dir = os.path.join(get_base_path(), "images")
+            images_dir = os.path.join(get_base_path(), "setting", "images")
             if os.path.exists(images_dir):
                 available_thumbnails = []
                 for file in os.listdir(images_dir):
@@ -5169,7 +5147,7 @@ class SiteEditDialog(QDialog):
         try:
             selected_thumbnail = self.thumbnail_combo.currentText()
             if selected_thumbnail and selected_thumbnail not in ["이미지 폴더 없음", "로드 실패"]:
-                thumbnail_path = os.path.join(get_base_path(), "images", selected_thumbnail)
+                thumbnail_path = os.path.join(get_base_path(), "setting", "images", selected_thumbnail)
                 if os.path.exists(thumbnail_path):
                     from PyQt6.QtGui import QPixmap
                     pixmap = QPixmap(thumbnail_path)
@@ -5207,7 +5185,7 @@ class SiteEditDialog(QDialog):
                                       '썸네일 (4).jpg', '썸네일 (5).jpg', '썸네일 (6).jpg', 
                                       '썸네일 (7).jpg']
                 for thumb in available_thumbnails:
-                    thumb_path = os.path.join(get_base_path(), "images", thumb)
+                    thumb_path = os.path.join(get_base_path(), "setting", "images", thumb)
                     if os.path.exists(thumb_path):
                         thumbnail_image = thumb
                         break
@@ -5215,8 +5193,8 @@ class SiteEditDialog(QDialog):
                     thumbnail_image = '썸네일 (1).jpg'  # 기본값
 
             # 파일 경로
-            keyword_path = os.path.join(get_base_path(), "keywords", keyword_file)
-            thumbnail_path = os.path.join(get_base_path(), "images", thumbnail_image)
+            keyword_path = os.path.join(get_base_path(), "setting", "keywords", keyword_file)
+            thumbnail_path = os.path.join(get_base_path(), "setting", "images", thumbnail_image)
 
             # 키워드 파일 상태
             if os.path.exists(keyword_path):
@@ -5578,7 +5556,7 @@ class SiteWidget(QWidget):
                 border-radius: 6px;
                 padding: 5px 15px;
                 font-weight: normal;
-                font-size: 9pt;
+                font-size: 10pt;
             }}
             QPushButton:hover {{
                 background-color: {COLORS['warning_hover']};
@@ -5620,7 +5598,7 @@ class SiteWidget(QWidget):
                 border-radius: 6px;
                 padding: 5px 15px;
                 font-weight: normal;
-                font-size: 9pt;
+                font-size: 10pt;
             }}
             QPushButton:hover {{
                 background-color: {COLORS['info_hover']};
@@ -5652,7 +5630,7 @@ class SiteWidget(QWidget):
                 border-radius: 4px;
                 padding: 6px 12px;
                 font-weight: bold;
-                font-size: 9pt;
+                font-size: 10pt;
             }}
             QPushButton:hover {{
                 background-color: {'#B48EAD' if is_active else '#D08770'};
@@ -5673,7 +5651,7 @@ class SiteWidget(QWidget):
                 border-radius: 4px;
                 padding: 6px 12px;
                 font-weight: bold;
-                font-size: 9pt;
+                font-size: 10pt;
             }}
             QPushButton:hover {{
                 background-color: #D08770;
@@ -5726,7 +5704,7 @@ class SiteWidget(QWidget):
             if not keyword_file:
                 return 0
 
-            keyword_path = os.path.join(get_base_path(), "keywords", keyword_file)
+            keyword_path = os.path.join(get_base_path(), "setting", "keywords", keyword_file)
             if not os.path.exists(keyword_path):
                 return 0
 
@@ -5755,7 +5733,7 @@ class SiteWidget(QWidget):
         try:
             thumbnail_image = self.site_data.get("thumbnail_image", "")
             if thumbnail_image:
-                thumbnail_path = os.path.join(get_base_path(), "images", thumbnail_image)
+                thumbnail_path = os.path.join(get_base_path(), "setting", "images", thumbnail_image)
                 if os.path.exists(thumbnail_path):
                     return thumbnail_image
                 else:
@@ -5840,7 +5818,7 @@ class SiteWidget(QWidget):
                 return
                 
             # keywords 폴더에서 파일 찾기
-            keyword_path = os.path.join(get_base_path(), "keywords", keyword_file)
+            keyword_path = os.path.join(get_base_path(), "setting", "keywords", keyword_file)
             
             if not os.path.exists(keyword_path):
                 QMessageBox.warning(None, "파일 없음", f"키워드 파일을 찾을 수 없습니다:\n{keyword_path}")
@@ -5864,7 +5842,7 @@ class SiteWidget(QWidget):
                 return
                 
             # images 폴더에서 파일 찾기
-            thumbnail_path = os.path.join(get_base_path(), "images", thumbnail_file)
+            thumbnail_path = os.path.join(get_base_path(), "setting", "images", thumbnail_file)
             
             if not os.path.exists(thumbnail_path):
                 QMessageBox.warning(None, "파일 없음", f"썸네일 파일을 찾을 수 없습니다:\n{thumbnail_path}")
@@ -5882,7 +5860,7 @@ class SiteWidget(QWidget):
             # 키워드 파일에서 남은 키워드 개수 계산
             keyword_file = self.site_data.get("keyword_file", "")
             if keyword_file:
-                keyword_path = os.path.join(get_base_path(), "keywords", keyword_file)
+                keyword_path = os.path.join(get_base_path(), "setting", "keywords", keyword_file)
                 if os.path.exists(keyword_path):
                     try:
                         with open(keyword_path, 'r', encoding='utf-8') as f:
@@ -5910,7 +5888,7 @@ class MainWindow(QMainWindow):
         
         self.config_manager = ConfigManager()
         
-        self.resource_scanner = ResourceScanner(get_base_path())
+        self.resource_scanner = ResourceScanner(os.path.join(get_base_path(), "setting"))
 
         # 포스팅 상태 변수
         self.is_posting = False
@@ -5949,12 +5927,12 @@ class MainWindow(QMainWindow):
     def get_card_container_style(self):
         """카드 컨테이너 공통 스타일 반환 - 작은 화면 지원"""
         return {
-            'max_height': 180,
-            'min_height': 120,  # 140에서 120으로 축소
-            'min_width': 180,   # 250에서 180으로 축소 (매우 작은 화면 지원)
-            'size_policy': (QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred),
-            'contents_margins': (15, 15, 15, 15),  # 여백 축소 (20 -> 15)
-            'spacing': 10,  # 간격 축소 (12 -> 10)
+            'max_height': 140,
+            'min_height': 140,
+            'min_width': 180,
+            'size_policy': (QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed),
+            'contents_margins': (15, 15, 15, 15),
+            'spacing': 10,
             'stylesheet': f"""
                 QWidget {{
                     background-color: {COLORS['background']};
@@ -6093,7 +6071,7 @@ class MainWindow(QMainWindow):
         
         layout.addWidget(title_label)
 
-        # 값 위젯 (버튼 또는 콤보박스)
+        # 값 위젯 (버튼, 콤보박스, 또는 라인에딕)
         if widget_type == "combobox":
             value_widget = QComboBox()
             style_config = self.get_card_combobox_style()
@@ -6121,6 +6099,36 @@ class MainWindow(QMainWindow):
             
             # 스크롤 기능 비활성화
             value_widget.wheelEvent = lambda event: None
+            
+        elif widget_type == "lineedit":
+            # 라인에딕 타입 추가
+            value_widget = QLineEdit(value)
+            style_config = self.get_card_button_style()
+            
+            value_widget.setFixedHeight(style_config['fixed_height'])
+            value_widget.setSizePolicy(*style_config['size_policy'])
+            value_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            value_widget.setStyleSheet(f"""
+                QLineEdit {{
+                    background-color: {COLORS['surface']};
+                    color: {COLORS['text']};
+                    border: 2px solid {COLORS['primary']};
+                    border-radius: 10px;
+                    padding: 15px 20px;
+                    font-weight: normal;
+                    font-size: 10pt;
+                    text-align:center;
+                }}
+                QLineEdit:hover {{
+                    background-color: {COLORS['primary']};
+                    color: white;
+                    border-color: {COLORS['info']};
+                }}
+                QLineEdit:focus {{
+                    background-color: {COLORS['surface_light']};
+                    border-color: {COLORS['info']};
+                }}
+            """)
             
         else:  # button
             value_widget = QPushButton(value)
@@ -6224,7 +6232,7 @@ class MainWindow(QMainWindow):
     def reload_keyword_files(self):
         """키워드 파일 목록 다시 로드"""
         try:
-            keywords_dir = os.path.join(get_base_path(), "keywords")
+            keywords_dir = os.path.join(get_base_path(), "setting", "keywords")
             if os.path.exists(keywords_dir):
                 # 키워드 파일 목록 업데이트 로직
                 print("📝 키워드 파일 목록 새로고침 완료")
@@ -6234,8 +6242,8 @@ class MainWindow(QMainWindow):
     def reload_thumbnail_files(self):
         """썸네일 파일 목록 다시 로드"""
         try:
-            thumbnails_dir = os.path.join(get_base_path(), "thumbnails")
-            images_dir = os.path.join(get_base_path(), "images")
+            thumbnails_dir = os.path.join(get_base_path(), "setting", "thumbnails")
+            images_dir = os.path.join(get_base_path(), "setting", "images")
             
             # 썸네일 파일 목록 업데이트 로직
             if os.path.exists(thumbnails_dir):
@@ -6281,8 +6289,8 @@ class MainWindow(QMainWindow):
             if not hasattr(self, 'settings_grid'):
                 return
             
-            # 항상 3열(2행) 고정 배치
-            columns = 3
+            # 항상 2열(3행) 고정 배치
+            columns = 2
             
             if not hasattr(self, '_current_grid_columns') or self._current_grid_columns != columns:
                 self._current_grid_columns = columns
@@ -6300,23 +6308,40 @@ class MainWindow(QMainWindow):
             # 기존 위젯들을 임시로 저장
             widgets = []
             
-            # 그리드에서 위젯들을 제거하고 저장
+            # 그리드에서 위젯들을 제거하고 저장 (순서: AI, 모드, 사이트, 간격, 키워드, 새로고침)
+            # 1. AI 설정
             if hasattr(self, 'ai_model_label'):
                 widgets.append(self.ai_model_label)
                 self.settings_grid.removeWidget(self.ai_model_label)
+            
+            # 2. 포스팅 모드
             if hasattr(self, 'posting_mode_label'):
                 widgets.append(self.posting_mode_label)
                 self.settings_grid.removeWidget(self.posting_mode_label)
-            if hasattr(self, 'total_keywords_label'):
-                widgets.append(self.total_keywords_label)
-                self.settings_grid.removeWidget(self.total_keywords_label)
+                
+            # 3. 사이트
             if hasattr(self, 'site_label'):
                 widgets.append(self.site_label)
                 self.settings_grid.removeWidget(self.site_label)
-            if hasattr(self, 'next_posting_label'):
+                
+            # 4. 포스팅 간격
+            if hasattr(self, 'interval_label'):
+                widgets.append(self.interval_label)
+                self.settings_grid.removeWidget(self.interval_label)
+            elif hasattr(self, 'next_posting_label'): # 구버전 호환
                 widgets.append(self.next_posting_label)
                 self.settings_grid.removeWidget(self.next_posting_label)
-            if hasattr(self, 'refresh_container'):
+                
+            # 5. 남은 키워드
+            if hasattr(self, 'total_keywords_label'):
+                widgets.append(self.total_keywords_label)
+                self.settings_grid.removeWidget(self.total_keywords_label)
+            
+            # 6. 새로고침
+            if hasattr(self, 'refresh_button_label'):
+                widgets.append(self.refresh_button_label)
+                self.settings_grid.removeWidget(self.refresh_button_label)
+            elif hasattr(self, 'refresh_container'): # 구버전 호환
                 widgets.append(self.refresh_container)
                 self.settings_grid.removeWidget(self.refresh_container)
                 
@@ -6430,6 +6455,27 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(10)
 
+        # 사용 기간 표시 (우측 상단)
+        try:
+            license_info = LicenseManager().get_license_info()
+            expire_date = license_info.get('expire_date', '무제한')
+        except Exception:
+            expire_date = "확인 불가"
+
+        usage_period_layout = QHBoxLayout()
+        usage_period_layout.addStretch()
+        usage_period_label = QLabel(f"📅 사용 기간: {expire_date}")
+        usage_period_label.setStyleSheet("""
+            color: #1565C0; 
+            font-weight: bold; 
+            font-size: 14px;
+            background-color: #E3F2FD;
+            padding: 10px 20px;
+            border-radius: 8px;
+        """)
+        usage_period_layout.addWidget(usage_period_label)
+        main_layout.addLayout(usage_period_layout)
+
         # 탭 위젯 (기본 설정)
         self.tab_widget = QTabWidget()
 
@@ -6451,9 +6497,7 @@ class MainWindow(QMainWindow):
             self.sites_tab = self.create_simple_sites_tab()
             self.tab_widget.addTab(self.sites_tab, "🌍 사이트 관리")
 
-        # 설정 탭 (원래 버전으로 복원)
-        self.settings_tab = self.create_settings_tab()
-        self.tab_widget.addTab(self.settings_tab, "⚙️ 설정")
+        # 설정 탭은 제거 - 기능이 모니터링 탭으로 통합됨
 
         main_layout.addWidget(self.tab_widget)
         central_widget.setLayout(main_layout)
@@ -6472,7 +6516,7 @@ class MainWindow(QMainWindow):
                 border: 2px solid {COLORS['border']};
                 border-radius: 6px;
                 padding: 8px 12px;
-                font-size: 13px;
+                font-size: 14px;
                 color: {COLORS['text']};
                 selection-background-color: {COLORS['primary']};
             }}
@@ -6546,7 +6590,7 @@ class MainWindow(QMainWindow):
                 border: none;
                 border-radius: 6px;
                 padding: 10px 20px;
-                font-size: 13px;
+                font-size: 14px;
                 font-weight: 600;
                 min-height: 16px;
             }}
@@ -6565,7 +6609,7 @@ class MainWindow(QMainWindow):
             QCheckBox {{
                 color: {COLORS['text']};
                 spacing: 8px;
-                font-size: 13px;
+                font-size: 14px;
             }}
             QCheckBox::indicator {{
                 width: 18px;
@@ -6589,7 +6633,7 @@ class MainWindow(QMainWindow):
             QLabel {{
                 color: {COLORS['text']};
                 background-color: transparent;
-                font-size: 13px;
+                font-size: 14px;
             }}
 
             /* 탭 위젯 */
@@ -6723,7 +6767,11 @@ class MainWindow(QMainWindow):
             layout.addWidget(self.add_site_form)
 
         # 상단 버튼 (간소화)
+        # 사용 기간 표시와 버튼들을 같은 줄에 배치
         button_layout = QHBoxLayout()
+        
+
+        button_layout.addStretch()
 
         self.add_site_btn = QPushButton("➕ 새 사이트 추가")
         self.add_site_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -6733,11 +6781,11 @@ class MainWindow(QMainWindow):
             QPushButton {{
                 background-color: #B48EAD;
                 color: white;
-                font-weight: normal;
+                font-weight: bold;
                 padding: 10px 15px;
                 border-radius: 8px;
                 border: none;
-                font-size: 12px;
+                font-size: 14px;
             }}
             QPushButton:hover {{
                 background-color: #C4A2B8;
@@ -6754,11 +6802,11 @@ class MainWindow(QMainWindow):
             QPushButton {{
                 background-color: #D08770;
                 color: white;
-                font-weight: normal;
+                font-weight: bold;
                 padding: 10px 15px;
                 border-radius: 8px;
                 border: none;
-                font-size: 12px;
+                font-size: 14px;
             }}
             QPushButton:hover {{
                 background-color: #D89B82;
@@ -6775,11 +6823,11 @@ class MainWindow(QMainWindow):
             QPushButton {{
                 background-color: #A3BE8C;
                 color: white;
-                font-weight: normal;
+                font-weight: bold;
                 padding: 10px 15px;
                 border-radius: 8px;
                 border: none;
-                font-size: 12px;
+                font-size: 14px;
             }}
             QPushButton:hover {{
                 background-color: #B5CCA3;
@@ -6787,6 +6835,28 @@ class MainWindow(QMainWindow):
         """)
         self.images_folder_btn.clicked.connect(self.open_images_folder)
         button_layout.addWidget(self.images_folder_btn)
+
+        # 워드프레스 세팅 버튼 추가
+        self.wp_settings_btn = QPushButton("🔐 워드프레스 세팅")
+        self.wp_settings_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.wp_settings_btn.setMinimumWidth(100)
+        self.wp_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.wp_settings_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #88C0D0;
+                color: white;
+                font-weight: bold;
+                padding: 10px 15px;
+                border-radius: 8px;
+                border: none;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{
+                background-color: #9CD0E0;
+            }}
+        """)
+        self.wp_settings_btn.clicked.connect(self.open_wp_settings_dialog)
+        button_layout.addWidget(self.wp_settings_btn)
 
         # 새로고침 버튼 추가
         self.refresh_sites_btn = QPushButton("🔄 새로고침")
@@ -6797,11 +6867,11 @@ class MainWindow(QMainWindow):
             QPushButton {{
                 background-color: #5E81AC;
                 color: white;
-                font-weight: normal;
+                font-weight: bold;
                 padding: 10px 15px;
                 border-radius: 8px;
                 border: none;
-                font-size: 12px;
+                font-size: 14px;
             }}
             QPushButton:hover {{
                 background-color: #7093C0;
@@ -6810,9 +6880,13 @@ class MainWindow(QMainWindow):
         self.refresh_sites_btn.clicked.connect(self.refresh_site_list)
         button_layout.addWidget(self.refresh_sites_btn)
 
-        button_layout.addStretch()
+        # 중앙 정렬을 위해 양쪽에 stretch 추가
+        final_button_layout = QHBoxLayout()
+        final_button_layout.addStretch()
+        final_button_layout.addLayout(button_layout)
+        final_button_layout.addStretch()
 
-        layout.addLayout(button_layout)
+        layout.addLayout(final_button_layout)
 
         # 사이트 목록 스크롤 영역 (간소화)
         sites_scroll = QScrollArea()
@@ -7004,6 +7078,12 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)  # 20에서 10으로 줄임
         layout.setContentsMargins(20, 20, 20, 20)
 
+        # 🔥 가로 배치를 위한 컨테이너 위젯 생성
+        horizontal_container = QWidget()
+        horizontal_layout = QHBoxLayout()
+        horizontal_layout.setSpacing(15)
+        horizontal_layout.setContentsMargins(0, 0, 0, 0)
+
         # 현재 설정 상태 카드
         status_group = QGroupBox("📊 현재 설정 상태")
         status_group.setStyleSheet(f"""
@@ -7030,20 +7110,18 @@ class MainWindow(QMainWindow):
         status_layout.setSpacing(25)
         status_layout.setContentsMargins(20, 20, 20, 20)
 
-        # 설정 정보 표시 - 명확한 2행 x 3열 그리드 (완전 반응형)
+        # 설정 정보 표시 - 3행 x 2열 그리드로 변경
         self.settings_grid = QGridLayout()
-        self.settings_grid.setSpacing(10)  # 15에서 10으로 축소
-        # 🔥 최소 너비를 더 줄여서 매우 작은 창에서도 표시 가능
-        self.settings_grid.setColumnMinimumWidth(0, 150)  # 180에서 150으로 축소
+        self.settings_grid.setSpacing(10)
+        # 🔥 2열로 변경
+        self.settings_grid.setColumnMinimumWidth(0, 150)
         self.settings_grid.setColumnMinimumWidth(1, 150)
-        self.settings_grid.setColumnMinimumWidth(2, 150)
         # 🔥 모든 열이 동일하게 확장되도록 설정
         self.settings_grid.setColumnStretch(0, 1)
         self.settings_grid.setColumnStretch(1, 1)
-        self.settings_grid.setColumnStretch(2, 1)
         
-        # 행 0, 열 0: AI 모델
-        self.ai_model_label = self.create_unified_card("🤖 AI 모델", "", self.goto_settings_ai, "combobox")
+        # 행 0, 열 0: AI 설정
+        self.ai_model_label = self.create_unified_card("🤖 AI 설정", "", self.goto_settings_ai, "combobox")
         self.ai_model_combo = self.ai_model_label.value_widget
         self.settings_grid.addWidget(self.ai_model_label, 0, 0, 1, 1)
         
@@ -7052,23 +7130,27 @@ class MainWindow(QMainWindow):
         self.posting_mode_combo = self.posting_mode_label.value_widget
         self.settings_grid.addWidget(self.posting_mode_label, 0, 1, 1, 1)
         
-        # 행 0, 열 2: 남은 키워드
-        self.total_keywords_label = self.create_unified_card("📊 남은 키워드", "0개", self.goto_site_management, "button")
-        self.total_keywords_button = self.total_keywords_label.value_button
-        self.settings_grid.addWidget(self.total_keywords_label, 0, 2, 1, 1)
-        
         # 행 1, 열 0: 사이트
         self.site_label = self.create_site_selector_label()
         self.settings_grid.addWidget(self.site_label, 1, 0, 1, 1)
         
-        # 행 1, 열 1: 다음 포스팅
-        self.next_posting_label = self.create_unified_card("⏰ 다음 포스팅", "대기중", self.goto_settings_interval, "button")
-        self.settings_grid.addWidget(self.next_posting_label, 1, 1, 1, 1)
+        # 행 1, 열 1: 포스팅 간격 (입력 가능)
+        wait_time_value = self.config_manager.data["global_settings"].get("default_wait_time", "47~50")
+        self.interval_label = self.create_unified_card("⏱️ 포스팅 간격", wait_time_value, None, "lineedit")
+        self.wait_time_edit_monitoring = self.interval_label.value_widget
+        self.wait_time_edit_monitoring.setText(wait_time_value)
+        self.wait_time_edit_monitoring.textChanged.connect(self.on_interval_changed)
+        self.settings_grid.addWidget(self.interval_label, 1, 1, 1, 1)
         
-        # 행 1, 열 2: 새로고침
+        # 행 2, 열 0: 남은 키워드
+        self.total_keywords_label = self.create_unified_card("📊 남은 키워드", "0개", self.goto_site_management, "button")
+        self.total_keywords_button = self.total_keywords_label.value_button
+        self.settings_grid.addWidget(self.total_keywords_label, 2, 0, 1, 1)
+        
+        # 행 2, 열 1: 새로고침
         self.refresh_button_label = self.create_unified_card("🔄 새로고침", "F5", self.refresh_all_status, "button")
         self.refresh_button = self.refresh_button_label.value_button
-        self.settings_grid.addWidget(self.refresh_button_label, 1, 2, 1, 1)
+        self.settings_grid.addWidget(self.refresh_button_label, 2, 1, 1, 1)
         
         status_layout.addLayout(self.settings_grid)
         
@@ -7085,11 +7167,12 @@ class MainWindow(QMainWindow):
                 background-color: {COLORS['success']};
                 color: white;
                 font-weight: bold;
-                padding: 8px 8px;
+                padding: 15px 8px;
                 border-radius: 8px;
                 border: none;
-                font-size: 12px;
-                min-height: 28px;
+                font-size: 14px;
+                min-height: 50px;
+                max-height: 50px;
                 min-width: 80px;
             }}
             QPushButton:hover {{
@@ -7108,11 +7191,12 @@ class MainWindow(QMainWindow):
                 background-color: {COLORS['danger']};
                 color: white;
                 font-weight: bold;
-                padding: 8px 8px;
+                padding: 15px 8px;
                 border-radius: 8px;
                 border: none;
-                font-size: 12px;
-                min-height: 28px;
+                font-size: 14px;
+                min-height: 50px;
+                max-height: 50px;
                 min-width: 80px;
             }}
             QPushButton:hover {{
@@ -7131,11 +7215,12 @@ class MainWindow(QMainWindow):
                 background-color: {COLORS['primary']};
                 color: white;
                 font-weight: bold;
-                padding: 8px 8px;
+                padding: 15px 8px;
                 border-radius: 8px;
                 border: none;
-                font-size: 12px;
-                min-height: 28px;
+                font-size: 14px;
+                min-height: 50px;
+                max-height: 50px;
                 min-width: 80px;
             }}
             QPushButton:hover {{
@@ -7154,11 +7239,12 @@ class MainWindow(QMainWindow):
                 background-color: {COLORS['warning']};
                 color: white;
                 font-weight: bold;
-                padding: 8px 8px;
+                padding: 15px 8px;
                 border-radius: 8px;
                 border: none;
-                font-size: 12px;
-                min-height: 28px;
+                font-size: 14px;
+                min-height: 50px;
+                max-height: 50px;
                 min-width: 80px;
             }}
             QPushButton:hover {{
@@ -7171,7 +7257,8 @@ class MainWindow(QMainWindow):
         
         status_layout.addLayout(control_grid)
         status_group.setLayout(status_layout)
-        layout.addWidget(status_group)
+        # 🔥 현재 설정 상태를 가로 레이아웃에 추가
+        horizontal_layout.addWidget(status_group)
 
         # 진행 상태 카드
         progress_group = QGroupBox("📜 진행 상태")
@@ -7270,9 +7357,7 @@ class MainWindow(QMainWindow):
         active_sites_count = len(active_sites)
         
         # API 키 상태 확인
-        openai_key = self.config_manager.data.get('api_keys', {}).get('openai', '')
         gemini_key = self.config_manager.data.get('api_keys', {}).get('gemini', '')
-        openai_status = "✅" if openai_key.startswith('sk-') else "❌"
         gemini_status = "✅" if gemini_key.startswith('AIza') else "❌"
         
         # 설정 탭 정보와 JSON 연동 상태 체크
@@ -7289,7 +7374,7 @@ class MainWindow(QMainWindow):
 [{startup_time_short}] 🔧 시스템 초기화가 완료되었습니다.
 [{startup_time_short}] 🔧 마지막 포스팅 상태가 복원되었습니다.
 [{startup_time_short}] 🔧 총 {active_sites_count}개의 활성 사이트 발견
-[{startup_time_short}] 🔧 API 키 확인 - OpenAI: {openai_status}, Gemini: {gemini_status}
+[{startup_time_short}] 🔧 API 키 확인 - Gemini: {gemini_status}
 [{startup_time_short}] 🔧 총 {len(self.config_manager.data.get('sites', []))}개 사이트 등록됨
 {config_check_result}
 =====================================================================================
@@ -7301,7 +7386,12 @@ class MainWindow(QMainWindow):
 
         progress_layout.addWidget(self.progress_text)
         progress_group.setLayout(progress_layout)
-        layout.addWidget(progress_group)
+        # 🔥 진행 상태를 가로 레이아웃에 추가
+        horizontal_layout.addWidget(progress_group)
+
+        # 🔥 가로 레이아웃을 컨테이너에 설정하고 메인 레이아웃에 추가
+        horizontal_container.setLayout(horizontal_layout)
+        layout.addWidget(horizontal_container)
 
         widget.setLayout(layout)
         
@@ -7322,23 +7412,24 @@ class MainWindow(QMainWindow):
     def initialize_monitoring_combos(self):
         """모니터링 탭의 콤보박스들 초기화"""
         try:
-            # AI 모델 콤보박스 초기화
+            # AI 설정 콤보박스 초기화
             if hasattr(self, 'ai_model_combo'):
                 self.ai_model_combo.clear()
-                ai_provider = self.config_manager.data["global_settings"].get("default_ai", "gemini")
-                if ai_provider == "gemini":
-                    models = ["gemini-2.5-flash-lite"]
-                else:
-                    models = ["gpt-4o-mini"]
                 
-                self.ai_model_combo.addItems(models)
-                current_model = self.config_manager.data["global_settings"].get("ai_model", models[0])
-                if current_model in models:
-                    self.ai_model_combo.setCurrentText(current_model)
-                else:
-                    self.ai_model_combo.setCurrentIndex(0)
+                # API와 웹사이트 옵션 추가
+                ai_options = ["웹사이트 자동화", "API 연동"]
+                self.ai_model_combo.addItems(ai_options)
                 
-                # AI 모델 변경 시 설정 업데이트
+                # 현재 설정 확인
+                ai_provider = self.config_manager.data["global_settings"].get("default_ai", "web-gemini")
+                
+                # 현재 모드에 맞게 선택
+                if "web" in ai_provider:
+                    self.ai_model_combo.setCurrentText("웹사이트 자동화")
+                else:
+                    self.ai_model_combo.setCurrentText("API 연동")
+                
+                # AI 설정 변경 시 업데이트
                 self.ai_model_combo.currentTextChanged.connect(self.on_ai_model_changed)
             
             # 포스팅 모드 콤보박스 초기화
@@ -7354,29 +7445,34 @@ class MainWindow(QMainWindow):
             # 다음 포스팅 카운트다운 초기화
             if hasattr(self, 'next_posting_label') and hasattr(self.next_posting_label, 'value_button'):
                 self.next_posting_label.value_button.setText("대기중")
-            
-            # 총 키워드 콤보박스 초기화
-            if hasattr(self, 'total_keywords_combo'):
-                self.total_keywords_combo.clear()
-                self.total_keywords_combo.addItems(["로딩 중", "키워드 없음", "오류 발생"])
-                self.total_keywords_combo.setCurrentText("로딩 중")
-            
-            # 새로고침 콤보박스 초기화
-            if hasattr(self, 'refresh_combo'):
-                self.refresh_combo.clear()
-                self.refresh_combo.addItems(["상태 갱신", "갱신 완료", "갱신 중"])
-                self.refresh_combo.setCurrentText("상태 갱신")
                 
         except Exception as e:
             print(f"콤보박스 초기화 오류: {e}")
 
-    def on_ai_model_changed(self, model):
-        """AI 모델 변경 시 설정 업데이트"""
+    def on_ai_model_changed(self, selection):
+        """AI 설정 변경 시 업데이트 (API/웹사이트)"""
         try:
-            self.config_manager.data["global_settings"]["ai_model"] = model
+            # 선택에 따라 default_ai 값 변경
+            if selection == "웹사이트 자동화":
+                self.config_manager.data["global_settings"]["default_ai"] = "web-gemini"
+                print("✅ AI 설정이 '웹사이트 자동화'로 변경되었습니다.")
+            elif selection == "API 연동":
+                self.config_manager.data["global_settings"]["default_ai"] = "gemini"
+                print("✅ AI 설정이 'API 연동'으로 변경되었습니다.")
+            
             self.config_manager.save_config()
+            
+            # 설정 탭의 AI 모드 콤보박스도 업데이트
+            if hasattr(self, 'ai_mode_combo'):
+                self.ai_mode_combo.blockSignals(True)
+                if selection == "웹사이트 자동화":
+                    self.ai_mode_combo.setCurrentIndex(0)  # 웹사이트 자동화
+                else:
+                    self.ai_mode_combo.setCurrentIndex(1)  # API 연동
+                self.ai_mode_combo.blockSignals(False)
+                
         except Exception as e:
-            print(f"AI 모델 설정 저장 오류: {e}")
+            print(f"AI 설정 저장 오류: {e}")
 
     def on_posting_mode_changed(self, mode):
         """포스팅 모드 변경 시 설정 업데이트 및 설정 탭과 동기화"""
@@ -7394,6 +7490,207 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             print(f"포스팅 모드 설정 저장 오류: {e}")
+
+    def on_ai_mode_changed_from_settings(self, index):
+        """설정 탭의 AI 모드 변경 시 모니터링 탭과 동기화"""
+        try:
+            # index: 0=웹사이트 자동화, 1=API 연동
+            if index == 0:
+                self.config_manager.data["global_settings"]["default_ai"] = "web-gemini"
+                selection_text = "웹사이트 자동화"
+            else:
+                self.config_manager.data["global_settings"]["default_ai"] = "gemini"
+                selection_text = "API 연동"
+            
+            self.config_manager.save_config()
+            
+            # 모니터링 탭의 AI 설정 콤보박스도 업데이트
+            if hasattr(self, 'ai_model_combo'):
+                self.ai_model_combo.blockSignals(True)  # 무한 루프 방지
+                self.ai_model_combo.setCurrentText(selection_text)
+                self.ai_model_combo.blockSignals(False)
+            
+            print(f"설정 탭에서 AI 모드가 '{selection_text}'로 변경되었습니다.")
+            
+        except Exception as e:
+            print(f"AI 모드 설정 저장 오류: {e}")
+
+    def on_interval_changed(self, text):
+        """포스팅 간격 변경 시 설정 업데이트"""
+        try:
+            self.config_manager.data["global_settings"]["default_wait_time"] = text
+            self.config_manager.save_config()
+            print(f"포스팅 간격이 '{text}'로 변경되었습니다.")
+            
+        except Exception as e:
+            print(f"포스팅 간격 설정 저장 오류: {e}")
+
+    def open_wp_settings_dialog(self):
+        """워드프레스 세팅 다이얼로그 열기"""
+        try:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("🔐 워드프레스 세팅")
+            dialog.setMinimumWidth(500)
+            dialog.setStyleSheet(f"""
+                QDialog {{
+                    background-color: {COLORS['surface']};
+                }}
+            """)
+            
+            layout = QVBoxLayout()
+            layout.setSpacing(20)
+            layout.setContentsMargins(30, 30, 30, 30)
+            
+            # 제목
+            title_label = QLabel("🔐 워드프레스 공통 설정")
+            title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #81A1C1; margin-bottom: 10px;")
+            title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(title_label)
+            
+            # 설명
+            desc_label = QLabel("모든 사이트에 공통으로 적용되는 워드프레스 사용자명과 비밀번호를 설정하세요.")
+            desc_label.setWordWrap(True)
+            desc_label.setStyleSheet("font-size: 14px; color: #D8DEE9; margin-bottom: 15px;")
+            desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(desc_label)
+            
+            # 폼 레이아웃
+            form_layout = QVBoxLayout()
+            form_layout.setSpacing(15)
+            
+            # 사용자명
+            username_label = QLabel("사용자명:")
+            username_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #81A1C1;")
+            form_layout.addWidget(username_label)
+            
+            username_edit = QLineEdit()
+            username_edit.setText(self.config_manager.data["global_settings"].get("common_username", ""))
+            username_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            username_edit.setStyleSheet(f"""
+                QLineEdit {{
+                    background-color: {COLORS['surface']};
+                    color: white;
+                    border: 2px solid {COLORS['primary']};
+                    border-radius: 10px;
+                    padding: 12px 20px;
+                    font-weight: bold;
+                    font-size: 14px;
+                }}
+                QLineEdit:focus {{
+                    border-color: {COLORS['info']};
+                    background-color: {COLORS['surface_light']};
+                }}
+            """)
+            form_layout.addWidget(username_edit)
+            
+            # 비밀번호
+            password_label = QLabel("응용프로그램 비밀번호:")
+            password_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #81A1C1; margin-top: 10px;")
+            form_layout.addWidget(password_label)
+            
+            password_row = QHBoxLayout()
+            password_row.setSpacing(10)
+            
+            password_edit = QLineEdit()
+            password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            password_edit.setText(self.config_manager.data["global_settings"].get("common_password", ""))
+            password_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            password_edit.setStyleSheet(f"""
+                QLineEdit {{
+                    background-color: {COLORS['surface']};
+                    color: white;
+                    border: 2px solid {COLORS['primary']};
+                    border-radius: 10px;
+                    padding: 12px 20px;
+                    font-weight: bold;
+                    font-size: 14px;
+                }}
+                QLineEdit:focus {{
+                    border-color: {COLORS['info']};
+                    background-color: {COLORS['surface_light']};
+                }}
+            """)
+            password_row.addWidget(password_edit, 1)
+            
+            toggle_btn = QPushButton("👁️")
+            toggle_btn.setFixedSize(40, 40)
+            toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            toggle_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {COLORS['surface']};
+                    border: 2px solid {COLORS['primary']};
+                    border-radius: 10px;
+                    font-size: 16px;
+                }}
+                QPushButton:hover {{
+                    background-color: {COLORS['primary']};
+                }}
+            """)
+            toggle_btn.clicked.connect(lambda: self.toggle_password_visibility(password_edit, toggle_btn))
+            password_row.addWidget(toggle_btn)
+            
+            form_layout.addLayout(password_row)
+            layout.addLayout(form_layout)
+            
+            # 버튼
+            button_layout = QHBoxLayout()
+            button_layout.setSpacing(10)
+            
+            save_btn = QPushButton("💾 저장")
+            save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            save_btn.setMinimumHeight(45)
+            save_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {COLORS['primary']};
+                    color: white;
+                    border: none;
+                    border-radius: 10px;
+                    padding: 12px 25px;
+                    font-weight: bold;
+                    font-size: 14px;
+                }}
+                QPushButton:hover {{
+                    background-color: {COLORS['primary_hover']};
+                }}
+            """)
+            
+            def save_settings():
+                self.config_manager.data["global_settings"]["common_username"] = username_edit.text()
+                self.config_manager.data["global_settings"]["common_password"] = password_edit.text()
+                self.config_manager.save_config()
+                QMessageBox.information(dialog, "성공", "워드프레스 세팅이 저장되었습니다.")
+                dialog.accept()
+            
+            save_btn.clicked.connect(save_settings)
+            button_layout.addWidget(save_btn)
+            
+            cancel_btn = QPushButton("❌ 취소")
+            cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            cancel_btn.setMinimumHeight(45)
+            cancel_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {COLORS['surface_light']};
+                    color: white;
+                    border: 2px solid {COLORS['border']};
+                    border-radius: 10px;
+                    padding: 12px 25px;
+                    font-weight: bold;
+                    font-size: 14px;
+                }}
+                QPushButton:hover {{
+                    background-color: {COLORS['hover']};
+                }}
+            """)
+            cancel_btn.clicked.connect(dialog.reject)
+            button_layout.addWidget(cancel_btn)
+            
+            layout.addLayout(button_layout)
+            dialog.setLayout(layout)
+            dialog.exec()
+            
+        except Exception as e:
+            print(f"워드프레스 세팅 다이얼로그 오류: {e}")
+            QMessageBox.warning(self, "오류", f"워드프레스 세팅을 열 수 없습니다: {e}")
 
     def on_settings_posting_mode_changed(self, mode):
         """설정 탭의 포스팅 모드 변경 시 모니터링 탭과 동기화"""
@@ -7415,30 +7712,25 @@ class MainWindow(QMainWindow):
     def update_monitoring_settings(self):
         """설정 저장 후 모니터링 탭의 '현재 설정 상태' 업데이트"""
         try:
-            # AI 모델 콤보박스 업데이트
+            # AI 설정 콤보박스 업데이트
             if hasattr(self, 'ai_model_combo') and self.ai_model_combo:
-                ai_provider = self.config_manager.data["global_settings"].get("default_ai", "gemini")
-                current_model = self.config_manager.data["global_settings"].get("ai_model", "")
+                ai_provider = self.config_manager.data["global_settings"].get("default_ai", "web-gemini")
                 
-                # AI 제공자에 따라 콤보박스 항목 재구성
+                # AI 제공자에 따라 선택 항목 업데이트
                 self.ai_model_combo.blockSignals(True)
                 self.ai_model_combo.clear()
                 
-                if ai_provider == "gemini":
-                    models = ["gemini-2.5-flash-lite", "gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-pro"]
-                else:
-                    models = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
+                ai_options = ["웹사이트 자동화", "API 연동"]
+                self.ai_model_combo.addItems(ai_options)
                 
-                self.ai_model_combo.addItems(models)
-                
-                # 현재 모델 선택
-                if current_model in models:
-                    self.ai_model_combo.setCurrentText(current_model)
+                # 현재 설정에 맞게 선택
+                if "web" in ai_provider:
+                    self.ai_model_combo.setCurrentText("웹사이트 자동화")
                 else:
-                    self.ai_model_combo.setCurrentIndex(0)
+                    self.ai_model_combo.setCurrentText("API 연동")
                 
                 self.ai_model_combo.blockSignals(False)
-                print(f"✅ 모니터링 탭 AI 모델 업데이트: {current_model}")
+                print(f"✅ 모니터링 탭 AI 설정 업데이트: {self.ai_model_combo.currentText()}")
             
             # 포스팅 모드 콤보박스 업데이트
             if hasattr(self, 'posting_mode_combo') and self.posting_mode_combo:
@@ -7475,7 +7767,7 @@ class MainWindow(QMainWindow):
         # 제목
         title_label = QLabel(title)
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 9pt; font-weight: bold;")
+        title_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 10pt; font-weight: bold;")
         layout.addWidget(title_label)
 
         # 값(클릭 가능한 버튼으로 만들기)
@@ -7630,7 +7922,7 @@ class MainWindow(QMainWindow):
             for site_data in sites_data:
                 keyword_file = site_data.get("keyword_file", "")
                 if keyword_file:
-                    keyword_path = os.path.join(get_base_path(), "keywords", keyword_file)
+                    keyword_path = os.path.join(get_base_path(), "setting", "keywords", keyword_file)
                     if os.path.exists(keyword_path):
                         try:
                             with open(keyword_path, 'r', encoding='utf-8') as f:
@@ -7757,7 +8049,7 @@ class MainWindow(QMainWindow):
         """사이트용 썸네일 이미지 선택"""
         file_path, _ = QFileDialog.getOpenFileName(
             self, "썸네일 이미지 선택", 
-            os.path.join(get_base_path(), "images"),
+            os.path.join(get_base_path(), "setting", "images"),
             "이미지 파일 (*.jpg *.jpeg *.png)"
         )
         if file_path:
@@ -7768,7 +8060,7 @@ class MainWindow(QMainWindow):
         """사이트용 키워드 파일 선택"""
         file_path, _ = QFileDialog.getOpenFileName(
             self, "키워드 파일 선택",
-            os.path.join(get_base_path(), "keywords"),
+            os.path.join(get_base_path(), "setting", "keywords"),
             "텍스트 파일 (*.txt)"
         )
         if file_path:
@@ -8031,7 +8323,7 @@ class MainWindow(QMainWindow):
                 if site.get("active", True):
                     keyword_file = site.get("keyword_file", "")
                     if keyword_file:
-                        keyword_path = os.path.join(get_base_path(), "keywords", keyword_file)
+                        keyword_path = os.path.join(get_base_path(), "setting", "keywords", keyword_file)
                         if os.path.exists(keyword_path):
                             try:
                                 with open(keyword_path, 'r', encoding='utf-8') as f:
@@ -8132,7 +8424,7 @@ class MainWindow(QMainWindow):
         if site_data:
             file_path, _ = QFileDialog.getOpenFileName(
                 self, f"{site_data['name']} 키워드 파일 선택",
-                os.path.join(get_base_path(), "keywords"),
+                os.path.join(get_base_path(), "setting", "keywords"),
                 "텍스트 파일 (*.txt)"
             )
             if file_path:
@@ -8148,7 +8440,7 @@ class MainWindow(QMainWindow):
         if site_data:
             file_path, _ = QFileDialog.getOpenFileName(
                 self, f"{site_data['name']} 썸네일 이미지 선택",
-                os.path.join(get_base_path(), "images"),
+                os.path.join(get_base_path(), "setting", "images"),
                 "이미지 파일 (*.jpg *.jpeg *.png)"
             )
             if file_path:
@@ -8209,7 +8501,7 @@ class MainWindow(QMainWindow):
                     QMessageBox.critical(self, "오류", f"사이트 {status_text}에 실패했습니다.")
 
     def create_settings_tab(self):
-        """설정 탭 생성 - 개선된 버전 (라이선스 정보 및 AI 모드 분리)"""
+        """설정 탭 생성 - 개선된 버전 (라이선스 정보 간소화, 웹사이트 권장, GPT 제거)"""
         # 스크롤 영역 생성
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
@@ -8224,58 +8516,277 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(20)
 
-        # 1. 라이선스 정보 그룹
-        license_group = QGroupBox("🔐 라이선스 정보")
-        license_layout = QFormLayout()
-        
-        # 라이선스 정보 가져오기
+        # 1. 사용 기간 표시 (우측 상단) - 글자색 강조
         try:
             license_info = LicenseManager().get_license_info()
-            machine_id = license_info.get('machine_id', 'Unknown')
-            user_name = license_info.get('name', 'Unknown')
             expire_date = license_info.get('expire_date', '무제한')
-            
-            license_layout.addRow("사용자:", QLabel(user_name))
-            license_layout.addRow("머신 ID:", QLabel(machine_id))
-            license_layout.addRow("사용 기간:", QLabel(expire_date))
-            
-        except Exception as e:
-            print(f"라이선스 정보 로드 오류: {e}")
-            license_layout.addRow("상태:", QLabel("정보 로드 실패"))
+        except Exception:
+            expire_date = "확인 불가"
 
-        license_group.setLayout(license_layout)
-        layout.addWidget(license_group)
+        usage_period_layout = QHBoxLayout()
+        usage_period_layout.addStretch()
+        usage_period_label = QLabel(f"📅 사용 기간: {expire_date}")
+        # 🔥 배경색과 글자색 모두 적용하여 강조
+        usage_period_label.setStyleSheet("""
+            color: #1565C0; 
+            font-weight: bold; 
+            font-size: 14px;
+            background-color: #E3F2FD;
+            padding: 10px 20px;
+            border-radius: 8px;
+        """)
+        usage_period_layout.addWidget(usage_period_label)
+        layout.addLayout(usage_period_layout)
 
-        # 2. AI 설정 그룹 (API / 웹사이트 분리)
+        # 🔥 가로 배치를 위한 컨테이너 생성 (첫 번째 행: 포스팅 모드 | 포스팅 간격)
+        horizontal_container = QWidget()
+        horizontal_layout = QHBoxLayout()
+        horizontal_layout.setSpacing(20)
+        horizontal_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 1. 포스팅 모드 섹션
+        posting_mode_group = QGroupBox("📝 포스팅 모드")
+        posting_mode_group.setMinimumHeight(250)
+        posting_mode_layout = QVBoxLayout()
+        posting_mode_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # 중앙 정렬을 위한 컨테이너
+        posting_mode_container = QWidget()
+        posting_mode_form = QVBoxLayout()
+        posting_mode_form.setSpacing(15)
+        
+        mode_label = QLabel("포스팅 모드:")
+        mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mode_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #81A1C1;")
+        posting_mode_form.addWidget(mode_label)
+        
+        self.settings_posting_mode_combo = QComboBox()
+        self.settings_posting_mode_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.settings_posting_mode_combo.addItems(["승인용", "수익용"])
+        posting_mode_value = self.config_manager.data["global_settings"].get("posting_mode", "수익형")
+        self.settings_posting_mode_combo.setCurrentText(posting_mode_value)
+        self.settings_posting_mode_combo.setMinimumWidth(200)
+        self.settings_posting_mode_combo.setStyleSheet(f"""
+            QComboBox {{
+                background-color: {COLORS['surface']};
+                color: white;
+                border: 2px solid {COLORS['primary']};
+                border-radius: 10px;
+                padding: 12px 20px;
+                font-weight: bold;
+                font-size: 14px;
+            }}
+            QComboBox:hover {{
+                background-color: {COLORS['primary']};
+                border-color: {COLORS['info']};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 30px;
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid white;
+                margin-right: 10px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {COLORS['surface']};
+                color: white;
+                selection-background-color: {COLORS['primary']};
+                selection-color: white;
+                outline: none;
+                border: 2px solid {COLORS['border']};
+                border-radius: 8px;
+                padding: 5px;
+            }}
+            QComboBox QAbstractItemView::item {{
+                padding: 10px;
+                border-radius: 5px;
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background-color: {COLORS['hover']};
+            }}
+        """)
+        # 🔥 포스팅 모드 변경 시 모니터링 탭과 동기화
+        self.settings_posting_mode_combo.currentTextChanged.connect(self.on_settings_posting_mode_changed)
+        posting_mode_form.addWidget(self.settings_posting_mode_combo, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        posting_mode_container.setLayout(posting_mode_form)
+        posting_mode_layout.addWidget(posting_mode_container)
+        posting_mode_group.setLayout(posting_mode_layout)
+        horizontal_layout.addWidget(posting_mode_group, 1)
+        
+        # 2. 포스팅 간격 섹션
+        interval_group = QGroupBox("⏱️ 포스팅 간격")
+        interval_group.setMinimumHeight(250)
+        interval_layout = QVBoxLayout()
+        interval_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # 중앙 정렬을 위한 컨테이너
+        interval_container = QWidget()
+        interval_form = QVBoxLayout()
+        interval_form.setSpacing(15)
+        
+        interval_label = QLabel("포스팅 간격(초):")
+        interval_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        interval_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #81A1C1;")
+        interval_form.addWidget(interval_label)
+        
+        self.wait_time_edit = QLineEdit()
+        wait_time_value = self.config_manager.data["global_settings"].get("default_wait_time", "47~50")
+        self.wait_time_edit.setText(wait_time_value)
+        self.wait_time_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.wait_time_edit.setMinimumWidth(200)
+        self.wait_time_edit.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {COLORS['surface']};
+                color: white;
+                border: 2px solid {COLORS['primary']};
+                border-radius: 10px;
+                padding: 12px 20px;
+                font-weight: bold;
+                font-size: 14px;
+            }}
+            QLineEdit:focus {{
+                border-color: {COLORS['info']};
+                background-color: {COLORS['surface_light']};
+            }}
+        """)
+        interval_form.addWidget(self.wait_time_edit, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        interval_container.setLayout(interval_form)
+        interval_layout.addWidget(interval_container)
+        interval_group.setLayout(interval_layout)
+        horizontal_layout.addWidget(interval_group, 1)
+
+        # 🔥 가로 레이아웃을 컨테이너에 설정하고 메인 레이아웃에 추가
+        horizontal_container.setLayout(horizontal_layout)
+        layout.addWidget(horizontal_container)
+
+        # 🔥 두 번째 행을 위한 새로운 가로 컨테이너 (AI 설정 | 워드프레스 세팅)
+        horizontal_container2 = QWidget()
+        horizontal_layout2 = QHBoxLayout()
+        horizontal_layout2.setSpacing(20)
+        horizontal_layout2.setContentsMargins(0, 0, 0, 0)
+
+        # 3. AI 설정 그룹 (웹사이트 권장)
         ai_group = QGroupBox("🤖 AI 설정")
         ai_layout = QVBoxLayout()
 
-        # AI 모드 선택 (API vs 웹사이트)
-        mode_layout = QHBoxLayout()
-        mode_label = QLabel("연동 방식:")
+        # AI 모드 선택 (웹사이트 우선) - 중앙 정렬
+        mode_layout = QVBoxLayout()
+        mode_layout.setSpacing(15)
+        mode_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        mode_label = QLabel("글 작성 방식:")
+        mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mode_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #81A1C1;")
+        mode_layout.addWidget(mode_label)
+        
         self.ai_mode_combo = QComboBox()
         self.ai_mode_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.ai_mode_combo.addItems(["API 연동 (권장)", "웹사이트 자동화"])
+        self.ai_mode_combo.setMinimumWidth(250)
+        self.ai_mode_combo.setStyleSheet(f"""
+            QComboBox {{
+                background-color: {COLORS['surface']};
+                color: white;
+                border: 2px solid {COLORS['primary']};
+                border-radius: 10px;
+                padding: 12px 20px;
+                font-weight: bold;
+                font-size: 14px;
+            }}
+            QComboBox:hover {{
+                background-color: {COLORS['primary']};
+                border-color: {COLORS['info']};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 30px;
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid white;
+                margin-right: 10px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {COLORS['surface']};
+                color: white;
+                selection-background-color: {COLORS['primary']};
+                selection-color: white;
+                outline: none;
+                border: 2px solid {COLORS['border']};
+                border-radius: 8px;
+                padding: 5px;
+            }}
+            QComboBox QAbstractItemView::item {{
+                padding: 10px;
+                border-radius: 5px;
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background-color: {COLORS['hover']};
+            }}
+        """)
+        # 웹사이트를 0번(기본), API를 1번으로 변경
+        self.ai_mode_combo.addItems(["웹사이트 자동화 (권장)", "API 연동"])
         
         # 기존 설정에 따라 초기값 선택
-        current_ai_provider = self.config_manager.data["global_settings"].get("default_ai", "gemini")
+        current_ai_provider = self.config_manager.data["global_settings"].get("default_ai", "web-gemini")
         if "web" in current_ai_provider:
-            self.ai_mode_combo.setCurrentIndex(1)
-        else:
             self.ai_mode_combo.setCurrentIndex(0)
-            
-        mode_layout.addWidget(mode_label)
-        mode_layout.addWidget(self.ai_mode_combo)
+        else:
+            self.ai_mode_combo.setCurrentIndex(1)
+        
+        mode_layout.addWidget(self.ai_mode_combo, 0, Qt.AlignmentFlag.AlignCenter)
         ai_layout.addLayout(mode_layout)
 
         # 스택 위젯 (모드에 따라 화면 전환)
         self.ai_settings_stack = QStackedWidget()
 
+        # --- 페이지 0: 웹사이트 자동화 설정 (권장) ---
+        web_page = QWidget()
+        web_layout_inner = QVBoxLayout()
+        
+        web_info_label = QLabel(
+            "🌐 <b>웹사이트 자동화 모드</b><br><br>"
+            "브라우저를 직접 제어하여 콘텐츠를 생성합니다.<br>"
+            "별도의 API 키가 필요하지 않으며, 비용이 발생하지 않습니다.<br>"
+            "Google 계정 로그인이 필요할 수 있습니다."
+        )
+        web_info_label.setWordWrap(True)
+        web_info_label.setStyleSheet("background-color: #E3F2FD; padding: 15px; border-radius: 8px; color: #0D47A1;")
+        web_layout_inner.addWidget(web_info_label)
+        
+        # 웹 모델 선택 (GPT 제거)
+        web_form = QFormLayout()
+        self.web_model_combo = QComboBox()
+        self.web_model_combo.addItems(["Gemini Web", "Perplexity Web"])
+        
+        # 기존 설정값 매핑
+        if "perplexity" in current_ai_provider:
+            self.web_model_combo.setCurrentIndex(1)
+        else:
+            self.web_model_combo.setCurrentIndex(0) # 기본값 Gemini Web
+            
+        web_form.addRow("웹 모델 선택:", self.web_model_combo)
+        web_layout_inner.addLayout(web_form)
+        web_layout_inner.addStretch()
+        
+        web_page.setLayout(web_layout_inner)
+
         # --- 페이지 1: API 연동 설정 ---
         api_page = QWidget()
         api_form = QFormLayout()
         
-        # Gemini API 키
+        # Gemini API 키 (OpenAI 제거)
         gemini_row = QHBoxLayout()
         self.gemini_key_edit = QLineEdit()
         self.gemini_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
@@ -8295,125 +8806,163 @@ class MainWindow(QMainWindow):
         gemini_widget = QWidget()
         gemini_widget.setLayout(gemini_row)
         api_form.addRow("Gemini API Key:", gemini_widget)
-
-        # OpenAI API 키
-        openai_row = QHBoxLayout()
-        self.openai_key_edit = QLineEdit()
-        self.openai_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        openai_key_value = self.config_manager.data["api_keys"].get("openai", "")
-        self.openai_key_edit.setText(openai_key_value)
-        openai_row.addWidget(self.openai_key_edit, 1)
         
-        # OpenAI 토글 버튼
-        self.openai_toggle_btn = QPushButton("👁️")
-        self.openai_toggle_btn.setFixedSize(40, 30)
-        self.openai_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        try:
-            self.openai_toggle_btn.clicked.connect(lambda: self.toggle_password_visibility(self.openai_key_edit, self.openai_toggle_btn))
-        except: pass
-        openai_row.addWidget(self.openai_toggle_btn)
+        # API 테스트 버튼 - 중앙 정렬 및 스타일 개선
+        test_api_container = QWidget()
+        test_api_layout = QVBoxLayout()
+        test_api_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        test_api_layout.setContentsMargins(0, 20, 0, 0)
         
-        openai_widget = QWidget()
-        openai_widget.setLayout(openai_row)
-        api_form.addRow("OpenAI API Key:", openai_widget)
-        
-        # API 테스트 버튼
         test_api_btn = QPushButton("🧪 API 연결 테스트")
         test_api_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        test_api_btn.setMinimumWidth(200)
+        test_api_btn.setMinimumHeight(45)
+        test_api_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['info']};
+                color: white;
+                border: none;
+                border-radius: 10px;
+                padding: 12px 25px;
+                font-weight: bold;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['info_hover']};
+            }}
+            QPushButton:pressed {{
+                background-color: {COLORS['primary']};
+            }}
+        """)
         try:
             test_api_btn.clicked.connect(self.test_api_connections)
         except: pass
-        api_form.addRow("", test_api_btn)
+        test_api_layout.addWidget(test_api_btn)
+        test_api_container.setLayout(test_api_layout)
         
-        api_page.setLayout(api_form)
+        api_form_layout = QVBoxLayout()
+        api_form_layout.addLayout(api_form)
+        api_form_layout.addWidget(test_api_container)
+        api_page.setLayout(api_form_layout)
 
-        # --- 페이지 2: 웹사이트 자동화 설정 ---
-        web_page = QWidget()
-        web_layout_inner = QVBoxLayout()
-        
-        web_info_label = QLabel(
-            "🌐 <b>웹사이트 자동화 모드</b><br><br>"
-            "브라우저를 직접 제어하여 콘텐츠를 생성합니다.<br>"
-            "속도가 다소 느릴 수 있으며, 작업 중 브라우저 창이 열립니다.<br>"
-            "별도의 API 키가 필요하지 않지만, Google 계정 로그인이 필요할 수 있습니다."
-        )
-        web_info_label.setWordWrap(True)
-        web_info_label.setStyleSheet("background-color: #E3F2FD; padding: 15px; border-radius: 8px; color: #0D47A1;")
-        web_layout_inner.addWidget(web_info_label)
-        
-        # 웹 모델 선택 (예: Gemini Web, GPT Web 등)
-        web_form = QFormLayout()
-        self.web_model_combo = QComboBox()
-        self.web_model_combo.addItems(["Gemini Web", "ChatGPT Web", "Perplexity Web"])
-        
-        # 기존 설정값 매핑
-        if current_ai_provider == "web-gemini":
-            self.web_model_combo.setCurrentIndex(0)
-        elif current_ai_provider == "web-gpt":
-            self.web_model_combo.setCurrentIndex(1)
-        elif current_ai_provider == "web-perplexity":
-            self.web_model_combo.setCurrentIndex(2)
-            
-        web_form.addRow("웹 모델 선택:", self.web_model_combo)
-        web_layout_inner.addLayout(web_form)
-        web_layout_inner.addStretch()
-        
-        web_page.setLayout(web_layout_inner)
-
-        # 스택에 페이지 추가
-        self.ai_settings_stack.addWidget(api_page)
+        # 스택에 페이지 추가 (순서 중요: 0=Web, 1=API)
         self.ai_settings_stack.addWidget(web_page)
+        self.ai_settings_stack.addWidget(api_page)
         
         # 콤보박스 변경 시 스택 페이지 전환 연결
         self.ai_mode_combo.currentIndexChanged.connect(self.ai_settings_stack.setCurrentIndex)
+        # 🔥 AI 모드 변경 시 모니터링 탭도 업데이트
+        self.ai_mode_combo.currentIndexChanged.connect(self.on_ai_mode_changed_from_settings)
         
         # 초기 페이지 설정
         self.ai_settings_stack.setCurrentIndex(self.ai_mode_combo.currentIndex())
 
         ai_layout.addWidget(self.ai_settings_stack)
         ai_group.setLayout(ai_layout)
-        layout.addWidget(ai_group)
-
-        # 3. 전역 설정 그룹 (기존 유지)
-        global_group = QGroupBox("🌐 전역 설정")
-        global_layout = QFormLayout()
-
-        # 포스팅 모드
-        self.settings_posting_mode_combo = QComboBox()
-        self.settings_posting_mode_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.settings_posting_mode_combo.addItems(["승인용", "수익용"])
-        posting_mode_value = self.config_manager.data["global_settings"].get("posting_mode", "수익형")
-        self.settings_posting_mode_combo.setCurrentText(posting_mode_value)
-        global_layout.addRow("포스팅 모드:", self.settings_posting_mode_combo)
-
-        # 포스팅 간격
-        self.wait_time_edit = QLineEdit()
-        wait_time_value = self.config_manager.data["global_settings"].get("default_wait_time", "47~50")
-        self.wait_time_edit.setText(wait_time_value)
-        global_layout.addRow("포스팅 간격(초):", self.wait_time_edit)
+        ai_group.setMinimumHeight(250)
+        # 🔥 AI 설정을 두 번째 행 왼쪽에 추가
+        horizontal_layout2.addWidget(ai_group, 1)
         
-        # 사용자명 & 비밀번호 (기존 로직 유지)
+        # 4. 워드프레스 세팅 섹션 (사용자명/응용프로그램비밀번호)
+        credentials_group = QGroupBox("🔐 워드프레스 세팅")
+        credentials_group.setMinimumHeight(250)
+        credentials_layout = QVBoxLayout()
+        credentials_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # 중앙 정렬을 위한 컨테이너
+        credentials_container = QWidget()
+        credentials_form = QVBoxLayout()
+        credentials_form.setSpacing(15)
+        
+        # 사용자명 필드
+        username_label = QLabel("사용자명:")
+        username_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        username_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #81A1C1;")
+        credentials_form.addWidget(username_label)
+        
         self.common_username_edit = QLineEdit()
         self.common_username_edit.setText(self.config_manager.data["global_settings"].get("common_username", ""))
-        global_layout.addRow("사용자명:", self.common_username_edit)
+        self.common_username_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.common_username_edit.setMinimumWidth(250)
+        self.common_username_edit.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {COLORS['surface']};
+                color: white;
+                border: 2px solid {COLORS['primary']};
+                border-radius: 10px;
+                padding: 12px 20px;
+                font-weight: bold;
+                font-size: 14px;
+            }}
+            QLineEdit:focus {{
+                border-color: {COLORS['info']};
+                background-color: {COLORS['surface_light']};
+            }}
+        """)
+        credentials_form.addWidget(self.common_username_edit, 0, Qt.AlignmentFlag.AlignCenter)
 
+        # 응용프로그램 비밀번호 필드
+        password_label = QLabel("응용프로그램 비밀번호:")
+        password_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        password_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #81A1C1; margin-top: 10px;")
+        credentials_form.addWidget(password_label)
+        
         password_row = QHBoxLayout()
+        password_row.setSpacing(10)
+        
         self.common_password_edit = QLineEdit()
         self.common_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.common_password_edit.setText(self.config_manager.data["global_settings"].get("common_password", ""))
+        self.common_password_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.common_password_edit.setMinimumWidth(200)
+        self.common_password_edit.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {COLORS['surface']};
+                color: white;
+                border: 2px solid {COLORS['primary']};
+                border-radius: 10px;
+                padding: 12px 20px;
+                font-weight: bold;
+                font-size: 14px;
+            }}
+            QLineEdit:focus {{
+                border-color: {COLORS['info']};
+                background-color: {COLORS['surface_light']};
+            }}
+        """)
         password_row.addWidget(self.common_password_edit, 1)
         
         self.password_toggle_btn = QPushButton("👁️")
-        self.password_toggle_btn.setFixedSize(40, 30)
+        self.password_toggle_btn.setFixedSize(40, 40)
+        self.password_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.password_toggle_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['surface']};
+                border: 2px solid {COLORS['primary']};
+                border-radius: 10px;
+                font-size: 16px;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['primary']};
+            }}
+        """)
         try:
             self.password_toggle_btn.clicked.connect(lambda: self.toggle_password_visibility(self.common_password_edit, self.password_toggle_btn))
         except: pass
         password_row.addWidget(self.password_toggle_btn)
         
-        global_layout.addRow("응용프로그램 비밀번호:", password_row)
+        password_container = QWidget()
+        password_container.setLayout(password_row)
+        credentials_form.addWidget(password_container, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        credentials_container.setLayout(credentials_form)
+        credentials_layout.addWidget(credentials_container)
+        credentials_group.setLayout(credentials_layout)
+        horizontal_layout2.addWidget(credentials_group, 1)
 
-        global_group.setLayout(global_layout)
-        layout.addWidget(global_group)
+        # 🔥 두 번째 가로 레이아웃 컨테이너를 메인 레이아웃에 추가
+        horizontal_container2.setLayout(horizontal_layout2)
+        layout.addWidget(horizontal_container2)
 
         # 저장 버튼
         save_btn = QPushButton("💾 설정 저장")
@@ -8441,113 +8990,6 @@ class MainWindow(QMainWindow):
         widget.setLayout(layout)
         
         scroll_area.setWidget(widget)
-        return scroll_area
-        
-        # API 테스트 버튼
-        test_api_btn = QPushButton("🧪 API 연결 테스트")
-        test_api_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        test_api_btn.clicked.connect(self.test_api_connections)
-        api_layout.addRow("", test_api_btn)
-
-        api_group.setLayout(api_layout)
-        layout.addWidget(api_group)
-
-        # AI 설정
-        ai_group = QGroupBox("🤖 AI 설정")
-        ai_layout = QFormLayout()
-
-        # AI 제공자 선택
-        self.default_ai_combo = QComboBox()
-        self.default_ai_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.default_ai_combo.wheelEvent = lambda event: None  # 스크롤 비활성화
-        self.default_ai_combo.addItems(["gemini", "openai"])
-        default_ai_value = self.config_manager.data["global_settings"].get("default_ai", "gemini")
-        print(f"🔧 [LOAD] 기본 AI 로딩: '{default_ai_value}'")
-        self.default_ai_combo.setCurrentText(default_ai_value)
-        # 설정 변경 시 모니터링 탭 업데이트
-        self.default_ai_combo.currentTextChanged.connect(self.update_ai_model_options)
-        self.default_ai_combo.currentTextChanged.connect(self.on_setting_changed)
-        ai_layout.addRow("AI 제공자:", self.default_ai_combo)
-
-        # AI 모델 선택
-        self.ai_model_combo = QComboBox()
-        self.ai_model_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.ai_model_combo.wheelEvent = lambda event: None  # 스크롤 비활성화
-        self.ai_model_combo.currentTextChanged.connect(self.on_setting_changed)
-        ai_layout.addRow("AI 모델 선택:", self.ai_model_combo)
-
-        # 포스팅 모드
-        self.posting_mode_combo = QComboBox()
-        self.posting_mode_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.posting_mode_combo.wheelEvent = lambda event: None  # 스크롤 비활성화
-        self.posting_mode_combo.addItems(["수익용", "승인용"])
-        posting_mode_value = self.config_manager.data["global_settings"].get("posting_mode", "수익용")
-        print(f"🔧 [LOAD] 포스팅 모드 로딩: '{posting_mode_value}'")
-        self.posting_mode_combo.setCurrentText(posting_mode_value)
-        self.posting_mode_combo.currentTextChanged.connect(self.on_setting_changed)
-        ai_layout.addRow("포스팅 모드:", self.posting_mode_combo)
-
-        ai_group.setLayout(ai_layout)
-        layout.addWidget(ai_group)
-
-        # WordPress 설정
-        global_group = QGroupBox("🌐 WordPress 설정")
-        global_layout = QFormLayout()
-
-        # 포스팅 간격
-        self.wait_time_edit = QLineEdit()
-        wait_time_value = self.config_manager.data["global_settings"].get("default_wait_time", "47~50")
-        print(f"🔧 [LOAD] 대기 시간 로딩: '{wait_time_value}'")
-        self.wait_time_edit.setText(wait_time_value)
-        self.wait_time_edit.textChanged.connect(self.on_setting_changed)
-        global_layout.addRow("포스팅 간격(초):", self.wait_time_edit)
-        
-        # 사용자명
-        self.common_username_edit = QLineEdit()
-        loaded_username = self.config_manager.data["global_settings"].get("common_username", "")
-        # 사용자명 로딩 완료
-        self.common_username_edit.setText(loaded_username)
-        global_layout.addRow("사용자명:", self.common_username_edit)
-
-        # 응용프로그램 비밀번호
-        password_row = QHBoxLayout()
-        self.common_password_edit = QLineEdit()
-        self.common_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        loaded_password = self.config_manager.data["global_settings"].get("common_password", "")
-        self.common_password_edit.setText(loaded_password)
-        password_row.addWidget(self.common_password_edit, 1)
-        
-        # 응용프로그램 비밀번호 공개/비공개 토글 버튼
-        self.password_toggle_btn = QPushButton("👁️")
-        self.password_toggle_btn.setMaximumWidth(40)
-        self.password_toggle_btn.setToolTip("클릭하여 비밀번호 표시/숨김")
-        self.password_toggle_btn.clicked.connect(lambda: self.toggle_password_visibility(self.common_password_edit, self.password_toggle_btn))
-        password_row.addWidget(self.password_toggle_btn)
-        
-        password_widget = QWidget()
-        password_widget.setLayout(password_row)
-        global_layout.addRow("응용프로그램 비밀번호:", password_widget)
-
-        global_group.setLayout(global_layout)
-        layout.addWidget(global_group)
-
-        # 초기 AI 모델 옵션 설정
-        self.update_ai_model_options()
-
-        # 저장 버튼
-        save_btn = QPushButton("💾 설정 저장")
-        save_btn.clicked.connect(self.save_settings)
-        layout.addWidget(save_btn)
-
-        layout.addStretch()
-        widget.setLayout(layout)
-        
-        # 스크롤 영역에 위젯 설정
-        scroll_area.setWidget(widget)
-        
-        # 초기 API 상태 설정
-        QTimer.singleShot(100, self.update_api_status_labels)
-        
         return scroll_area
 
     def test_api_connections(self):
@@ -8657,32 +9099,25 @@ class MainWindow(QMainWindow):
         self.update_posting_status("🧪 API 연결 테스트 완료!")
 
     def save_settings(self):
-        """설정 저장 - 개선된 UI 대응"""
+        """설정 저장 - 개선된 UI 대응 (GPT 제거)"""
         try:
-            # API 키 저장
+            # API 키 저장 (Gemini만)
             if hasattr(self, 'gemini_key_edit'):
                 self.config_manager.data["api_keys"]["gemini"] = self.gemini_key_edit.text().strip()
-            if hasattr(self, 'openai_key_edit'):
-                self.config_manager.data["api_keys"]["openai"] = self.openai_key_edit.text().strip()
 
             # AI 설정 저장 (모드에 따라 처리)
             if hasattr(self, 'ai_mode_combo'):
                 mode_index = self.ai_mode_combo.currentIndex()
                 
-                if mode_index == 0:  # API 연동 모드
-                    # 기본적으로 gemini 사용 (OpenAI는 추가 옵션)
-                    # 현재 구현상 API 모드에서는 gemini만 활성화되어 있다고 가정하거나 
-                    # 사용자가 선택할 수 있게 해야 하지만, 여기서는 단순화하여 처리
+                if mode_index == 1:  # API 연동 모드
                     self.config_manager.data["global_settings"]["default_ai"] = "gemini"
                     self.config_manager.data["global_settings"]["ai_model"] = "gemini-2.5-flash-lite"
                     
-                else:  # 웹사이트 자동화 모드
+                else:  # 웹사이트 자동화 모드 (기본값)
                     if hasattr(self, 'web_model_combo'):
                         web_model = self.web_model_combo.currentText()
                         if "Gemini" in web_model:
                             self.config_manager.data["global_settings"]["default_ai"] = "web-gemini"
-                        elif "ChatGPT" in web_model:
-                            self.config_manager.data["global_settings"]["default_ai"] = "web-gpt"
                         elif "Perplexity" in web_model:
                             self.config_manager.data["global_settings"]["default_ai"] = "web-perplexity"
             
@@ -9080,7 +9515,7 @@ class MainWindow(QMainWindow):
             for site_data in sites_data:
                 keyword_file = site_data.get("keyword_file", "")
                 if keyword_file:
-                    keyword_path = os.path.join(get_base_path(), "keywords", keyword_file)
+                    keyword_path = os.path.join(get_base_path(), "setting", "keywords", keyword_file)
                     if os.path.exists(keyword_path):
                         try:
                             with open(keyword_path, 'r', encoding='utf-8') as f:
@@ -9561,7 +9996,7 @@ class MainWindow(QMainWindow):
         try:
             import subprocess
             import os
-            keywords_path = os.path.join(get_base_path(), "keywords")
+            keywords_path = os.path.join(get_base_path(), "setting", "keywords")
             
             # 폴더가 없으면 생성
             if not os.path.exists(keywords_path):
@@ -9578,7 +10013,7 @@ class MainWindow(QMainWindow):
         try:
             import subprocess
             import os
-            images_path = os.path.join(get_base_path(), "images")
+            images_path = os.path.join(get_base_path(), "setting", "images")
             
             # 폴더가 없으면 생성
             if not os.path.exists(images_path):
@@ -9662,16 +10097,6 @@ class MainWindow(QMainWindow):
     def check_and_update_api_status(self):
         """API 키 상태를 확인하고 UI 업데이트"""
         try:
-            # OpenAI API 키 확인
-            openai_key = self.config_manager.data.get("api_keys", {}).get("openai", "")
-            if hasattr(self, 'openai_status_label'):
-                if openai_key and len(openai_key.strip()) > 10:
-                    self.openai_status_label.setText("✅ 설정됨")
-                    self.openai_status_label.setStyleSheet("color: #A3BE8C; font-weight: bold;")
-                else:
-                    self.openai_status_label.setText("❌ 미설정")
-                    self.openai_status_label.setStyleSheet("color: #BF616A; font-weight: bold;")
-            
             # Gemini API 키 확인
             gemini_key = self.config_manager.data.get("api_keys", {}).get("gemini", "")
             if hasattr(self, 'gemini_status_label'):
