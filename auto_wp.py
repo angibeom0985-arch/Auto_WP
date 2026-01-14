@@ -6080,13 +6080,20 @@ class MainWindow(QMainWindow):
             value_widget.setStyleSheet(style_config['stylesheet'])
             value_widget.setCursor(Qt.CursorShape.PointingHandCursor)
             
-            # 콤보박스 텍스트 가시성 문제 해결을 위해 Editable 비활성화
-            # 대신 스타일시트로 텍스트 정렬 시도 (QComboBox는 텍스트 중앙 정렬이 까다로움)
-            value_widget.setEditable(False)
+            # 콤보박스를 편집 가능하게 만들고 텍스트 중앙 정렬 (가시성 확보)
+            value_widget.setEditable(True)
+            value_widget.lineEdit().setReadOnly(True)
+            value_widget.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
             
-            # 뷰(팝업) 아이템 델리게이트 설정으로 중앙 정렬
-            delegate = QStyledItemDelegate()
-            value_widget.setItemDelegate(delegate)
+            # lineEdit 스타일 설정 (투명 배경, 텍스트 색상)
+            value_widget.lineEdit().setStyleSheet(f"""
+                QLineEdit {{
+                    background: transparent;
+                    border: none;
+                    color: {COLORS['text']};
+                    font-weight: bold;
+                }}
+            """)
             
             # 스크롤 기능 비활성화
             value_widget.wheelEvent = lambda event: None
@@ -6149,13 +6156,20 @@ class MainWindow(QMainWindow):
             wrapper_layout.setContentsMargins(15, 5, 15, 5)
             wrapper_layout.setSpacing(5)
             
-            # 입력창 (오른쪽 정렬로 변경하여 숫자와 단위가 붙어보이게 함)
+            # 중앙 정렬을 위한 스페이서
+            wrapper_layout.addStretch()
+            
+            # 입력창 (오른쪽 정렬, 고정 너비로 설정하여 라벨과 붙어있게 함)
+            value_widget.setFixedWidth(60)
             value_widget.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             wrapper_layout.addWidget(value_widget)
             
             suffix_label = QLabel(suffix)
             suffix_label.setStyleSheet(f"color: {COLORS['text']}; font-weight: normal; font-size: 10pt; border: none; background: transparent;")
             wrapper_layout.addWidget(suffix_label)
+            
+            # 중앙 정렬을 위한 스페이서
+            wrapper_layout.addStretch()
             
             layout.addWidget(wrapper)
         else:
