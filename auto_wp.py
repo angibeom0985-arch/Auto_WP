@@ -7117,14 +7117,14 @@ class MainWindow(QMainWindow):
         status_layout.setContentsMargins(20, 20, 20, 20)
 
         # 설정 정보 표시 - 3행 x 2열 그리드로 변경
+        # 설정 정보 표시 - 2행 x 3열 그리드로 변경
         self.settings_grid = QGridLayout()
         self.settings_grid.setSpacing(10)
-        # 🔥 2열로 변경
-        self.settings_grid.setColumnMinimumWidth(0, 150)
-        self.settings_grid.setColumnMinimumWidth(1, 150)
-        # 🔥 모든 열이 동일하게 확장되도록 설정
+        
+        # 🔥 모든 열이 동일하게 확장되도록 설정 (3열)
         self.settings_grid.setColumnStretch(0, 1)
         self.settings_grid.setColumnStretch(1, 1)
+        self.settings_grid.setColumnStretch(2, 1)
         
         # 행 0, 열 0: AI 설정
         self.ai_model_label = self.create_unified_card("🤖 AI 설정", "", self.goto_settings_ai, "combobox")
@@ -7136,27 +7136,27 @@ class MainWindow(QMainWindow):
         self.posting_mode_combo = self.posting_mode_label.value_widget
         self.settings_grid.addWidget(self.posting_mode_label, 0, 1, 1, 1)
         
-        # 행 1, 열 0: 사이트
+        # 행 0, 열 2: 사이트
         self.site_label = self.create_site_selector_label()
-        self.settings_grid.addWidget(self.site_label, 1, 0, 1, 1)
+        self.settings_grid.addWidget(self.site_label, 0, 2, 1, 1)
         
-        # 행 1, 열 1: 포스팅 간격 (입력 가능)
+        # 행 1, 열 0: 포스팅 간격 (입력 가능)
         wait_time_value = self.config_manager.data["global_settings"].get("default_wait_time", "47~50")
         self.interval_label = self.create_unified_card("⏱️ 포스팅 간격", wait_time_value, None, "lineedit", suffix="분")
         self.wait_time_edit_monitoring = self.interval_label.value_widget
         self.wait_time_edit_monitoring.setText(wait_time_value)
         self.wait_time_edit_monitoring.textChanged.connect(self.on_interval_changed)
-        self.settings_grid.addWidget(self.interval_label, 1, 1, 1, 1)
+        self.settings_grid.addWidget(self.interval_label, 1, 0, 1, 1)
         
-        # 행 2, 열 0: 남은 키워드
+        # 행 1, 열 1: 남은 키워드
         self.total_keywords_label = self.create_unified_card("📊 남은 키워드", "0개", self.goto_site_management, "button")
         self.total_keywords_button = self.total_keywords_label.value_button
-        self.settings_grid.addWidget(self.total_keywords_label, 2, 0, 1, 1)
+        self.settings_grid.addWidget(self.total_keywords_label, 1, 1, 1, 1)
         
-        # 행 2, 열 1: 새로고침
+        # 행 1, 열 2: 새로고침
         self.refresh_button_label = self.create_unified_card("🔄 새로고침", "F5", self.refresh_all_status, "button")
         self.refresh_button = self.refresh_button_label.value_button
-        self.settings_grid.addWidget(self.refresh_button_label, 2, 1, 1, 1)
+        self.settings_grid.addWidget(self.refresh_button_label, 1, 2, 1, 1)
         
         status_layout.addLayout(self.settings_grid)
         
@@ -7173,12 +7173,12 @@ class MainWindow(QMainWindow):
                 background-color: {COLORS['success']};
                 color: white;
                 font-weight: bold;
-                padding: 15px 8px;
+                padding: 8px 8px;
                 border-radius: 8px;
                 border: none;
                 font-size: 14px;
-                min-height: 50px;
-                max-height: 50px;
+                min-height: 36px;
+                max-height: 36px;
                 min-width: 80px;
             }}
             QPushButton:hover {{
@@ -7197,12 +7197,12 @@ class MainWindow(QMainWindow):
                 background-color: {COLORS['warning']};
                 color: white;
                 font-weight: bold;
-                padding: 15px 8px;
+                padding: 8px 8px;
                 border-radius: 8px;
                 border: none;
                 font-size: 14px;
-                min-height: 50px;
-                max-height: 50px;
+                min-height: 36px;
+                max-height: 36px;
                 min-width: 80px;
             }}
             QPushButton:hover {{
@@ -7221,12 +7221,12 @@ class MainWindow(QMainWindow):
                 background-color: {COLORS['primary']};
                 color: white;
                 font-weight: bold;
-                padding: 15px 8px;
+                padding: 8px 8px;
                 border-radius: 8px;
                 border: none;
                 font-size: 14px;
-                min-height: 50px;
-                max-height: 50px;
+                min-height: 36px;
+                max-height: 36px;
                 min-width: 80px;
             }}
             QPushButton:hover {{
@@ -7245,12 +7245,12 @@ class MainWindow(QMainWindow):
                 background-color: {COLORS['danger']};
                 color: white;
                 font-weight: bold;
-                padding: 15px 8px;
+                padding: 8px 8px;
                 border-radius: 8px;
                 border: none;
                 font-size: 14px;
-                min-height: 50px;
-                max-height: 50px;
+                min-height: 36px;
+                max-height: 36px;
                 min-width: 80px;
             }}
             QPushButton:hover {{
