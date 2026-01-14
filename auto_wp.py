@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QGridLayout, QSpinBox, QComboBox, QCheckBox, QListWidget,
     QFileDialog, QMessageBox, QProgressBar, QSplitter, QFrame,
     QListWidgetItem, QDialog, QDialogButtonBox, QFormLayout, QProgressDialog,
-    QSizePolicy, QStackedWidget
+    QSizePolicy, QStackedWidget, QStyledItemDelegate
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize
 from PyQt6.QtGui import QFont, QPixmap, QIcon, QPalette, QColor
@@ -6080,20 +6080,13 @@ class MainWindow(QMainWindow):
             value_widget.setStyleSheet(style_config['stylesheet'])
             value_widget.setCursor(Qt.CursorShape.PointingHandCursor)
             
-            # 콤보박스를 편집 가능하게 만들고 텍스트 중앙 정렬
-            value_widget.setEditable(True)
-            value_widget.lineEdit().setReadOnly(True)
-            value_widget.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
-            # lineEdit의 패딩도 조정하여 제목과 정확히 맞춤
-            value_widget.lineEdit().setStyleSheet("""
-                QLineEdit {
-                    background: transparent;
-                    border: none;
-                    color: white;
-                    padding: 0px 2px;
-                    margin: 0px;
-                }
-            """)
+            # 콤보박스 텍스트 가시성 문제 해결을 위해 Editable 비활성화
+            # 대신 스타일시트로 텍스트 정렬 시도 (QComboBox는 텍스트 중앙 정렬이 까다로움)
+            value_widget.setEditable(False)
+            
+            # 뷰(팝업) 아이템 델리게이트 설정으로 중앙 정렬
+            delegate = QStyledItemDelegate()
+            value_widget.setItemDelegate(delegate)
             
             # 스크롤 기능 비활성화
             value_widget.wheelEvent = lambda event: None
@@ -6108,23 +6101,18 @@ class MainWindow(QMainWindow):
             value_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
             value_widget.setStyleSheet(f"""
                 QLineEdit {{
-                    background-color: {COLORS['surface']};
+                    background-color: transparent;
                     color: {COLORS['text']};
-                    border: 2px solid {COLORS['primary']};
-                    border-radius: 10px;
-                    padding: 5px 10px;
+                    border: none;
                     font-weight: normal;
                     font-size: 10pt;
-                    text-align:center;
+                    text-align: right;
                 }}
                 QLineEdit:hover {{
-                    background-color: {COLORS['primary']};
-                    color: white;
-                    border-color: {COLORS['info']};
+                    background-color: transparent;
                 }}
                 QLineEdit:focus {{
-                    background-color: {COLORS['surface_light']};
-                    border-color: {COLORS['info']};
+                    background-color: transparent;
                 }}
             """)
             
@@ -6143,15 +6131,30 @@ class MainWindow(QMainWindow):
                 value_widget.setEnabled(False)
 
         if widget_type == "lineedit" and suffix:
-            wrapper = QWidget()
+            wrapper = QFrame()
+            wrapper.setObjectName("intervalWrapper")
+            wrapper.setStyleSheet(f"""
+                QFrame#intervalWrapper {{
+                    background-color: {COLORS['surface']};
+                    border: 2px solid {COLORS['primary']};
+                    border-radius: 10px;
+                }}
+                QFrame#intervalWrapper:hover {{
+                    background-color: {COLORS['primary']};
+                    border-color: {COLORS['info']};
+                }}
+            """)
+            
             wrapper_layout = QHBoxLayout(wrapper)
-            wrapper_layout.setContentsMargins(0, 0, 0, 0)
+            wrapper_layout.setContentsMargins(15, 5, 15, 5)
             wrapper_layout.setSpacing(5)
             
+            # 입력창 (오른쪽 정렬로 변경하여 숫자와 단위가 붙어보이게 함)
+            value_widget.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             wrapper_layout.addWidget(value_widget)
             
             suffix_label = QLabel(suffix)
-            suffix_label.setStyleSheet("color: white; font-weight: bold;")
+            suffix_label.setStyleSheet(f"color: {COLORS['text']}; font-weight: normal; font-size: 10pt; border: none; background: transparent;")
             wrapper_layout.addWidget(suffix_label)
             
             layout.addWidget(wrapper)
@@ -7943,9 +7946,11 @@ class MainWindow(QMainWindow):
                         try:
                             with open(keyword_path, 'r', encoding='utf-8') as f:
                                 lines = [line.strip() for line in f.readlines() if line.strip() and not line.strip().startswith('#')]
-                                total_keywords += len(lines)
-                        except:
-                            pass
+                                count = len(lines)
+                                print(f"🔍 키워드 확인: {keyword_file} - {count}개")
+                                total_keywords += count
+                        except Exception as e:
+                            print(f"❌ 키워드 파일 읽기 오류 ({keyword_path}): {e}")
 
             self.total_keywords_button.setText(f"{total_keywords}개")
 
