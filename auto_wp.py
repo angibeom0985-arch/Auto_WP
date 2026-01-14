@@ -7090,12 +7090,6 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)  # 20에서 10으로 줄임
         layout.setContentsMargins(20, 20, 20, 20)
 
-        # 🔥 가로 배치를 위한 컨테이너 위젯 생성
-        horizontal_container = QWidget()
-        horizontal_layout = QHBoxLayout()
-        horizontal_layout.setSpacing(15)
-        horizontal_layout.setContentsMargins(0, 0, 0, 0)
-
         # 현재 설정 상태 카드
         status_group = QGroupBox("📊 현재 설정 상태")
         status_group.setStyleSheet(f"""
@@ -7195,54 +7189,6 @@ class MainWindow(QMainWindow):
         self.start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         control_grid.addWidget(self.start_btn, 0, 0)
         
-        # 중지 버튼
-        self.stop_btn = QPushButton("🛑 중지")
-        self.stop_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.stop_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS['danger']};
-                color: white;
-                font-weight: bold;
-                padding: 15px 8px;
-                border-radius: 8px;
-                border: none;
-                font-size: 14px;
-                min-height: 50px;
-                max-height: 50px;
-                min-width: 80px;
-            }}
-            QPushButton:hover {{
-                background-color: #D08770;
-            }}
-        """)
-        self.stop_btn.clicked.connect(self.stop_posting)
-        self.stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        control_grid.addWidget(self.stop_btn, 0, 1)
-        
-        # 재개 버튼 (파란색으로 변경)
-        self.resume_btn = QPushButton("⏯️ 재개")
-        self.resume_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.resume_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS['primary']};
-                color: white;
-                font-weight: bold;
-                padding: 15px 8px;
-                border-radius: 8px;
-                border: none;
-                font-size: 14px;
-                min-height: 50px;
-                max-height: 50px;
-                min-width: 80px;
-            }}
-            QPushButton:hover {{
-                background-color: #7C9CBF;
-            }}
-        """)
-        self.resume_btn.clicked.connect(self.resume_posting)
-        self.resume_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        control_grid.addWidget(self.resume_btn, 1, 0)
-        
         # 일시정지 버튼 (노란색으로 변경)
         self.pause_btn = QPushButton("⏸️ 일시정지")
         self.pause_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -7265,12 +7211,60 @@ class MainWindow(QMainWindow):
         """)
         self.pause_btn.clicked.connect(self.pause_posting)
         self.pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        control_grid.addWidget(self.pause_btn, 1, 1)
+        control_grid.addWidget(self.pause_btn, 0, 1)
+
+        # 재개 버튼 (파란색으로 변경)
+        self.resume_btn = QPushButton("⏯️ 재개")
+        self.resume_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.resume_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['primary']};
+                color: white;
+                font-weight: bold;
+                padding: 15px 8px;
+                border-radius: 8px;
+                border: none;
+                font-size: 14px;
+                min-height: 50px;
+                max-height: 50px;
+                min-width: 80px;
+            }}
+            QPushButton:hover {{
+                background-color: #7C9CBF;
+            }}
+        """)
+        self.resume_btn.clicked.connect(self.resume_posting)
+        self.resume_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        control_grid.addWidget(self.resume_btn, 0, 2)
+
+        # 중지 버튼
+        self.stop_btn = QPushButton("🛑 중지")
+        self.stop_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.stop_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['danger']};
+                color: white;
+                font-weight: bold;
+                padding: 15px 8px;
+                border-radius: 8px;
+                border: none;
+                font-size: 14px;
+                min-height: 50px;
+                max-height: 50px;
+                min-width: 80px;
+            }}
+            QPushButton:hover {{
+                background-color: #D08770;
+            }}
+        """)
+        self.stop_btn.clicked.connect(self.stop_posting)
+        self.stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        control_grid.addWidget(self.stop_btn, 0, 3)
         
         status_layout.addLayout(control_grid)
         status_group.setLayout(status_layout)
-        # 🔥 현재 설정 상태를 가로 레이아웃에 추가
-        horizontal_layout.addWidget(status_group)
+        # 🔥 메인 레이아웃에 추가
+        layout.addWidget(status_group)
 
         # 진행 상태 카드
         progress_group = QGroupBox("📜 진행 상태")
@@ -7398,6 +7392,16 @@ class MainWindow(QMainWindow):
 
         progress_layout.addWidget(self.progress_text)
         progress_group.setLayout(progress_layout)
+        
+        # 🔥 메인 레이아웃에 추가 (세로 배치)
+        layout.addWidget(progress_group)
+
+        # 🔥 남은 공간을 채우기 위해 stretch 추가
+        layout.addStretch()
+
+        widget.setLayout(layout)
+        scroll_area.setWidget(widget)
+        return scroll_area
         # 🔥 진행 상태를 가로 레이아웃에 추가
         horizontal_layout.addWidget(progress_group)
 
