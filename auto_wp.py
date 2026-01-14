@@ -6301,8 +6301,8 @@ class MainWindow(QMainWindow):
             if not hasattr(self, 'settings_grid'):
                 return
             
-            # 항상 2열(3행) 고정 배치
-            columns = 2
+            # 항상 3열(2행) 고정 배치
+            columns = 3
             
             if not hasattr(self, '_current_grid_columns') or self._current_grid_columns != columns:
                 self._current_grid_columns = columns
