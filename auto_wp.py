@@ -6000,9 +6000,7 @@ class MainWindow(QMainWindow):
                     background-color: {COLORS['surface']};
                     color: white;
                     border: 2px solid {COLORS['primary']};
-                    border-radius: 10px;
-                    padding: 17px 15px;  # 좌우 패딩을 줄여서 중앙정렬 맞춤
-                    font-weight: normal;
+                    padding: 17px 15px;
                     font-size: 10pt;
                 }}
                 QComboBox:hover {{
@@ -6043,7 +6041,7 @@ class MainWindow(QMainWindow):
             """
         }
 
-    def create_unified_card(self, title, value, callback=None, widget_type="button"):
+    def create_unified_card(self, title, value, callback=None, widget_type="button", suffix=None):
         """통합된 카드 생성 함수 - 모든 카드가 동일한 스타일 사용"""
         # 컨테이너 설정
         container = QWidget()
@@ -6114,7 +6112,7 @@ class MainWindow(QMainWindow):
                     color: {COLORS['text']};
                     border: 2px solid {COLORS['primary']};
                     border-radius: 10px;
-                    padding: 15px 20px;
+                    padding: 5px 10px;
                     font-weight: normal;
                     font-size: 10pt;
                     text-align:center;
@@ -6144,7 +6142,21 @@ class MainWindow(QMainWindow):
             else:
                 value_widget.setEnabled(False)
 
-        layout.addWidget(value_widget)
+        if widget_type == "lineedit" and suffix:
+            wrapper = QWidget()
+            wrapper_layout = QHBoxLayout(wrapper)
+            wrapper_layout.setContentsMargins(0, 0, 0, 0)
+            wrapper_layout.setSpacing(5)
+            
+            wrapper_layout.addWidget(value_widget)
+            
+            suffix_label = QLabel(suffix)
+            suffix_label.setStyleSheet("color: white; font-weight: bold;")
+            wrapper_layout.addWidget(suffix_label)
+            
+            layout.addWidget(wrapper)
+        else:
+            layout.addWidget(value_widget)
 
         # value_widget을 container의 속성으로 저장
         container.value_button = value_widget
@@ -7136,7 +7148,7 @@ class MainWindow(QMainWindow):
         
         # 행 1, 열 1: 포스팅 간격 (입력 가능)
         wait_time_value = self.config_manager.data["global_settings"].get("default_wait_time", "47~50")
-        self.interval_label = self.create_unified_card("⏱️ 포스팅 간격", wait_time_value, None, "lineedit")
+        self.interval_label = self.create_unified_card("⏱️ 포스팅 간격", wait_time_value, None, "lineedit", suffix="분")
         self.wait_time_edit_monitoring = self.interval_label.value_widget
         self.wait_time_edit_monitoring.setText(wait_time_value)
         self.wait_time_edit_monitoring.textChanged.connect(self.on_interval_changed)
