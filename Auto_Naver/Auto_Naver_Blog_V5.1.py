@@ -139,6 +139,44 @@ def normalize_blog_address(address: str) -> str:
     return f"https://blog.naver.com/{address}"
 
 
+def parse_interval_range(interval_value):
+    """Parse interval value into (min, max) minutes."""
+    if interval_value is None:
+        return 0, 0
+    if isinstance(interval_value, (int, float)):
+        value = int(interval_value)
+        return (value, value) if value > 0 else (0, 0)
+
+    text = str(interval_value).strip()
+    if not text:
+        return 0, 0
+
+    if "~" in text:
+        parts = [p.strip() for p in text.split("~", 1)]
+        try:
+            start = int(parts[0]) if parts[0] else 0
+        except ValueError:
+            start = 0
+        try:
+            end = int(parts[1]) if len(parts) > 1 and parts[1] else start
+        except ValueError:
+            end = start
+    else:
+        try:
+            start = int(text)
+            end = start
+        except ValueError:
+            return 0, 0
+
+    if start < 0:
+        start = 0
+    if end < 0:
+        end = 0
+    if end < start:
+        start, end = end, start
+    return start, end
+
+
 class NaverBlogAutomation:
     """네이버 블로그 자동 포스팅 클래스"""
     
@@ -406,7 +444,7 @@ class NaverBlogAutomation:
                 
                 # 첫 번째 키워드 선택
                 selected_keyword = keywords[0]
-                self._update_status(f"선택된 키워드: {selected_keyword} (남은 개수: {keyword_count}개)")
+                self._update_status(f"✅ 선택된 키워드: {selected_keyword} (남은 개수: {keyword_count}개)")
                 return selected_keyword
                 
             except PermissionError as e:
@@ -492,8 +530,11 @@ class NaverBlogAutomation:
         """일시정지 상태일 때 대기"""
         if self.should_stop:
             raise StopRequested()
+        # pause 상태 체크
         while self.should_pause and not self.should_stop:
             time.sleep(0.5)
+            if self.should_stop:
+                raise StopRequested()
         if self.should_stop:
             raise StopRequested()
 
@@ -527,7 +568,7 @@ class NaverBlogAutomation:
                 return None, None
             
             self.current_keyword = keyword
-            self._update_status(f"✅ 선택된 키워드: {keyword}")
+            # self._update_status(f"✅ 선택된 키워드: {keyword}")
             print(f"🎯 키워드 사용: {keyword}")
             
             # prompt1.txt와 prompt2.txt 파일 읽기
@@ -588,7 +629,7 @@ class NaverBlogAutomation:
 - 본문은 각각 **최소 500자 이상** 상세히 작성하세요
 - 본문은 각각 **최소 500자 이상** 상세히 작성하세요
 - 프롬프트 1의 모든 조건을 정확히 지켜 '제목'과 '서론'을 작성하세요
-- 프롬프트 2의 모든 조건을 정확히 지켜 '소제목'과 '본문' 3세트를 작성하세요
+- 프롬프트 2의 모든 조건을 정확히 지켜 '소제목1', '본문1', '소제목2', '본문2', '소제목3', '본문3' 순서로 작성하세요
 - 두 프롬프트의 '절대 금지 사항'을 반드시 준수하세요
 - 각 섹션 사이는 빈 줄 없이 줄바꿈 1번만 하세요
 - 본문은 가능한 한 많은 토큰을 사용하여 길게 작성하세요
@@ -629,7 +670,7 @@ class NaverBlogAutomation:
                 raw_filepath = os.path.join(result_folder, raw_filename)
                 with open(raw_filepath, 'w', encoding='utf-8') as f:
                     f.write(content.strip() + "\n")
-                self._update_status(f"✅ 원문 저장: {raw_filename}")
+                # self._update_status(f"✅ 원문 저장: {raw_filename}")
             except Exception as e:
                 self._update_status(f"⚠️ 원문 저장 실패: {str(e)}")
 
@@ -703,7 +744,13 @@ class NaverBlogAutomation:
             "제목": "title",
             "서론": "intro",
             "소제목": "subtitle",
+            "소제목1": "subtitle",
+            "소제목2": "subtitle",
+            "소제목3": "subtitle",
             "본문": "body",
+            "본문1": "body",
+            "본문2": "body",
+            "본문3": "body",
         }
         has_labels = any(line in label_map for line in lines)
         if has_labels:
@@ -1221,7 +1268,7 @@ class NaverBlogAutomation:
                 if not self._find_gemini_editor(timeout=2):
                      self._update_status(f"⚠️ 로그인 절차 중 오류: {str(e)}")
 
-            self._update_status("🔄 Gemini 웹앱 입력창 확인 중...")
+            # self._update_status("🔄 Gemini 웹앱 입력창 확인 중...")
             before_count = 0
             try:
                 before_count = len(self.driver.find_elements(By.CSS_SELECTOR, "div.markdown"))
@@ -1392,7 +1439,7 @@ class NaverBlogAutomation:
             # PIL imports 확인
             try:
                 from PIL import Image, ImageDraw, ImageFont
-                self._update_status("✅ PIL 모듈 로드 성공")
+                # self._update_status("✅ PIL 모듈 로드 성공")
             except ImportError as ie:
                 self._update_status(f"❌ PIL 임포트 실패: {str(ie)}")
                 print(f"[PIL 임포트 오류]\n{traceback.format_exc()}")
@@ -1540,10 +1587,15 @@ class NaverBlogAutomation:
             
             # moviepy 동적 import (실행 시점에 체크)
             try:
-                from moviepy import ImageClip
+                try:
+                    from moviepy import ImageClip
+                except ImportError:
+                    # moviepy 2.x 호환 시도
+                    from moviepy.video.VideoClip import ImageClip
+                    
                 import moviepy.video.io.VideoFileClip
                 import moviepy.video.VideoClip
-                self._update_status("✅ moviepy 모듈 로드 성공")
+                # self._update_status("✅ moviepy 모듈 로드 성공")
             except ImportError as ie:
                 self._update_status(f"❌ moviepy 임포트 실패: {str(ie)}")
                 return None
@@ -1626,7 +1678,7 @@ class NaverBlogAutomation:
 
             if blog_url != self.blog_address:
                 self.blog_address = blog_url
-                self._update_status(f"ℹ️ 블로그 주소 보정: {blog_url}")
+                # self._update_status(f"ℹ️ 블로그 주소 보정: {blog_url}")
 
             self._update_status(f"🔍 블로그 크롤링 시작: {blog_url}")
 
@@ -1652,7 +1704,7 @@ class NaverBlogAutomation:
                 WebDriverWait(self.driver, 5).until(lambda d: len(d.window_handles) > len(initial_handles))
                 self.driver.switch_to.window(self.driver.window_handles[-1])
             except Exception:
-                self._update_status("⚠️ 새 탭 열기 감지 실패 -> 현재 탭에서 진행")
+                # self._update_status("⚠️ 새 탭 열기 감지 실패 -> 현재 탭에서 진행")
                 self.driver.get(blog_url)
 
             try:
@@ -1661,12 +1713,12 @@ class NaverBlogAutomation:
                 # mainFrame 전환 (데스크톱 블로그 기본 구조)
                 try:
                     WebDriverWait(self.driver, 8).until(
-                        EC.frame_to_be_available_and_switch_to_it((By.ID, "mainFrame"))
+                    EC.frame_to_be_available_and_switch_to_it((By.ID, "mainFrame"))
                     )
-                    self._update_status("✅ mainFrame 전환 완료")
+                    # self._update_status("✅ mainFrame 전환 완료")
                     time.sleep(1)
                 except Exception:
-                    self._update_status("ℹ️ mainFrame 전환 실패 - 현재 페이지에서 탐색")
+                    pass # self._update_status("ℹ️ mainFrame 전환 실패 - 현재 페이지에서 탐색")
 
                 # "전체보기" 링크 클릭하여 전체 글 목록으로 이동
                 try:
@@ -1683,7 +1735,7 @@ class NaverBlogAutomation:
                                 EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                             )
                             category_link.click()
-                            self._update_status("✅ '전체보기' 클릭 완료")
+                            # self._update_status("✅ '전체보기' 클릭 완료")
                             time.sleep(2)
                             category_clicked = True
                             break
@@ -1712,7 +1764,7 @@ class NaverBlogAutomation:
                     try:
                         elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
                         if elements:
-                            self._update_status(f"🔍 셀렉터 '{selector}'로 {len(elements)}개 발견")
+                            # self._update_status(f"🔍 셀렉터 '{selector}'로 {len(elements)}개 발견")
                             for el in elements:
                                 href = el.get_attribute("href")
                                 if not href or href in seen_urls:
@@ -1732,7 +1784,7 @@ class NaverBlogAutomation:
                 
                 if not post_elements:
                     try:
-                        self._update_status("🧭 셀렉터 실패 - JS 수집 시도")
+                        # self._update_status("🧭 셀렉터 실패 - JS 수집 시도")
                         candidates = self.driver.execute_script("""
                             const blogId = arguments[0] || '';
                             const anchors = Array.from(document.querySelectorAll("a"));
@@ -1752,7 +1804,7 @@ class NaverBlogAutomation:
                             return results.slice(0, 10);
                         """, blog_id)
                         if candidates:
-                            self._update_status(f"🧭 JS 수집 {len(candidates)}개 발견")
+                            # self._update_status(f"🧭 JS 수집 {len(candidates)}개 발견")
                             for item in candidates:
                                 post_elements.append(item)
                     except Exception as e:
@@ -1837,9 +1889,9 @@ class NaverBlogAutomation:
                             'description': post_title  # 설명은 제목과 동일하게
                         })
                         
-                        self._update_status(f"✅ 포스트 {len(posts)} 수집: {post_title[:30]}...")
+                        self._update_status(f"✅ 포스트 {len(posts)} 수집: {post_title[:15]}...")
                     except Exception as e:
-                        self._update_status(f"⚠️ 요소 {idx+1} 처리 실패: {str(e)[:30]}")
+                        # self._update_status(f"⚠️ 요소 {idx+1} 처리 실패: {str(e)[:30]}")
                         continue
                 
             except Exception as e:
@@ -2012,7 +2064,7 @@ class NaverBlogAutomation:
                     line = f"{post['title']}|||{post['url']}|||{post['description']}\n"
                     f.write(line)
             
-            self._update_status(f"✅ latest_posts.txt 파일 저장 완료 ({len(posts)}개)")
+            # self._update_status(f"✅ latest_posts.txt 파일 저장 완료 ({len(posts)}개)")
             return True
 
         except Exception as e:
@@ -2055,6 +2107,9 @@ class NaverBlogAutomation:
                 if line.strip():
                     # 줄 길이에 비례한 지연시간 (최소 0.1초, 최대 0.3초)
                     delay = max(0.1, min(0.3, len(line) / 200))
+                    
+                    if self.should_stop: raise StopRequested()
+                    
                     ActionChains(self.driver).send_keys(line).perform()
                     time.sleep(delay)
                     if i < len(lines) - 1:  # 마지막 줄이 아니면 Enter 2번
@@ -2092,6 +2147,9 @@ class NaverBlogAutomation:
                 if sentence:
                     # 문장 길이에 비례한 지연시간 (최소 0.1초, 최대 0.3초)
                     delay = max(0.1, min(0.3, len(sentence) / 200))
+                    
+                    if self.should_stop: raise StopRequested()
+                    
                     ActionChains(self.driver).send_keys(sentence).perform()
                     time.sleep(delay)
                     if i < len(sentences) - 1:  # 마지막 문장이 아니면 Enter 2번
@@ -2464,7 +2522,7 @@ class NaverBlogAutomation:
                     self._update_status("⚠️ 크롤링 데이터 없음")
             
             # 3. 블로그 홈(글쓰기 진입점) 새 탭으로 열기
-            self._update_status("📝 포스팅 프로세스 시작: 블로그 홈 접속 (새 탭)")
+            # self._update_status("📝 포스팅 프로세스 시작: 블로그 홈 접속 (새 탭)")
             
             # 브라우저 세션 유효성 확인
             try:
@@ -2482,7 +2540,7 @@ class NaverBlogAutomation:
             self._wait_if_paused()
             
             # 4. 글쓰기 버튼 클릭
-            self._update_status("🖊️ 글쓰기 버튼 찾는 중...")
+            # self._update_status("🖊️ 글쓰기 버튼 찾는 중...")
             write_btn_selectors = [
                 "a.item[ng-href*='GoBlogWrite']",
                 "a[href*='GoBlogWrite.naver']",
@@ -2498,7 +2556,7 @@ class NaverBlogAutomation:
                     if write_btn:
                         write_btn.click()
                         self._sleep_with_checks(3)
-                        self._update_status("✅ 블로그 홈에서 글쓰기 버튼 클릭 성공")
+                        # self._update_status("✅ 블로그 홈에서 글쓰기 버튼 클릭 성공")
                         
                         # 새 창이 열렸다면 전환
                         if len(self.driver.window_handles) > 1:
@@ -2519,7 +2577,7 @@ class NaverBlogAutomation:
 
             
             # mainFrame으로 전환
-            self._update_status("🖼️ 에디터 프레임으로 전환 중...")
+            # self._update_status("🖼️ 에디터 프레임으로 전환 중...")
             frame_switched = False
             
             for attempt in range(3):
@@ -2536,7 +2594,7 @@ class NaverBlogAutomation:
                         EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
                     )
                     
-                    self._update_status("✅ 프레임 전환 완료")
+                    # self._update_status("✅ 프레임 전환 완료")
                     frame_switched = True
                     break
                 except Exception:
@@ -2553,37 +2611,37 @@ class NaverBlogAutomation:
                 WebDriverWait(self.driver, 15).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, ".se-documentTitle, #subject"))
                 )
-                self._update_status("✅ 에디터 로딩 확인됨")
+                self._update_status("✅ 에디터 로딩 완료")
             except Exception:
                 self._update_status("⚠️ 에디터 로딩 확인 지연 (계속 진행)")
 
             # 팝업창 확인 및 '취소' 버튼 클릭
-            self._update_status("🔍 팝업 확인 중...")
+            # self._update_status("🔍 팝업 확인 중...")
             try:
                 popup_cancel = WebDriverWait(self.driver, 3).until(
                     EC.element_to_be_clickable((By.CSS_SELECTOR, ".se-popup-button.se-popup-button-cancel"))
                 )
                 popup_cancel.click()
-                self._update_status("✅ 팝업 닫기 완료")
+                # self._update_status("✅ 팝업 닫기 완료")
                 self._sleep_with_checks(1)
             except:
                 pass
             self._wait_if_paused()
 
             # 도움말 패널 닫기
-            self._update_status("📚 도움말 패널 확인 중...")
+            # self._update_status("📚 도움말 패널 확인 중...")
             try:
                 help_close = WebDriverWait(self.driver, 3).until(
                     EC.element_to_be_clickable((By.CSS_SELECTOR, ".se-help-panel-close-button"))
                 )
                 help_close.click()
-                self._update_status("✅ 도움말 닫기 완료")
+                # self._update_status("✅ 도움말 닫기 완료")
                 self._sleep_with_checks(1)
             except:
                 pass
 
             # 제목 입력
-            self._update_status("📌 제목 입력 중...")
+            # self._update_status("📌 제목 입력 중...")
             try:
                 title_elem = WebDriverWait(self.driver, 10).until(
                     EC.element_to_be_clickable((By.CSS_SELECTOR, ".se-documentTitle"))
@@ -2630,7 +2688,7 @@ class NaverBlogAutomation:
                             body_lines.append(line)
                 
                 total_lines = len([l for l in intro_lines if l.strip()]) + len([l for l in body_lines if l.strip()])
-                self._update_status(f"📝 총 {total_lines}줄 작성 시작...")
+                # self._update_status(f"📝 총 {total_lines}줄 작성 시작...")
                 
                 current_line = 0
                 
@@ -2712,7 +2770,7 @@ class NaverBlogAutomation:
                         )
                         fs24_btn.click()
                         self._sleep_with_checks(0.3)
-                        self._update_status("✅ 폰트 크기 24 적용")
+                        # self._update_status("✅ 폰트 크기 24 적용")
                     except Exception as e:
                         self._update_status(f"⚠️ 폰트 크기 변경 실패: {str(e)}")
                     
@@ -2728,7 +2786,7 @@ class NaverBlogAutomation:
                     actions = ActionChains(self.driver)
                     actions.key_down(Keys.CONTROL).send_keys('b').key_up(Keys.CONTROL).perform()
                     self._sleep_with_checks(0.3)
-                    self._update_status("✅ 볼드체 적용")
+                    # self._update_status("✅ 볼드체 적용")
                     
                     # 텍스트 끝으로 이동
                     actions = ActionChains(self.driver)
@@ -2833,7 +2891,7 @@ class NaverBlogAutomation:
                         # -----------------------------------------------------------
                         # 사진 버튼을 먼저 클릭하고 파일 입력 요소를 찾습니다.
                         # -----------------------------------------------------------
-                        self._update_status("🖼️ 사진 버튼 클릭 중...")
+                        # self._update_status("🖼️ 사진 버튼 클릭 중...")
                         image_btn = WebDriverWait(self.driver, 5).until(
                             EC.presence_of_element_located((By.CSS_SELECTOR, "button.se-image-toolbar-button.se-document-toolbar-basic-button"))
                         )
@@ -2841,7 +2899,7 @@ class NaverBlogAutomation:
                         self._sleep_with_checks(2)
 
                         # 파일 입력 요소 찾기
-                        self._update_status("📂 파일 입력 요소 찾는 중...")
+                        # self._update_status("📂 파일 입력 요소 찾는 중...")
                         file_input = None
                         selectors = [
                             "input[type='file']",
@@ -2855,7 +2913,7 @@ class NaverBlogAutomation:
                                     EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                                 )
                                 if file_input:
-                                    self._update_status(f"✅ 파일 입력 요소 찾음: {selector}")
+                                    # self._update_status(f"✅ 파일 입력 요소 찾음: {selector}")
                                     break
                             except:
                                 continue
@@ -2875,7 +2933,7 @@ class NaverBlogAutomation:
                         self._update_status("✅ 썸네일 업로드 명령 전달 완료")
 
                         # 탐색기 대화상자 닫기 (Win32 API 사용)
-                        self._update_status("🔘 파일 업로드 대화상자 닫는 중...")
+                        # self._update_status("🔘 파일 업로드 대화상자 닫는 중...")
                         try:
                             import win32gui
                             import win32con
@@ -2912,7 +2970,7 @@ class NaverBlogAutomation:
                             for attempt in range(3):
                                 closed = close_file_dialogs()
                                 if closed:
-                                    self._update_status(f"✅ 대화상자 닫기 성공 ({len(closed)}개)")
+                                    # self._update_status(f"✅ 대화상자 닫기 성공 ({len(closed)}개)")
                                     self._sleep_with_checks(0.5)
                                     break
                                 self._sleep_with_checks(0.3)
@@ -3054,7 +3112,7 @@ class NaverBlogAutomation:
                                     caption_target = WebDriverWait(self.driver, 3).until(
                                         EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                                     )
-                                    self._update_status(f"✅ 사진 설명 영역 발견: {selector}")
+                                    # self._update_status(f"✅ 사진 설명 영역 발견: {selector}")
                                     break
                                 except Exception:
                                     continue
@@ -3075,7 +3133,7 @@ class NaverBlogAutomation:
                                     el.click();
                                     el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
                                 """, placeholder)
-                                self._update_status("✅ placeholder 클릭 성공")
+                                # self._update_status("✅ placeholder 클릭 성공")
                             except Exception:
                                 try:
                                     caption_p = caption_target.find_element(By.CSS_SELECTOR, "p.se-text-paragraph")
@@ -3204,7 +3262,7 @@ class NaverBlogAutomation:
                 self._update_status(f"📋 본문 내용: {len(content_lines)}줄 (원본: {len(body_lines)}줄)")
                 
                 if len(content_lines) >= 6:
-                    self._update_status("✅ 소제목/본문 형식으로 작성 시작...")
+                    self._update_status("✅ 본문 작성 진행 중...")
                     # 첫 6줄은 소제목/본문 형식으로 작성
                     subtitle1 = content_lines[0]
                     body1 = content_lines[1]
@@ -3354,7 +3412,7 @@ class NaverBlogAutomation:
                         section_title = mode_text if mode_text else "함께 보면 좋은 글"
 
                     if related_posts and section_title:
-                        self._update_status("관련 글 섹션 추가 중...")
+                        self._update_status("🔗 관련 글 섹션 추가 중...")
 
                         # 구분선 스타일 결정 (관련 글 앞/뒤 동일 적용)
                         if not related_line_choice:
@@ -3476,7 +3534,7 @@ class NaverBlogAutomation:
 
                         # 12. '동영상 업로드'
                         # (여기에 동영상 업로드 관련 함수를 호출하거나 로직을 추가하세요)
-                        self._update_status("관련 글 섹션 완료, 동영상 업로드 단계로 이동")
+                        self._update_status("✅ 관련 글 섹션 완료, 동영상 업로드 단계로 이동")
                         # self._upload_video_process() # 예시 함수
 
                 except Exception as e:
@@ -3520,7 +3578,7 @@ class NaverBlogAutomation:
                         self._sleep_with_checks(2)
                         
                         # 파일 입력 요소 찾기 (모든 input[type='file'] 중에서)
-                        self._update_status("📂 파일 입력 요소 찾는 중...")
+                        # self._update_status("📂 파일 입력 요소 찾는 중...")
                         file_input = None
                         try:
                             WebDriverWait(self.driver, 5).until(
@@ -3529,7 +3587,7 @@ class NaverBlogAutomation:
                             inputs = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
                             video_inputs = [i for i in inputs if (i.get_attribute("accept") or "").lower().find("video") >= 0]
                             file_input = (video_inputs[-1] if video_inputs else inputs[-1]) if inputs else None
-                            self._update_status(f"✅ 파일 입력 요소 발견: {len(inputs)}개 (video: {len(video_inputs)}개)")
+                            # self._update_status(f"✅ 파일 입력 요소 발견: {len(inputs)}개 (video: {len(video_inputs)}개)")
                         except Exception as e:
                             self._update_status(f"⚠️ 파일 입력 요소 대기 실패: {str(e)[:50]}")
                         
@@ -3549,7 +3607,7 @@ class NaverBlogAutomation:
                         self._update_status("🔘 Windows 탐색기 창 닫는 중...")
                         try:
                             # ESC 키로 Windows 탐색기 창 닫기
-                            self._update_status("⌨️ ESC 키로 탐색기 창 닫기 (pyautogui)")
+                            # self._update_status("⌨️ ESC 키로 탐색기 창 닫기 (pyautogui)")
                             pyautogui.press('esc')
                             self._sleep_with_checks(1)
                             self._update_status("✅ 탐색기 창 닫기 성공")
@@ -3618,7 +3676,7 @@ class NaverBlogAutomation:
                             for attempt in range(3):
                                 closed = close_dialog_windows()
                                 if closed:
-                                    self._update_status(f"✅ Win32 API로 창 닫기 성공 ({len(closed)}개)")
+                                    # self._update_status(f"✅ Win32 API로 창 닫기 성공 ({len(closed)}개)")
                                     self._sleep_with_checks(0.5)
                                     break
                                 self._sleep_with_checks(0.3)
@@ -3644,8 +3702,11 @@ class NaverBlogAutomation:
                 return False
             
             # 발행 간격만큼 대기
-            interval = self.config.get("interval", 0)
-            if interval > 0:
+            interval_min, interval_max = parse_interval_range(self.config.get("interval", 0))
+            if interval_max > 0:
+                interval_min = max(interval_min, 1)
+                interval_max = max(interval_max, interval_min)
+                interval = random.randint(interval_min, interval_max)
                 total_seconds = interval * 60
                 self._update_status(f"⏰ 발행 전 대기 중... {interval:02d}:00")
                 
@@ -3835,7 +3896,7 @@ class NaverBlogAutomation:
             else:
                 options = webdriver.ChromeOptions()
             
-            self._update_status("🔧 브라우저 옵션 설정 중...")
+            # self._update_status("🔧 브라우저 옵션 설정 중...")
             
             # 공통 설정
             options.add_argument("--window-size=1920,1080")
@@ -3845,6 +3906,10 @@ class NaverBlogAutomation:
             options.add_argument("--disable-dev-shm-usage")
             options.add_argument("--disable-sync")  # Chrome 동기화 비활성화
             options.add_argument("--no-first-run")  # 첫 실행 경험 비활성화
+
+            # [중요] 구글 로그인 유지를 위한 사용자 데이터 폴더 설정
+            user_data_dir = os.path.join(self.data_dir, "chrome_profile")
+            options.add_argument(f"--user-data-dir={user_data_dir}")
             
             # 일반 Selenium일 때만 추가 우회 설정 (uc는 자동 처리됨)
             if not use_uc:
@@ -3903,7 +3968,7 @@ class NaverBlogAutomation:
                 self._update_status(f"❌ 브라우저 시작 오류: {str(e)}")
                 raise
             
-            self._update_status("🎭 봇 탐지 우회 추가 설정 중...")
+            # self._update_status("🎭 봇 탐지 우회 추가 설정 중...")
             # 🎭 User-Agent 위장
             ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
             if use_uc:
@@ -4011,12 +4076,8 @@ class NaverBlogAutomation:
                 page_source = self.driver.page_source
                 
                 if "인증" in page_source or "확인" in page_source:
-                    try:
-                        interval_minutes = int(self.config.get("interval", 2))
-                    except Exception:
-                        interval_minutes = 2
-                    if interval_minutes < 1:
-                        interval_minutes = 1
+                    interval_min, interval_max = parse_interval_range(self.config.get("interval", 2))
+                    interval_minutes = max(interval_min, interval_max, 1)
                     total_seconds = interval_minutes * 60
                     self._update_status(
                         f"⚠️ 2단계 인증 필요 - 수동으로 인증을 완료해주세요 ({interval_minutes:02d}:00 대기)"
@@ -4064,21 +4125,24 @@ class NaverBlogAutomation:
 
             self._wait_if_paused()
 
-            # 2단계: 썸네일 확인
-            self._update_status("🎨 [2/5] 썸네일 확인 단계")
+            # 2-1단계: 썸네일 확인
+            self._update_status("🎨 [2/5] 썸네일 및 동영상 제작 단계")
             thumbnail_path = self.create_thumbnail(title)
             if thumbnail_path:
-                self._update_status(f"✅ 썸네일 확인 완료")
+                self._update_status("✅ 썸네일 확인 완료")
             else:
                 self._update_status("⚠️ 썸네일 파일 없음 - 계속 진행")
             
-            # 2-1단계: 동영상 생성 (use_video가 ON이고 썸네일이 있을 경우)
+            # 2-2단계: 동영상 생성 (use_video가 ON이고 썸네일이 있을 경우)
             video_path = None
             if self.config.get("use_video", True) and thumbnail_path:
                 try:
-                    self._update_status("🎬 [2-1/5] 동영상 생성 단계")
+                    self._update_status("🎬 [2-2/5] 동영상 생성 단계")
                     video_path = self.create_video_from_thumbnail(thumbnail_path)
-                    self._update_status(f"✅ 동영상 생성 완료: {os.path.basename(video_path)}")
+                    if video_path:
+                        self._update_status(f"✅ 동영상 생성 완료: {os.path.basename(video_path)}")
+                    else:
+                        self._update_status("⚠️ 동영상 생성 실패 (파일 없음)")
                 except Exception as e:
                     # 동영상 생성 실패 시 명확한 에러 표시 후 중단
                     self._update_status(f"❌ 동영상 생성 실패: {str(e)}")
@@ -4124,7 +4188,7 @@ class NaverBlogAutomation:
             self._update_status("✍️ [5/5] 블로그 포스팅 단계")
             self._wait_if_paused()
             if not self.write_post(title, content, thumbnail_path, video_path, is_first_post=is_first_run):
-                self._update_status("⚠️ 포스팅 실패 - 브라우저는 열린 상태로 유지됩니다")
+                # self._update_status("⚠️ 포스팅 실패 - 브라우저는 열린 상태로 유지됩니다")
                 return False
             
             # 포스팅 성공 시 키워드 이동
@@ -4793,7 +4857,11 @@ class NaverBlogGUI(QMainWindow):
 
             self.config["naver_id"] = self.naver_id_entry.text()
             self.config["naver_pw"] = self.naver_pw_entry.text()
-            self.config["interval"] = int(self.interval_entry.text()) if self.interval_entry.text() else 30
+            interval_range = self._get_interval_input_range()
+            if interval_range:
+                self.config["interval"] = self._format_interval_text(*interval_range)
+            else:
+                self.config["interval"] = "10"
             self.config["use_external_link"] = self.use_link_checkbox.isChecked()
             self.config["external_link"] = self.link_url_entry.text()
             self.config["external_link_text"] = self.link_text_entry.text()
@@ -4994,7 +5062,8 @@ class NaverBlogGUI(QMainWindow):
         self.blog_address_entry.returnPressed.connect(self.save_related_posts_settings)
         self.link_url_entry.returnPressed.connect(self.save_link_settings)
         self.link_text_entry.returnPressed.connect(self.save_link_settings)
-        self.interval_entry.returnPressed.connect(self.save_time_settings)
+        self.interval_start_entry.returnPressed.connect(self.save_time_settings)
+        self.interval_end_entry.returnPressed.connect(self.save_time_settings)
         
         parent_layout.addWidget(self.tab_stack)
     
@@ -5219,7 +5288,7 @@ class NaverBlogGUI(QMainWindow):
         
         # 발행 간격 상태
         interval_status_layout = QHBoxLayout()
-        self.interval_label = QLabel("⏱️ 발행 간격: 10분")
+        self.interval_label = QLabel("⏱️ 발행 간격: 3~5분")
         self.interval_label.setFont(QFont(self.font_family, 13))
         self.interval_label.setStyleSheet(f"color: #000000; border: none;")
         interval_status_layout.addWidget(self.interval_label)
@@ -5639,12 +5708,12 @@ class NaverBlogGUI(QMainWindow):
         interval_input_layout = QHBoxLayout()
         interval_input_layout.setSpacing(10)
         
-        self.interval_entry = QLineEdit()
-        self.interval_entry.setPlaceholderText("10")
-        self.interval_entry.setText("10")
-        self.interval_entry.setFixedWidth(80)
-        self.interval_entry.setCursorPosition(0)
-        self.interval_entry.setStyleSheet(f"""
+        self.interval_start_entry = QLineEdit()
+        self.interval_start_entry.setPlaceholderText("3")
+        self.interval_start_entry.setText("3")
+        self.interval_start_entry.setFixedWidth(60)
+        self.interval_start_entry.setCursorPosition(0)
+        self.interval_start_entry.setStyleSheet(f"""
             QLineEdit {{
                 border: 2px solid {NAVER_BORDER};
                 border-radius: 10px;
@@ -5657,8 +5726,34 @@ class NaverBlogGUI(QMainWindow):
                 border-color: {NAVER_GREEN};
             }}
         """)
-        self.interval_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
-        interval_input_layout.addWidget(self.interval_entry)
+        self.interval_start_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
+        interval_input_layout.addWidget(self.interval_start_entry)
+
+        interval_tilde_label = QLabel("~")
+        interval_tilde_label.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
+        interval_tilde_label.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
+        interval_input_layout.addWidget(interval_tilde_label)
+
+        self.interval_end_entry = QLineEdit()
+        self.interval_end_entry.setPlaceholderText("5")
+        self.interval_end_entry.setText("5")
+        self.interval_end_entry.setFixedWidth(60)
+        self.interval_end_entry.setCursorPosition(0)
+        self.interval_end_entry.setStyleSheet(f"""
+            QLineEdit {{
+                border: 2px solid {NAVER_BORDER};
+                border-radius: 10px;
+                padding: 6px;
+                background-color: white;
+                color: {NAVER_TEXT};
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border-color: {NAVER_GREEN};
+            }}
+        """)
+        self.interval_end_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
+        interval_input_layout.addWidget(self.interval_end_entry)
         
         interval_text_label = PremiumCard.create_section_label("분 간격", self.font_family)
         interval_input_layout.addWidget(interval_text_label)
@@ -5689,7 +5784,7 @@ class NaverBlogGUI(QMainWindow):
         checkbox_layout.setContentsMargins(0, 0, 0, 0)
         checkbox_layout.setSpacing(10)
         
-        self.use_link_checkbox = QCheckBox("사용")
+        self.use_link_checkbox = QCheckBox("✅ 사용")
         self.use_link_checkbox.setChecked(False)
         self.use_link_checkbox.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
         self.use_link_checkbox.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent; border: none;")
@@ -5729,8 +5824,16 @@ class NaverBlogGUI(QMainWindow):
         url_layout = QVBoxLayout(url_widget)
         url_layout.setContentsMargins(0, 0, 0, 0)
         url_layout.setSpacing(6)
-        self.url_label = PremiumCard.create_section_label("🌐 링크 URL", self.font_family)
-        url_layout.addWidget(self.url_label)
+        url_label_row = QWidget()
+        url_label_row.setStyleSheet("QWidget { background-color: transparent; }")
+        url_label_row.setMinimumHeight(24)
+        url_label_layout = QHBoxLayout(url_label_row)
+        url_label_layout.setContentsMargins(0, 0, 0, 0)
+        url_label_layout.setSpacing(6)
+        self.url_label = PremiumCard.create_section_label("🔗 링크 URL", self.font_family)
+        url_label_layout.addWidget(self.url_label)
+        url_label_layout.addStretch()
+        url_layout.addWidget(url_label_row)
         self.link_url_entry = QLineEdit()
         self.link_url_entry.setPlaceholderText("https://example.com")
         self.link_url_entry.setText("https://example.com")
@@ -5764,8 +5867,16 @@ class NaverBlogGUI(QMainWindow):
         text_layout = QVBoxLayout(text_widget)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(6)
+        text_label_row = QWidget()
+        text_label_row.setStyleSheet("QWidget { background-color: transparent; }")
+        text_label_row.setMinimumHeight(24)
+        text_label_layout = QHBoxLayout(text_label_row)
+        text_label_layout.setContentsMargins(0, 0, 0, 0)
+        text_label_layout.setSpacing(6)
         self.text_label = PremiumCard.create_section_label("✏️ 앵커 텍스트", self.font_family)
-        text_layout.addWidget(self.text_label)
+        text_label_layout.addWidget(self.text_label)
+        text_label_layout.addStretch()
+        text_layout.addWidget(text_label_row)
         self.link_text_entry = QLineEdit()
         self.link_text_entry.setPlaceholderText("더 알아보기 ✨")
         self.link_text_entry.setText("더 알아보기")
@@ -5855,17 +5966,17 @@ class NaverBlogGUI(QMainWindow):
         api_card.header_layout.addStretch()
         api_card.header_layout.addWidget(api_help_btn_header)
         
-        api_card.content_layout.setSpacing(12)
+        api_card.content_layout.setSpacing(16)
 
         api_grid = QGridLayout()
         api_grid.setColumnStretch(0, 1)
         api_grid.setHorizontalSpacing(12)
-        api_grid.setVerticalSpacing(4)  # 웹사이트와 Gemini API 사이 간격 축소
+        api_grid.setVerticalSpacing(12)
 
         gemini_web_widget = QWidget()
         gemini_web_widget.setStyleSheet("QWidget { background-color: transparent; }")
         gemini_web_layout = QVBoxLayout(gemini_web_widget)
-        gemini_web_layout.setSpacing(4)
+        gemini_web_layout.setSpacing(12)
         gemini_web_layout.setContentsMargins(0, 0, 0, 0)
         gemini_web_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
@@ -5873,14 +5984,14 @@ class NaverBlogGUI(QMainWindow):
         web_provider_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
         web_provider_header = QHBoxLayout()
-        web_provider_header.setSpacing(8)
+        web_provider_header.setSpacing(10)
         web_provider_header.setContentsMargins(0, 0, 0, 0)
         web_provider_header.addWidget(web_provider_label)
         gemini_web_layout.addLayout(web_provider_header)
 
         web_provider_row = QHBoxLayout()
-        web_provider_row.setSpacing(10)
-        web_provider_row.setContentsMargins(0, 4, 0, 0)
+        web_provider_row.setSpacing(16)
+        web_provider_row.setContentsMargins(0, 0, 0, 0)
 
         # [수정] GPT, Perplexity 복원 및 Gemini와 함께 라디오 버튼 구성
         self.web_ai_gpt_radio = QRadioButton("GPT")
@@ -5900,13 +6011,14 @@ class NaverBlogGUI(QMainWindow):
         # --- Page 0: Gemini (Google) 로그인 ---
         page_gemini = QWidget()
         page_gemini_layout = QVBoxLayout(page_gemini)
-        page_gemini_layout.setContentsMargins(0, 8, 0, 0)
-        page_gemini_layout.setSpacing(8)
+        page_gemini_layout.setContentsMargins(0, 10, 0, 0)
+        page_gemini_layout.setSpacing(12)
         
         google_login_layout = QHBoxLayout() # 가로 배치
-        google_login_layout.setSpacing(12)
+        google_login_layout.setSpacing(16)
         
         google_id_layout = QHBoxLayout()
+        google_id_layout.setSpacing(8)
         google_id_label = QLabel("📧 구글 ID:")
         google_id_label.setFont(QFont(self.font_family, 11))
         self.google_id_entry = QLineEdit()
@@ -5926,6 +6038,7 @@ class NaverBlogGUI(QMainWindow):
         google_id_layout.addWidget(self.google_id_entry)
         
         google_pw_layout = QHBoxLayout()
+        google_pw_layout.setSpacing(8)
         google_pw_label = QLabel("🔑 비밀번호:")
         google_pw_label.setFont(QFont(self.font_family, 11))
         self.google_pw_entry = QLineEdit()
@@ -5973,8 +6086,8 @@ class NaverBlogGUI(QMainWindow):
         
         gemini_web_layout.addWidget(self.web_login_stack)
         
-        # 웹사이트 섬션 아래 여백
-        gemini_web_layout.addSpacing(12)
+        # 웹사이트 섹션 아래 여백
+        gemini_web_layout.addSpacing(8)
         
         self.web_ai_group = QButtonGroup(self)
         self.web_ai_group.addButton(self.web_ai_gpt_radio)
@@ -6023,7 +6136,7 @@ class NaverBlogGUI(QMainWindow):
         gemini_api_widget = QWidget()
         gemini_api_widget.setStyleSheet("QWidget { background-color: transparent; }")
         gemini_api_layout = QVBoxLayout(gemini_api_widget)
-        gemini_api_layout.setSpacing(4)
+        gemini_api_layout.setSpacing(12)
         gemini_api_layout.setContentsMargins(0, 0, 0, 0)
         
         # 구분선
@@ -6033,7 +6146,7 @@ class NaverBlogGUI(QMainWindow):
         separator.setStyleSheet(f"QFrame {{ border: 1px solid {NAVER_BORDER}; }}")
         gemini_api_layout.addWidget(separator)
         
-        # Gemini API 섬션 위 여백
+        # Gemini API 섹션 위 여백
         gemini_api_layout.addSpacing(8)
         
         gemini_api_label = PremiumCard.create_section_label("✨ Gemini API (2.5 Flash-Lite)", self.font_family)
@@ -6285,7 +6398,7 @@ class NaverBlogGUI(QMainWindow):
         posting_card = PremiumCard("포스팅 방법", "📰")
         posting_card.content_layout.addStretch()
 
-        posting_desc = QLabel("포스팅 작성 방식을 선택하세요.")
+        posting_desc = QLabel("🧭 포스팅 작성 방식을 선택하세요.")
         posting_desc.setFont(QFont(self.font_family, 12))
         posting_desc.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent;")
         posting_card.content_layout.addWidget(posting_desc)
@@ -6293,11 +6406,11 @@ class NaverBlogGUI(QMainWindow):
         posting_layout = QHBoxLayout()
         posting_layout.setSpacing(20)
 
-        self.posting_search_radio = QRadioButton("정보성 포스팅")
+        self.posting_search_radio = QRadioButton("📝 정보성 포스팅")
         self.posting_search_radio.setFont(QFont(self.font_family, 13))
         self.posting_search_radio.setChecked(True)
 
-        self.posting_home_radio = QRadioButton("네쇼커 (업뎻 예정)")
+        self.posting_home_radio = QRadioButton("🏠 네쇼커 (업뎃 예정)")
         self.posting_home_radio.setFont(QFont(self.font_family, 13))
 
         for radio in (self.posting_search_radio, self.posting_home_radio):
@@ -6332,8 +6445,8 @@ class NaverBlogGUI(QMainWindow):
         mode_header_layout.setContentsMargins(0, 0, 0, 0)
         mode_header_layout.setSpacing(12)
 
-        self.related_posts_mode_latest = QRadioButton("최신 글")
-        self.related_posts_mode_popular = QRadioButton("인기 글")
+        self.related_posts_mode_latest = QRadioButton("🆕 최신 글")
+        self.related_posts_mode_popular = QRadioButton("🔥 인기 글")
         for radio in (self.related_posts_mode_latest, self.related_posts_mode_popular):
             radio.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
             radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
@@ -6355,10 +6468,16 @@ class NaverBlogGUI(QMainWindow):
         section_layout = QVBoxLayout(section_container)
         section_layout.setContentsMargins(0, 0, 0, 0)
         section_layout.setSpacing(6)
-        
-        section_label = PremiumCard.create_section_label("📚 섹션 제목", self.font_family)
-        section_layout.addWidget(section_label)
-        
+        section_label_row = QWidget()
+        section_label_row.setStyleSheet("QWidget { background-color: transparent; }")
+        section_label_row.setMinimumHeight(24)
+        section_label_layout = QHBoxLayout(section_label_row)
+        section_label_layout.setContentsMargins(0, 0, 0, 0)
+        section_label_layout.setSpacing(6)
+        section_label = PremiumCard.create_section_label("🧩 섹션 제목", self.font_family)
+        section_label_layout.addWidget(section_label)
+        section_label_layout.addStretch()
+        section_layout.addWidget(section_label_row)
         self.related_posts_title_entry = QLineEdit()
         self.related_posts_title_entry.setPlaceholderText("함께 보면 좋은 글")
         self.related_posts_title_entry.setFont(QFont(self.font_family, 12))
@@ -6388,10 +6507,16 @@ class NaverBlogGUI(QMainWindow):
         blog_layout = QVBoxLayout(blog_container)
         blog_layout.setContentsMargins(0, 0, 0, 0)
         blog_layout.setSpacing(6)
-        
+        blog_label_row = QWidget()
+        blog_label_row.setStyleSheet("QWidget { background-color: transparent; }")
+        blog_label_row.setMinimumHeight(24)
+        blog_label_layout = QHBoxLayout(blog_label_row)
+        blog_label_layout.setContentsMargins(0, 0, 0, 0)
+        blog_label_layout.setSpacing(6)
         blog_addr_label = PremiumCard.create_section_label("🌐 블로그 주소", self.font_family)
-        blog_layout.addWidget(blog_addr_label)
-        
+        blog_label_layout.addWidget(blog_addr_label)
+        blog_label_layout.addStretch()
+        blog_layout.addWidget(blog_label_row)
         self.blog_address_entry = QLineEdit()
         self.blog_address_entry.setPlaceholderText("yourname (예: david153official)")
         self.blog_address_entry.setFont(QFont(self.font_family, 12))
@@ -6436,7 +6561,8 @@ class NaverBlogGUI(QMainWindow):
             self.naver_id_entry,
             self.naver_pw_entry,
             self.gemini_api_entry,
-            self.interval_entry,
+            self.interval_start_entry,
+            self.interval_end_entry,
             self.link_url_entry,
             self.link_text_entry,
             self.related_posts_title_entry,
@@ -6558,7 +6684,11 @@ class NaverBlogGUI(QMainWindow):
         
         # 발행 간격
         if "interval" in self.config:
-            self.interval_entry.setText(str(self.config["interval"]))
+            start, end = parse_interval_range(self.config["interval"])
+            if start == 0 and end == 0:
+                start = end = 10
+            self.interval_start_entry.setText(str(start))
+            self.interval_end_entry.setText(str(end))
         
         # 외부 링크
         if self.config.get("use_external_link"):
@@ -6755,8 +6885,8 @@ class NaverBlogGUI(QMainWindow):
             self.keyword_setup_btn.show()
         
         # 발행 간격
-        interval = self.interval_entry.text() or "10"
-        self.interval_label.setText(f"⏱️ 발행 간격: {interval}분")
+        interval_text = self._get_interval_display_text()
+        self.interval_label.setText(f"⏱️ 발행 간격: {interval_text}분")
         
         # 썸네일 기능 상태
         use_thumbnail = self.config.get("use_thumbnail", True)
@@ -6908,7 +7038,7 @@ class NaverBlogGUI(QMainWindow):
     def count_keywords(self):
         """키워드 개수 카운트"""
         try:
-            keywords_file = os.path.join("setting", "keywords.txt")
+            keywords_file = os.path.join(self.data_dir, "setting", "keywords.txt")
             if os.path.exists(keywords_file):
                 with open(keywords_file, "r", encoding="utf-8") as f:
                     return len([line.strip() for line in f if line.strip() and not line.strip().startswith('#')])
@@ -7018,6 +7148,34 @@ class NaverBlogGUI(QMainWindow):
         """예시 텍스트 삭제"""
         if widget.text() == example_text:
             widget.clear()
+
+    def _get_interval_input_range(self):
+        start_text = self.interval_start_entry.text().strip() if hasattr(self, "interval_start_entry") else ""
+        end_text = self.interval_end_entry.text().strip() if hasattr(self, "interval_end_entry") else ""
+        if not start_text and not end_text:
+            return None
+        if not start_text:
+            start_text = end_text
+        if not end_text:
+            end_text = start_text
+        start, end = parse_interval_range(f"{start_text}~{end_text}")
+        if start == 0 and end == 0:
+            return None
+        return start, end
+
+    @staticmethod
+    def _format_interval_text(start, end):
+        return f"{start}~{end}" if start != end else str(start)
+
+    def _get_interval_display_text(self):
+        interval_range = self._get_interval_input_range()
+        if interval_range:
+            start, end = interval_range
+        else:
+            start, end = parse_interval_range(self.config.get("interval", ""))
+            if start == 0 and end == 0:
+                start = end = 10
+        return self._format_interval_text(start, end)
     
     def _show_auto_close_message(self, message, icon=None):
         """자동으로 닫히는 메시지 창 (1초 후, 소리 없음)"""
@@ -7300,26 +7458,43 @@ class NaverBlogGUI(QMainWindow):
     
     def save_time_settings(self):
         """발행 간격 저장"""
-        interval_text = self.interval_entry.text().strip()
-        
-        if not interval_text:
+        start_text = self.interval_start_entry.text().strip()
+        end_text = self.interval_end_entry.text().strip()
+
+        if not start_text and not end_text:
             self._show_auto_close_message("⚠️ 발행 간격을 입력해주세요", QMessageBox.Icon.Warning)
             return
-        
+
+        if not start_text:
+            start_text = end_text
+        if not end_text:
+            end_text = start_text
+
         try:
-            interval = int(interval_text)
-            if interval < 1:
-                self._show_auto_close_message("⚠️ 발행 간격은 1분 이상이어야 합니다", QMessageBox.Icon.Warning)
-                return
+            start = int(start_text)
+            end = int(end_text)
         except ValueError:
             self._show_auto_close_message("⚠️ 숫자를 입력해주세요", QMessageBox.Icon.Warning)
             return
-        
-        self.config["interval"] = interval
-        self._update_settings_status(f"⏰ 발행 간격: {interval}분")
+
+        if start < 1 or end < 1:
+            self._show_auto_close_message("⚠️ 발행 간격은 1분 이상이어야 합니다", QMessageBox.Icon.Warning)
+            return
+
+        if end < start:
+            start, end = end, start
+        self.interval_start_entry.setText(str(start))
+        self.interval_end_entry.setText(str(end))
+
+        interval_text = self._format_interval_text(start, end)
+        self.config["interval"] = interval_text
+        self._update_settings_status(f"⏰ 발행 간격: {interval_text}분")
         self.save_config_file()
         self.update_status_display()
-        self._show_auto_close_message(f"✅ 발행 간격이 {interval}분으로 저장되었습니다", QMessageBox.Icon.Information)
+        self._show_auto_close_message(
+            f"✅ 발행 간격이 {interval_text}분으로 저장되었습니다",
+            QMessageBox.Icon.Information,
+        )
     
     def toggle_thumbnail(self):
         """썸네일 ON/OFF 토글"""
@@ -7446,14 +7621,6 @@ class NaverBlogGUI(QMainWindow):
         if not self.naver_id_entry.text() or not self.naver_pw_entry.text():
             self.show_message("⚠️ 경고", "네이버 로그인 정보를 입력해주세요!", "warning")
             return
-        
-        # 발행 간격 설정
-        try:
-            interval = int(self.interval_entry.text())
-        except:
-            interval = 10
-        
-        wait_interval = interval
         
         # 진행 상태 업데이트
         if is_first_start:
@@ -7676,11 +7843,8 @@ class NaverBlogGUI(QMainWindow):
         """발행 간격 카운트다운 중지"""
         self.countdown_timer.stop()
         self.countdown_seconds = 0
-        try:
-            interval = int(self.interval_entry.text())
-        except:
-            interval = 10
-        self.interval_label.setText(f"⏱️ 발행 간격: {interval}분")
+        interval_text = self._get_interval_display_text()
+        self.interval_label.setText(f"⏱️ 발행 간격: {interval_text}분")
     
     def _update_countdown(self):
         """카운트다운 업데이트 (1초마다 호출)"""
@@ -7691,11 +7855,8 @@ class NaverBlogGUI(QMainWindow):
             self.interval_label.setText(f"⏱️ 남은 시간: {minutes:02d}:{seconds:02d}")
         else:
             self.countdown_timer.stop()
-            try:
-                interval = int(self.interval_entry.text())
-            except:
-                interval = 10
-            self.interval_label.setText(f"⏱️ 발행 간격: {interval}분")
+            interval_text = self._get_interval_display_text()
+            self.interval_label.setText(f"⏱️ 발행 간격: {interval_text}분")
             
             # 카운트다운 완료 후 자동으로 다음 포스팅 시작
             if self.is_running and not self.is_paused:
