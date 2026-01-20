@@ -3486,6 +3486,7 @@ class NaverBlogAutomation:
                                     EC.element_to_be_clickable((By.CSS_SELECTOR, "button.se-link-toolbar-button"))
                                 )
                                 link_btn.click()
+                                self._sleep_with_checks(0.5) # Added sleep
                                 self._sleep_with_checks(0.3)
 
                                 # URL 입력창 대기 및 입력
@@ -3502,8 +3503,16 @@ class NaverBlogAutomation:
                                 )
                                 apply_btn.click()
                                 self._sleep_with_checks(0.3)
-                                
+                                self._sleep_with_checks(0.3) # Added sleep from instruction
+
                                 self._update_status(f"✅ 링크 첨부 완료: {title[:30]}")
+
+                                # URL을 일반 텍스트로 추가
+                                self._sleep_with_checks(0.1)
+                                ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+                                self._sleep_with_checks(0.1)
+                                ActionChains(self.driver).send_keys(url).perform()
+                                self._sleep_with_checks(0.2)
 
                             except Exception as link_e:
                                 error_msg = str(link_e) if str(link_e) else type(link_e).__name__
