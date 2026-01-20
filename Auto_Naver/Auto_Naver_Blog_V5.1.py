@@ -184,20 +184,13 @@ class NaverBlogAutomation:
         """Lazy load heavy imports"""
         global webdriver, By, WebDriverWait, EC, Service, ChromeDriverManager
         global TimeoutException, NoSuchElementException, Keys, ActionChains
-        global genai, pyautogui, uc
+        global genai, pyautogui
 
         if 'webdriver' not in globals() or 'genai' not in globals():
             print("⏳ Loading heavy libraries...")
             try:
                 import google.generativeai as genai
                 from selenium import webdriver
-                # undetected_chromedriver 시도
-                try:
-                    import undetected_chromedriver as uc
-                except ImportError:
-                    uc = None
-                    print("⚠️ undetected-chromedriver not found. Using standard selenium.")
-                
                 from selenium.webdriver.common.by import By
                 from selenium.webdriver.support.ui import WebDriverWait
                 from selenium.webdriver.support import expected_conditions as EC
@@ -3507,13 +3500,6 @@ class NaverBlogAutomation:
 
                                 self._update_status(f"✅ 링크 첨부 완료: {title[:30]}")
 
-                                # URL을 일반 텍스트로 추가
-                                self._sleep_with_checks(0.1)
-                                ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                                self._sleep_with_checks(0.1)
-                                ActionChains(self.driver).send_keys(url).perform()
-                                self._sleep_with_checks(0.2)
-
                             except Exception as link_e:
                                 error_msg = str(link_e) if str(link_e) else type(link_e).__name__
                                 self._update_status(f"⚠️ 링크 적용 실패: {error_msg[:50]}")
@@ -3886,7 +3872,7 @@ class NaverBlogAutomation:
             return False
     
     def setup_driver(self):
-        """크롬 드라이버 설정 (undetected-chromedriver 적용)"""
+        """크롬 드라이버 설정 (자동 버전 매칭)"""
         try:
             if self.driver:
                 try:
@@ -3897,15 +3883,8 @@ class NaverBlogAutomation:
 
             self._update_status("🌐 브라우저 실행 준비 중...")
             
-            # uc(undetected-chromedriver) 사용 여부 결정
-            use_uc = (globals().get('uc') is not None)
-            
-            if use_uc:
-                options = uc.ChromeOptions()
-            else:
-                options = webdriver.ChromeOptions()
-            
-            # self._update_status("🔧 브라우저 옵션 설정 중...")
+            # 표준 Selenium 사용 (호환성 우선)
+            options = webdriver.ChromeOptions()
             
             # 공통 설정
             options.add_argument("--window-size=1920,1080")
@@ -3913,90 +3892,65 @@ class NaverBlogAutomation:
             options.add_argument("--disable-gpu")
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-sync")  # Chrome 동기화 비활성화
-            options.add_argument("--no-first-run")  # 첫 실행 경험 비활성화
+            options.add_argument("--disable-sync")
+            options.add_argument("--no-first-run")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            
+            # 봇 탐지 우회 설정
+            options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+            options.add_experimental_option('useAutomationExtension', False)
 
             # [중요] 구글 로그인 유지를 위한 사용자 데이터 폴더 설정
             user_data_dir = os.path.join(self.data_dir, "chrome_profile")
             options.add_argument(f"--user-data-dir={user_data_dir}")
-            
-            # 일반 Selenium일 때만 추가 우회 설정 (uc는 자동 처리됨)
-            if not use_uc:
-                options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-                options.add_experimental_option('useAutomationExtension', False)
-                options.add_argument("--disable-blink-features=AutomationControlled")
 
             # 알림, 비밀번호 관리자, Chrome 로그인 팝업 비활성화
             prefs = {
                 "profile.default_content_setting_values.notifications": 2,
                 "credentials_enable_service": False,
                 "profile.password_manager_enabled": False,
-                "signin.allowed": False  # Chrome 로그인 팝업 비활성화
+                "signin.allowed": False
             }
-            if not use_uc:
-                options.add_experimental_option("prefs", prefs)
+            options.add_experimental_option("prefs", prefs)
             
             self._update_status("🚀 브라우저 시작 중...")
-            try:
-                if use_uc:
-                    # [Fix] WinError 183 및 프로세스 충돌 방지를 위한 사전 정리
-                    try:
-                        import subprocess
-                        # 기존 프로세스 강제 종료
-                        subprocess.run(['taskkill', '/f', '/im', 'chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        subprocess.run(['taskkill', '/f', '/im', 'undetected_chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        time.sleep(1)
-                        
-                        # 충돌나는 파일 삭제
-                        uc_dir = os.path.join(os.environ.get('APPDATA', ''), 'undetected_chromedriver')
-                        uc_exe = os.path.join(uc_dir, 'undetected_chromedriver.exe')
-                        if os.path.exists(uc_exe):
-                            try:
-                                os.remove(uc_exe)
-                            except OSError:
-                                time.sleep(1)
-                                try:
-                                    os.remove(uc_exe)
-                                except:
-                                    pass
-                    except Exception as cleanup_error:
-                        print(f"⚠️ 정리 작업 중 오류 (무시됨): {cleanup_error}")
-
-                    # uc는 내부적으로 드라이버를 자동 다운로드/관리함
-                    self.driver = uc.Chrome(options=options)
-                else:
-                    try:
-                        driver_path = ChromeDriverManager().install()
-                        service = Service(driver_path)
-                    except:
-                        service = Service()
-                    self.driver = webdriver.Chrome(service=service, options=options)
-                
-                self.driver.maximize_window()
-            except Exception as e:
-                self._update_status(f"❌ 브라우저 시작 오류: {str(e)}")
-                raise
             
-            # self._update_status("🎭 봇 탐지 우회 추가 설정 중...")
-            # 🎭 User-Agent 위장
-            ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-            if use_uc:
-                self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": ua})
-            else:
-                self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": ua})
-                # 🔧 일반 모드에서만 JS 주입
+            # ChromeDriver 자동 버전 매칭
+            try:
+                from webdriver_manager.chrome import ChromeDriverManager
+                from webdriver_manager.core.os_manager import ChromeType
+                
+                # 설치된 Chrome 버전에 맞는 ChromeDriver 자동 다운로드
+                driver_path = ChromeDriverManager().install()
+                service = Service(driver_path)
+                self._update_status("✅ ChromeDriver 자동 설치 완료")
+            except Exception as e:
+                self._update_status(f"⚠️ ChromeDriver 자동 설치 실패, 시스템 기본값 사용: {str(e)[:50]}")
+                service = Service()
+            
+            # 브라우저 시작
+            self.driver = webdriver.Chrome(service=service, options=options)
+            self.driver.maximize_window()
+            
+            # 봇 탐지 우회 JavaScript 주입
+            try:
                 self.driver.execute_script("""
                     Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                     Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
                     Object.defineProperty(navigator, 'languages', {get: () => ['ko-KR', 'ko', 'en-US', 'en']});
                     window.chrome = {runtime: {}};
                 """)
+            except Exception as js_error:
+                # JS 주입 실패해도 계속 진행
+                print(f"⚠️ 봇 탐지 우회 JS 주입 실패 (무시됨): {js_error}")
             
             self._update_status("✅ 브라우저 실행 완료!")
             return True
             
         except Exception as e:
             self._update_status(f"❌ 브라우저 실행 실패: {str(e)}")
+            import traceback
+            print(f"상세 오류:\n{traceback.format_exc()}")
             return False
     
     def login(self):

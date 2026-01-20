@@ -32,7 +32,6 @@ hiddenimports = [
     'selenium.webdriver.support.expected_conditions',
     'selenium.common.exceptions',
     'webdriver_manager', 'webdriver_manager.chrome',
-    'undetected_chromedriver',
 
     # AI
     'google.generativeai', 'google.ai.generativelanguage',
