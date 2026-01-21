@@ -76,11 +76,35 @@ class LicenseManager:
             return str(uuid.getnode())
     
     def get_machine_id(self):
-        """머신 고유 ID 생성 (MAC + Windows UUID 조합)"""
+        """머신 고유 ID 생성 및 로드 (한 번 생성 후 저장)"""
+        # 저장된 머신 ID 파일 경로
+        machine_id_file = os.path.join("setting", "machine_id.txt")
+        
+        # 1. 이미 저장된 머신 ID가 있으면 사용
+        try:
+            if os.path.exists(machine_id_file):
+                with open(machine_id_file, 'r', encoding='utf-8') as f:
+                    saved_id = f.read().strip()
+                    if saved_id and len(saved_id) == 32:
+                        return saved_id
+        except:
+            pass
+        
+        # 2. 저장된 ID가 없으면 새로 생성
         mac = self.get_mac_address()
         win_id = self.get_windows_machine_id()
         combined = f"{mac}_{win_id}"
-        return hashlib.sha256(combined.encode()).hexdigest()[:32]
+        machine_id = hashlib.sha256(combined.encode()).hexdigest()[:32]
+        
+        # 3. 생성된 ID를 파일에 저장
+        try:
+            os.makedirs("setting", exist_ok=True)
+            with open(machine_id_file, 'w', encoding='utf-8') as f:
+                f.write(machine_id)
+        except Exception as e:
+            print(f"머신 ID 저장 실패: {e}")
+        
+        return machine_id
     
     def load_license(self):
         """라이선스 파일 로드"""
