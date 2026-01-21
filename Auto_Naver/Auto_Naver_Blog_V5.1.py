@@ -566,76 +566,50 @@ class NaverBlogAutomation:
             
             # prompt1.txt와 prompt2.txt 파일 읽기
             self._update_status("📄 프롬프트 템플릿 로드 중...")
-            prompt1_file = os.path.join(self.data_dir, "setting", "prompt1.txt")
-            prompt2_file = os.path.join(self.data_dir, "setting", "prompt2.txt")
             
-            prompt1_content = ""
-            prompt2_content = ""
+            # 파일 경로 설정
+            prompt_files = {
+                "system": os.path.join(self.data_dir, "setting", "system_prompt.txt"),
+                "prompt1": os.path.join(self.data_dir, "setting", "prompt1.txt"),
+                "prompt2": os.path.join(self.data_dir, "setting", "prompt2.txt"),
+                "output_form": os.path.join(self.data_dir, "setting", "prompt_output_form.txt")
+            }
             
-            # prompt1.txt 읽기 (제목+서론)
-            if os.path.exists(prompt1_file):
-                with open(prompt1_file, 'r', encoding='utf-8') as f:
-                    prompt1_content = f.read().replace('{keywords}', keyword)
-                self._update_status("✅ 프롬프트1 (제목+서론) 로드 완료")
+            prompts = {}
             
-            # prompt2.txt 읽기 (소제목+본문)
-            if os.path.exists(prompt2_file):
-                with open(prompt2_file, 'r', encoding='utf-8') as f:
-                    prompt2_content = f.read().replace('{keywords}', keyword)
-                self._update_status("✅ 프롬프트2 (소제목+본문) 로드 완료")
-            
-            if prompt1_content and prompt2_content:
+            # 각 파일 읽기
+            for key, path in prompt_files.items():
+                if os.path.exists(path):
+                    with open(path, 'r', encoding='utf-8') as f:
+                        prompts[key] = f.read().replace('{keywords}', keyword).replace('{keyword}', keyword)
+                else:
+                    prompts[key] = ""
+                    self._update_status(f"⚠️ {os.path.basename(path)} 파일을 찾을 수 없습니다.")
+
+            if prompts["prompt1"] and prompts["prompt2"]:
                 # 프롬프트 조합
-                full_prompt = f"""당신은 블로그 글 작성 전문가입니다. 아래 두 개의 프롬프트를 정확히 따라 글을 작성하세요.
+                # system_prompt가 없으면 기본값 사용 (하위 호환성)
+                if not prompts["system"]:
+                    prompts["system"] = "당신은 블로그 글 작성 전문가입니다. 아래 프롬프트들을 정확히 따라 글을 작성하세요."
+                
+                # output_form이 없으면 빈 문자열 (하위 호환성)
+                
+                full_prompt = f"""{prompts["system"]}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [프롬프트 1 - 제목과 서론 작성]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-{prompt1_content}
+{prompts["prompt1"]}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [프롬프트 2 - 소제목과 본문 작성]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-{prompt2_content}
+{prompts["prompt2"]}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[출력 형식]
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-⚠️ 반드시 아래 형식을 정확히 따라 출력하세요:
-
-제목
-(여기에 제목 내용 작성)
-서론
-(여기에 서론 내용 작성)
-소제목1
-(여기에 첫 번째 소제목 작성)
-본문1
-(여기에 첫 번째 본문 작성)
-소제목2
-(여기에 두 번째 소제목 작성)
-본문2
-(여기에 두 번째 본문 작성)
-소제목3
-(여기에 세 번째 소제목 작성)
-본문3
-(여기에 세 번째 본문 작성)
-
-⚠️ 필수 준수사항: 
-- 반드시 각 섹션 앞에 '제목', '서론', '소제목1', '본문1', '소제목2', '본문2', '소제목3', '본문3' 라벨을 정확히 붙이세요
-- 각 라벨은 독립된 줄에 작성하고, 그 다음 줄에 해당 내용을 작성하세요
-- 제목은 반드시 '{keyword}, 후킹문구' 형식을 정확히 따르세요
-- 제목 맨 앞에 반드시 {keyword}가 와야 합니다
-- 제목 예시: "{keyword}, 5가지 방법 총정리" 또는 "{keyword}, 최신 트렌드 10가지"
-- 제목에서 키워드 뒤에 반드시 쉼표(,)를 넣고 공백 후 후킹문구(숫자 포함)를 작성하세요
-- 서론은 정확히 200자 내외로 작성하세요 (180자~220자 범위)
-- 본문은 각각 최소 500자 이상 상세히 작성하세요
-- 프롬프트 1의 모든 조건을 정확히 지켜 '제목'과 '서론'을 작성하세요
-- 프롬프트 2의 모든 조건을 정확히 지켜 '소제목1', '본문1', '소제목2', '본문2', '소제목3', '본문3' 순서로 작성하세요
-- 두 프롬프트의 '절대 금지 사항'을 반드시 준수하세요
-- 본문은 가능한 한 많은 토큰을 사용하여 길게 작성하세요
+{prompts["output_form"]}
 """
                 print(f"📄 프롬프트에 키워드 '{keyword}' 삽입 완료")
             else:
@@ -6010,95 +5984,8 @@ class NaverBlogGUI(QMainWindow):
         separator.setStyleSheet(f"QFrame {{ border: 1px solid {NAVER_BORDER}; }}")
         gemini_api_layout.addWidget(separator)
         
-        # 구글 계정 ID
-        google_id_widget = QWidget()
-        google_id_widget.setStyleSheet("QWidget { background-color: transparent; }")
-        google_id_layout = QVBoxLayout(google_id_widget)
-        google_id_layout.setSpacing(4)
-        google_id_layout.setContentsMargins(0, 0, 0, 0)
-        
-        google_id_label = PremiumCard.create_section_label("📧 구글 ID", self.font_family)
-        google_id_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        google_id_layout.addWidget(google_id_label)
-        
-        self.google_id_entry = QLineEdit()
-        self.google_id_entry.setPlaceholderText("웹사이트 로그인용 구글 ID (예: example@gmail.com)")
-        self.google_id_entry.setCursorPosition(0)
-        self.google_id_entry.setStyleSheet(f"""
-            QLineEdit {{
-                border: 2px solid {NAVER_BORDER};
-                border-radius: 8px;
-                padding: 6px 10px;
-                background-color: white;
-                color: {NAVER_TEXT};
-                font-size: 13px;
-                min-height: 32px;
-            }}
-            QLineEdit:focus {{
-                border-color: {NAVER_GREEN};
-            }}
-        """)
-        self.google_id_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
-        google_id_layout.addWidget(self.google_id_entry)
-        gemini_web_layout.addWidget(google_id_widget)
-
-        # 구글 계정 PW
-        google_pw_widget = QWidget()
-        google_pw_widget.setStyleSheet("QWidget { background-color: transparent; }")
-        google_pw_layout = QVBoxLayout(google_pw_widget)
-        google_pw_layout.setSpacing(4)
-        google_pw_layout.setContentsMargins(0, 0, 0, 0)
-        
-        google_pw_label = PremiumCard.create_section_label("🔑 구글 비밀번호", self.font_family)
-        google_pw_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        google_pw_layout.addWidget(google_pw_label)
-        
-        google_pw_container = QHBoxLayout()
-        self.google_pw_entry = QLineEdit()
-        self.google_pw_entry.setPlaceholderText("웹사이트 로그인용 구글 비밀번호")
-        self.google_pw_entry.setEchoMode(QLineEdit.EchoMode.Password)
-        self.google_pw_entry.setCursorPosition(0)
-        self.google_pw_entry.setStyleSheet(f"""
-            QLineEdit {{
-                border: 2px solid {NAVER_BORDER};
-                border-radius: 8px;
-                padding: 6px 10px;
-                background-color: white;
-                color: {NAVER_TEXT};
-                font-size: 13px;
-                min-height: 32px;
-            }}
-            QLineEdit:focus {{
-                border-color: {NAVER_GREEN};
-            }}
-        """)
-        self.google_pw_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
-        google_pw_container.addWidget(self.google_pw_entry)
-        
-        self.google_pw_toggle_btn = QPushButton("비공개")
-        self.google_pw_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.google_pw_toggle_btn.setMinimumSize(64, 30)
-        self.google_pw_toggle_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {NAVER_TEXT};
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 4px 8px;
-                font-size: 12px;
-            }}
-            QPushButton:hover {{
-                background-color: {NAVER_TEXT};
-            }}
-        """)
-        self.google_pw_toggle_btn.clicked.connect(self.toggle_web_ai_password)
-        google_pw_container.addWidget(self.google_pw_toggle_btn)
-        
-        google_pw_layout.addLayout(google_pw_container)
-        gemini_web_layout.addWidget(google_pw_widget)
-        
-        # 웹사이트 섹션 아래 여백
-        gemini_web_layout.addSpacing(8)
+        # Gemini API 섹션 위 여백
+        gemini_api_layout.addSpacing(8)
         
         gemini_api_label = PremiumCard.create_section_label("✨ Gemini API (2.5 Flash-Lite)", self.font_family)
         gemini_api_layout.addWidget(gemini_api_label)
