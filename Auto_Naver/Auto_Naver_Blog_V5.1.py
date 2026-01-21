@@ -604,27 +604,37 @@ class NaverBlogAutomation:
 [출력 형식]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+⚠️ 반드시 아래 형식을 정확히 따라 출력하세요:
+
 제목
+(여기에 제목 내용 작성)
 서론
+(여기에 서론 내용 작성)
 소제목1
+(여기에 첫 번째 소제목 작성)
 본문1
+(여기에 첫 번째 본문 작성)
 소제목2
+(여기에 두 번째 소제목 작성)
 본문2
+(여기에 두 번째 본문 작성)
 소제목3
+(여기에 세 번째 소제목 작성)
 본문3
+(여기에 세 번째 본문 작성)
 
 ⚠️ 필수 준수사항: 
-- **제목은 반드시 '{keyword}, 후킹문구' 형식을 정확히 따르세요**
-- **제목 맨 앞에 반드시 {keyword}가 와야 합니다**
+- 반드시 각 섹션 앞에 '제목', '서론', '소제목1', '본문1', '소제목2', '본문2', '소제목3', '본문3' 라벨을 정확히 붙이세요
+- 각 라벨은 독립된 줄에 작성하고, 그 다음 줄에 해당 내용을 작성하세요
+- 제목은 반드시 '{keyword}, 후킹문구' 형식을 정확히 따르세요
+- 제목 맨 앞에 반드시 {keyword}가 와야 합니다
 - 제목 예시: "{keyword}, 5가지 방법 총정리" 또는 "{keyword}, 최신 트렌드 10가지"
-- 제목에서 키워드 뒤에 반드시 쉬표(,)를 넣고 공백 후 후킹문구(숫자 포함)를 작성하세요
-- **서론은 정확히 200자 내외로 작성하세요 (180자~220자 범위)**
-- 본문은 각각 **최소 500자 이상** 상세히 작성하세요
-- 본문은 각각 **최소 500자 이상** 상세히 작성하세요
+- 제목에서 키워드 뒤에 반드시 쉼표(,)를 넣고 공백 후 후킹문구(숫자 포함)를 작성하세요
+- 서론은 정확히 200자 내외로 작성하세요 (180자~220자 범위)
+- 본문은 각각 최소 500자 이상 상세히 작성하세요
 - 프롬프트 1의 모든 조건을 정확히 지켜 '제목'과 '서론'을 작성하세요
 - 프롬프트 2의 모든 조건을 정확히 지켜 '소제목1', '본문1', '소제목2', '본문2', '소제목3', '본문3' 순서로 작성하세요
 - 두 프롬프트의 '절대 금지 사항'을 반드시 준수하세요
-- 각 섹션 사이는 빈 줄 없이 줄바꿈 1번만 하세요
 - 본문은 가능한 한 많은 토큰을 사용하여 길게 작성하세요
 """
                 print(f"📄 프롬프트에 키워드 '{keyword}' 삽입 완료")
@@ -3465,7 +3475,11 @@ class NaverBlogAutomation:
                                 ActionChains(self.driver).send_keys(title).perform()
                             self._sleep_with_checks(0.2)
 
-                            # 7. '글 제목' 현재 문단 전체 선택 (Shift+Home으로 선택)
+                            # 7. '글 제목' 현재 문단 전체 선택
+                            # 먼저 End 키로 커서를 줄 끝으로 이동한 후 Shift+Home으로 선택
+                            actions = ActionChains(self.driver)
+                            actions.send_keys(Keys.END).perform()  # 커서를 줄 끝으로 이동
+                            self._sleep_with_checks(0.1)
                             actions = ActionChains(self.driver)
                             actions.key_down(Keys.SHIFT).send_keys(Keys.HOME).key_up(Keys.SHIFT).perform()
                             self._sleep_with_checks(0.3)
@@ -3641,51 +3655,16 @@ class NaverBlogAutomation:
                         except Exception as e:
                             self._update_status(f"⚠️ 완료 버튼 클릭 실패: {str(e)[:50]}")
                         
-                        # Win32 API로 동영상 업로드 대화상자 강제 닫기
+                        # ESC 키로 동영상 업로드 대화상자 닫기
                         self._update_status("🔘 동영상 대화상자 닫는 중...")
                         try:
-                            import win32gui
-                            import win32con
-                            
-                            def close_dialog_windows():
-                                """동영상 업로드 관련 창 모두 닫기"""
-                                def enum_callback(hwnd, results):
-                                    window_text = win32gui.GetWindowText(hwnd)
-                                    class_name = win32gui.GetClassName(hwnd)
-                                    
-                                    # 네이버 동영상 업로드 관련 창 찾기
-                                    if any(keyword in window_text.lower() for keyword in ['동영상', 'video', '업로드', 'upload']) or \
-                                       any(keyword in class_name.lower() for keyword in ['dialog', 'popup', '#32770']):
-                                        try:
-                                            # WM_CLOSE 메시지 전송
-                                            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-                                            results.append(window_text or class_name)
-                                        except:
-                                            pass
-                                
-                                closed_windows = []
-                                win32gui.EnumWindows(enum_callback, closed_windows)
-                                return closed_windows
-                            
-                            # 대화상자 닫기 시도 (3번)
-                            for attempt in range(3):
-                                closed = close_dialog_windows()
-                                if closed:
-                                    # self._update_status(f"✅ Win32 API로 창 닫기 성공 ({len(closed)}개)")
-                                    self._sleep_with_checks(0.5)
-                                    break
-                                self._sleep_with_checks(0.3)
-                            
-                            # 추가로 ESC 키도 전송
+                            # ESC 키로 대화상자 닫기 (썸네일 대화상자와 동일)
                             pyautogui.press('esc')
                             self._sleep_with_checks(0.5)
                             
-                        except ImportError:
-                            self._update_status("⚠️ pywin32 없음, ESC로 시도")
-                            pyautogui.press('esc')
-                            self._sleep_with_checks(0.5)
                         except Exception as e:
                             self._update_status(f"⚠️ 대화상자 닫기 실패: {str(e)[:50]}")
+
                         
                         self._update_status("✅ 동영상 삽입 완료")
                             
@@ -4543,11 +4522,18 @@ class NaverBlogGUI(QMainWindow):
         self.progress_signal.connect(self._update_progress_status_safe)
         
         # 아이콘 설정 (모든 창에 적용)
+        # 1. base_dir (내부 리소스) 확인
         icon_path = os.path.join(self.base_dir, "setting", "david153.ico")
+        if not os.path.exists(icon_path):
+            # 2. data_dir (실제 실행 위치/문서 폴더) 확인
+            icon_path = os.path.join(self.data_dir, "setting", "david153.ico")
+            
         if os.path.exists(icon_path):
             icon = QIcon(icon_path)
             self.setWindowIcon(icon)
             QApplication.setWindowIcon(icon)
+        else:
+            print(f"⚠️ 아이콘 파일을 찾을 수 없습니다: {icon_path}")
         
         # 폰트 설정
         self.font_family = "맑은 고딕"
@@ -4968,8 +4954,9 @@ class NaverBlogGUI(QMainWindow):
             QPushButton:hover {{
                 background-color: rgba(255, 255, 255, 0.3);
             }}
-            QPushButton:pressed {{
-                background-color: rgba(255, 255, 255, 0.4);
+            QPushButton:checked {{
+                background-color: white;
+                color: {NAVER_GREEN};
             }}
             QPushButton:focus {{
                 outline: none;
@@ -5968,89 +5955,7 @@ class NaverBlogGUI(QMainWindow):
 
         gemini_web_layout.addLayout(web_provider_row)
         
-        # [추가] 로그인 정보 스택 위젯 (라디오 버튼 선택에 따라 변경)
-        self.web_login_stack = QStackedWidget()
-        
-        # --- Page 0: Gemini (Google) 로그인 ---
-        page_gemini = QWidget()
-        page_gemini_layout = QVBoxLayout(page_gemini)
-        page_gemini_layout.setContentsMargins(0, 10, 0, 0)
-        page_gemini_layout.setSpacing(12)
-        
-        google_login_layout = QHBoxLayout() # 가로 배치
-        google_login_layout.setSpacing(16)
-        
-        google_id_layout = QHBoxLayout()
-        google_id_layout.setSpacing(8)
-        google_id_label = QLabel("📧 구글 ID:")
-        google_id_label.setFont(QFont(self.font_family, 11))
-        self.google_id_entry = QLineEdit()
-        self.google_id_entry.setPlaceholderText("example@gmail.com")
-        self.google_id_entry.setStyleSheet(f"""
-            QLineEdit {{
-                border: 1px solid {NAVER_BORDER};
-                border-radius: 6px;
-                padding: 4px 8px;
-                background-color: white;
-            }}
-        """)
-        if "google_id" in self.config:
-            self.google_id_entry.setText(self.config["google_id"])
-            
-        google_id_layout.addWidget(google_id_label)
-        google_id_layout.addWidget(self.google_id_entry)
-        
-        google_pw_layout = QHBoxLayout()
-        google_pw_layout.setSpacing(8)
-        google_pw_label = QLabel("🔑 비밀번호:")
-        google_pw_label.setFont(QFont(self.font_family, 11))
-        self.google_pw_entry = QLineEdit()
-        self.google_pw_entry.setPlaceholderText("Google 비밀번호")
-        self.google_pw_entry.setEchoMode(QLineEdit.EchoMode.Password)
-        self.google_pw_entry.setStyleSheet(f"""
-            QLineEdit {{
-                border: 1px solid {NAVER_BORDER};
-                border-radius: 6px;
-                padding: 4px 8px;
-                background-color: white;
-            }}
-        """)
-        if "google_pw" in self.config:
-            self.google_pw_entry.setText(self.config["google_pw"])
-            
-        google_pw_layout.addWidget(google_pw_label)
-        google_pw_layout.addWidget(self.google_pw_entry)
-        
-        google_login_layout.addLayout(google_id_layout)
-        google_login_layout.addLayout(google_pw_layout)
-        page_gemini_layout.addLayout(google_login_layout)
-        
-        self.web_login_stack.addWidget(page_gemini)
-        
-        # --- Page 1: GPT 로그인 (추후 구현) ---
-        page_gpt = QWidget()
-        page_gpt_layout = QVBoxLayout(page_gpt)
-        page_gpt_layout.setContentsMargins(0, 8, 0, 0)
-        gpt_label = QLabel("GPT 로그인 정보 입력 (준비 중)")
-        gpt_label.setFont(QFont(self.font_family, 11))
-        gpt_label.setStyleSheet(f"color: {NAVER_TEXT_SUB};")
-        page_gpt_layout.addWidget(gpt_label)
-        self.web_login_stack.addWidget(page_gpt)
-        
-        # --- Page 2: Perplexity 로그인 (추후 구현) ---
-        page_perplexity = QWidget()
-        page_perplexity_layout = QVBoxLayout(page_perplexity)
-        page_perplexity_layout.setContentsMargins(0, 8, 0, 0)
-        pplx_label = QLabel("Perplexity 로그인 정보 입력 (준비 중)")
-        pplx_label.setFont(QFont(self.font_family, 11))
-        pplx_label.setStyleSheet(f"color: {NAVER_TEXT_SUB};")
-        page_perplexity_layout.addWidget(pplx_label)
-        self.web_login_stack.addWidget(page_perplexity)
-        
-        gemini_web_layout.addWidget(self.web_login_stack)
-        
-        # 웹사이트 섹션 아래 여백
-        gemini_web_layout.addSpacing(8)
+
         
         self.web_ai_group = QButtonGroup(self)
         self.web_ai_group.addButton(self.web_ai_gpt_radio)
@@ -6058,12 +5963,8 @@ class NaverBlogGUI(QMainWindow):
         self.web_ai_group.addButton(self.web_ai_perplexity_radio)
         
         # 라디오 버튼 이벤트 연결 (스택 위젯 페이지 전환)
-        # GPT=1, Gemini=0, Perplexity=2 (순서: GPT, Gemini, Perplexity 라디오 배치에 따름, 하지만 스택 추가 순서는 Gemini, GPT, Perplexity임)
-        # 스택 순서: 0=Gemini, 1=GPT, 2=Perplexity
-        self.web_ai_gemini_radio.toggled.connect(lambda c: self.web_login_stack.setCurrentIndex(0) if c else None)
-        self.web_ai_gpt_radio.toggled.connect(lambda c: self.web_login_stack.setCurrentIndex(1) if c else None)
-        self.web_ai_perplexity_radio.toggled.connect(lambda c: self.web_login_stack.setCurrentIndex(2) if c else None)
-        
+        # (스택 위젯이 제거되었으므로 관련 코드도 제거)
+
         # 아이디 입력
         web_id_widget = QWidget()
         web_id_widget.setStyleSheet("QWidget { background-color: transparent; }")
@@ -6109,8 +6010,95 @@ class NaverBlogGUI(QMainWindow):
         separator.setStyleSheet(f"QFrame {{ border: 1px solid {NAVER_BORDER}; }}")
         gemini_api_layout.addWidget(separator)
         
-        # Gemini API 섹션 위 여백
-        gemini_api_layout.addSpacing(8)
+        # 구글 계정 ID
+        google_id_widget = QWidget()
+        google_id_widget.setStyleSheet("QWidget { background-color: transparent; }")
+        google_id_layout = QVBoxLayout(google_id_widget)
+        google_id_layout.setSpacing(4)
+        google_id_layout.setContentsMargins(0, 0, 0, 0)
+        
+        google_id_label = PremiumCard.create_section_label("📧 구글 ID", self.font_family)
+        google_id_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        google_id_layout.addWidget(google_id_label)
+        
+        self.google_id_entry = QLineEdit()
+        self.google_id_entry.setPlaceholderText("웹사이트 로그인용 구글 ID (예: example@gmail.com)")
+        self.google_id_entry.setCursorPosition(0)
+        self.google_id_entry.setStyleSheet(f"""
+            QLineEdit {{
+                border: 2px solid {NAVER_BORDER};
+                border-radius: 8px;
+                padding: 6px 10px;
+                background-color: white;
+                color: {NAVER_TEXT};
+                font-size: 13px;
+                min-height: 32px;
+            }}
+            QLineEdit:focus {{
+                border-color: {NAVER_GREEN};
+            }}
+        """)
+        self.google_id_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
+        google_id_layout.addWidget(self.google_id_entry)
+        gemini_web_layout.addWidget(google_id_widget)
+
+        # 구글 계정 PW
+        google_pw_widget = QWidget()
+        google_pw_widget.setStyleSheet("QWidget { background-color: transparent; }")
+        google_pw_layout = QVBoxLayout(google_pw_widget)
+        google_pw_layout.setSpacing(4)
+        google_pw_layout.setContentsMargins(0, 0, 0, 0)
+        
+        google_pw_label = PremiumCard.create_section_label("🔑 구글 비밀번호", self.font_family)
+        google_pw_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        google_pw_layout.addWidget(google_pw_label)
+        
+        google_pw_container = QHBoxLayout()
+        self.google_pw_entry = QLineEdit()
+        self.google_pw_entry.setPlaceholderText("웹사이트 로그인용 구글 비밀번호")
+        self.google_pw_entry.setEchoMode(QLineEdit.EchoMode.Password)
+        self.google_pw_entry.setCursorPosition(0)
+        self.google_pw_entry.setStyleSheet(f"""
+            QLineEdit {{
+                border: 2px solid {NAVER_BORDER};
+                border-radius: 8px;
+                padding: 6px 10px;
+                background-color: white;
+                color: {NAVER_TEXT};
+                font-size: 13px;
+                min-height: 32px;
+            }}
+            QLineEdit:focus {{
+                border-color: {NAVER_GREEN};
+            }}
+        """)
+        self.google_pw_entry.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
+        google_pw_container.addWidget(self.google_pw_entry)
+        
+        self.google_pw_toggle_btn = QPushButton("비공개")
+        self.google_pw_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.google_pw_toggle_btn.setMinimumSize(64, 30)
+        self.google_pw_toggle_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {NAVER_TEXT};
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 4px 8px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {NAVER_TEXT};
+            }}
+        """)
+        self.google_pw_toggle_btn.clicked.connect(self.toggle_web_ai_password)
+        google_pw_container.addWidget(self.google_pw_toggle_btn)
+        
+        google_pw_layout.addLayout(google_pw_container)
+        gemini_web_layout.addWidget(google_pw_widget)
+        
+        # 웹사이트 섹션 아래 여백
+        gemini_web_layout.addSpacing(8)
         
         gemini_api_label = PremiumCard.create_section_label("✨ Gemini API (2.5 Flash-Lite)", self.font_family)
         gemini_api_layout.addWidget(gemini_api_label)
@@ -6349,6 +6337,8 @@ class NaverBlogGUI(QMainWindow):
         prompt2_layout.addWidget(prompt2_open_btn)
         
         file_grid.addWidget(prompt2_widget, 1, 1)
+
+        # '로그 폴더 열기' 버튼 제거
         
         file_card.content_layout.addLayout(file_grid)
         file_card.content_layout.addStretch()
@@ -6586,6 +6576,13 @@ class NaverBlogGUI(QMainWindow):
         tab.setWidget(content)
         return tab
     
+    def open_website_login_dialog(self):
+        """웹사이트 로그인 정보 입력 다이얼로그 열기"""
+        dialog = WebsiteLoginDialog(self)
+        if dialog.exec():
+            # 다이얼로그에서 저장했으므로 여기서는 추가 작업 불필요
+            self._update_settings_status("✅ 웹사이트 로그인 정보가 업데이트되었습니다.")
+
     def _apply_config(self):
         """저장된 설정 적용"""
         if not self.config:
@@ -6621,13 +6618,10 @@ class NaverBlogGUI(QMainWindow):
         if hasattr(self, "web_ai_gpt_radio"):
             if web_provider == "gpt":
                 self.web_ai_gpt_radio.setChecked(True)
-                if hasattr(self, "web_login_stack"): self.web_login_stack.setCurrentIndex(1)
             elif web_provider == "perplexity":
                 self.web_ai_perplexity_radio.setChecked(True)
-                if hasattr(self, "web_login_stack"): self.web_login_stack.setCurrentIndex(2)
             else:
                 self.web_ai_gemini_radio.setChecked(True)
-                if hasattr(self, "web_login_stack"): self.web_login_stack.setCurrentIndex(0)
 
 
         # 포스팅 방법
@@ -6735,22 +6729,44 @@ class NaverBlogGUI(QMainWindow):
         provider_label = "GPT" if web_provider == "gpt" else ("Perplexity" if web_provider == "perplexity" else "Gemini")
 
         if gemini_mode == "web":
-            self.api_status_label.setText(f"🔑 AI 설정: 웹사이트({provider_label})")
-            self.api_status_label.setStyleSheet(f"color: #000000; border: none;")
-            self.api_setup_btn.setText("변경하기")
-            self.api_setup_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {NAVER_GREEN};
-                    color: white;
-                    border: none;
-                    border-radius: 5px;
-                    padding: 3px 10px;
-                    font-size: 13px;
-                }}
-                QPushButton:hover {{
-                    background-color: #00C73C;
-                }}
-            """)
+            # 웹사이트 모드일 경우 아이디/비번 확인
+            google_id = self.config.get("google_id", "")
+            google_pw = self.config.get("google_pw", "")
+            
+            if not google_id or not google_pw:
+                self.api_status_label.setText(f"🔑 AI 설정: 아이디/비번 입력 필요")
+                self.api_status_label.setStyleSheet(f"color: {NAVER_RED}; border: none;")
+                self.api_setup_btn.setText("설정하기")
+                self.api_setup_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {NAVER_RED};
+                        color: white;
+                        border: none;
+                        border-radius: 5px;
+                        padding: 3px 10px;
+                        font-size: 13px;
+                    }}
+                    QPushButton:hover {{
+                        background-color: #D32F2F;
+                    }}
+                """)
+            else:
+                self.api_status_label.setText(f"🔑 AI 설정: 웹사이트({provider_label})")
+                self.api_status_label.setStyleSheet(f"color: #000000; border: none;")
+                self.api_setup_btn.setText("변경하기")
+                self.api_setup_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {NAVER_GREEN};
+                        color: white;
+                        border: none;
+                        border-radius: 5px;
+                        padding: 3px 10px;
+                        font-size: 13px;
+                    }}
+                    QPushButton:hover {{
+                        background-color: #00C73C;
+                    }}
+                """)
             self.api_setup_btn.show()
         elif gemini_key:
             self.api_status_label.setText("🔑 AI 설정: Gemini")
@@ -7384,6 +7400,85 @@ class NaverBlogGUI(QMainWindow):
         self.update_status_display()
         self._update_settings_summary()
         self._show_auto_close_message("✅ AI 설정이 저장되었습니다", QMessageBox.Icon.Information)
+class WebsiteLoginDialog(QDialog):
+    """웹사이트 로그인 정보 입력을 위한 커스텀 다이얼로그"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.setWindowTitle("웹사이트 로그인")
+        self.setMinimumWidth(400)
+        
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {NAVER_BG};
+            }}
+            QLabel {{
+                font-size: 13px;
+                color: {NAVER_TEXT};
+            }}
+            QLineEdit {{
+                border: 2px solid {NAVER_BORDER};
+                border-radius: 8px;
+                padding: 8px;
+                font-size: 13px;
+                background-color: white;
+            }}
+            QPushButton {{
+                border: none;
+                border-radius: 8px;
+                padding: 10px 20px;
+                font-weight: bold;
+                color: white;
+            }}
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+        
+        # Google ID
+        id_layout = QHBoxLayout()
+        id_label = QLabel("📧 구글 ID:")
+        self.id_entry = QLineEdit()
+        self.id_entry.setPlaceholderText("example@gmail.com")
+        if "google_id" in self.parent.config:
+            self.id_entry.setText(self.parent.config["google_id"])
+        id_layout.addWidget(id_label)
+        id_layout.addWidget(self.id_entry)
+        layout.addLayout(id_layout)
+        
+        # Google Password
+        pw_layout = QHBoxLayout()
+        pw_label = QLabel("🔑 비밀번호:")
+        self.pw_entry = QLineEdit()
+        self.pw_entry.setEchoMode(QLineEdit.EchoMode.Password)
+        if "google_pw" in self.parent.config:
+            self.pw_entry.setText(self.parent.config["google_pw"])
+        pw_layout.addWidget(pw_label)
+        pw_layout.addWidget(self.pw_entry)
+        layout.addLayout(pw_layout)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.save_btn = QPushButton("💾 저장")
+        self.save_btn.setStyleSheet(f"background-color: {NAVER_GREEN};")
+        self.save_btn.clicked.connect(self.save_and_close)
+        
+        self.cancel_btn = QPushButton("❌ 취소")
+        self.cancel_btn.setStyleSheet(f"background-color: {NAVER_RED};")
+        self.cancel_btn.clicked.connect(self.reject)
+        
+        button_layout.addStretch()
+        button_layout.addWidget(self.save_btn)
+        button_layout.addWidget(self.cancel_btn)
+        layout.addLayout(button_layout)
+
+    def save_and_close(self):
+        """설정 저장 및 다이얼로그 닫기"""
+        self.parent.config["google_id"] = self.id_entry.text().strip()
+        self.parent.config["google_pw"] = self.pw_entry.text().strip()
+        self.parent.save_api_key()
+        self.accept()
+
 
     def on_posting_method_changed(self):
         """포스팅 방법 라디오 변경 시 상태 반영"""
