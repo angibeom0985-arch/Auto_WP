@@ -7,6 +7,7 @@ Auto WP multi-site - 워드프레스 자동 포스팅 by 데이비
 import sys
 import os
 import json
+from typing import Any, Optional
 
 import time
 import random
@@ -29,11 +30,25 @@ try:
     from selenium.common.exceptions import TimeoutException, NoSuchElementException
     from selenium.webdriver.common.keys import Keys
     from selenium.webdriver.common.action_chains import ActionChains
+except ImportError:
+    webdriver = None
+    By = WebDriverWait = EC = Service = ChromeDriverManager = None
+    TimeoutException = NoSuchElementException = Keys = ActionChains = None
+
+try:
     import undetected_chromedriver as uc
+except ImportError:
+    uc = None
+
+try:
     import pyperclip
+except ImportError:
+    pyperclip = None
+
+try:
     import pyautogui
 except ImportError:
-    pass  # 나중에 동적 설치 또는 실행 시 체크
+    pyautogui = None
 
 # GUI 라이브러리
 from PyQt6.QtWidgets import (
@@ -45,7 +60,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QStackedWidget, QStyledItemDelegate
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize
-from PyQt6.QtGui import QFont, QPixmap, QIcon, QPalette, QColor
+from PyQt6.QtGui import QFont, QPixmap, QIcon, QPalette, QColor, QTextCursor
 
 class PostingWorker(QThread):
     """포스팅 작업 스레드"""
@@ -326,11 +341,13 @@ class PostingWorker(QThread):
                 @property
                 def is_posting(self):
                     # Worker Thread의 상태를 실시간으로 반환
-                    return self.worker_thread.is_running and not self.worker_thread._force_stop
+                    is_running = getattr(self.worker_thread, "is_running", True)
+                    force_stop = getattr(self.worker_thread, "_force_stop", False)
+                    return is_running and not force_stop
                 
                 @property
                 def is_paused(self):
-                    return self.worker_thread.is_paused
+                    return getattr(self.worker_thread, "is_paused", False)
             
             mock_auto_wp = MockAutoWP(self.config_manager, self)
             content_generator = ContentGenerator(config_data, log_func, mock_auto_wp)
@@ -351,6 +368,9 @@ class PostingWorker(QThread):
 
             # 포스팅 모드에 따라 콘텐츠 타입 결정
             content_type = "approval" if posting_mode == "승인용" else "revenue"
+            
+            # 포스팅 상태 결정 (승인용은 대기, 수익용은 발행)
+            post_status = "pending" if posting_mode == "승인용" else "publish"
 
             # 콘텐츠 생성
             title, content, thumbnail_path = content_generator.generate_simple_content(
@@ -364,11 +384,11 @@ class PostingWorker(QThread):
                 
             # 🔥 콘텐츠 생성 결과 검증 강화 (빈 문자열 체크 포함)
             if not title or not title.strip():
-                self.log(f"❌ 콘텐츠 생성 실패 - 제목이 비어있음. 키워드 '{keyword}' 보존")
+                self.log(f"❌ {site_name}: 제목 생성 실패 (빈 값) - 키워드 '{keyword}' 보존")
                 return
             
             if not content or not content.strip():
-                self.log(f"❌ 콘텐츠 생성 실패 - 본문이 비어있음. 키워드 '{keyword}' 보존")
+                self.log(f"❌ {site_name}: 본문 생성 실패 (빈 값) - 키워드 '{keyword}' 보존")
                 return
             
             # 최소 길이 검증
@@ -643,8 +663,9 @@ def log_to_file(message):
 
 def get_requests_session():
     """최적화된 requests 세션 생성"""
+    from requests.adapters import HTTPAdapter
     session = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(pool_connections=3, pool_maxsize=5, max_retries=0)
+    adapter = HTTPAdapter(pool_connections=3, pool_maxsize=5, max_retries=0)
     session.mount('http://', adapter)
     session.mount('https://', adapter)
     session.headers.update({
@@ -998,7 +1019,7 @@ class ContentGenerator:
 
         # 포스팅 상태 관리
         self.is_posting = False
-        self.worker_thread = None  # Worker Thread 참조
+        self.worker_thread: Optional["PostingWorker"] = None  # Worker Thread 참조
         
         # 인증 캐시 (성공한 인증 방법 저장)
         self.auth_cache = {}  # {site_url: (headers, method_name)}
@@ -1054,6 +1075,11 @@ class ContentGenerator:
     def setup_driver(self):
         """크롬 드라이버 설정 (undetected-chromedriver 적용)"""
         try:
+            if webdriver is None:
+                self.log("⚠️ selenium not found. Please install selenium and webdriver-manager.")
+                return False
+            assert webdriver is not None
+
             if self.driver:
                 try:
                     _ = self.driver.current_url
@@ -1064,17 +1090,9 @@ class ContentGenerator:
             self.log("🌐 브라우저 실행 준비 중...")
             
             # uc(undetected-chromedriver) 사용 여부 결정
-            use_uc = True
-            try:
-                import undetected_chromedriver as uc
-            except ImportError:
-                use_uc = False
+            if uc is None:
                 self.log("⚠️ undetected-chromedriver not found. Using standard selenium.")
-            
-            if use_uc:
-                options = uc.ChromeOptions()
-            else:
-                options = webdriver.ChromeOptions()
+            options: Any = uc.ChromeOptions() if uc is not None else webdriver.ChromeOptions()
             
             self.log("🔧 브라우저 옵션 설정 중...")
             
@@ -1086,14 +1104,14 @@ class ContentGenerator:
             options.add_argument("--disable-popup-blocking")
             
             # 일반 Selenium일 때만 추가 우회 설정 (uc는 자동 처리됨)
-            if not use_uc:
+            if uc is None:
                 options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
                 options.add_experimental_option('useAutomationExtension', False)
                 options.add_argument("--disable-blink-features=AutomationControlled")
 
             self.log("🚀 브라우저 시작 중...")
             try:
-                if use_uc:
+                if uc is not None:
                     # [Fix] WinError 183 및 프로세스 충돌 방지를 위한 사전 정리
                     try:
                         import subprocess
@@ -1120,11 +1138,18 @@ class ContentGenerator:
                     # [Fix] "Binary Location Must be a String" 오류 해결을 위해 version_main 지정
                     self.driver = uc.Chrome(options=options, version_main=131)
                 else:
-                    try:
-                        driver_path = ChromeDriverManager().install()
-                        service = Service(driver_path)
-                    except:
+                    if ChromeDriverManager is not None and Service is not None:
+                        try:
+                            driver_path = ChromeDriverManager().install()
+                            service = Service(driver_path)
+                        except Exception:
+                            service = Service()
+                    elif Service is not None:
                         service = Service()
+                    else:
+                        self.log("⚠️ selenium Service not available.")
+                        return False
+                    assert service is not None
                     self.driver = webdriver.Chrome(service=service, options=options)
                 
                 # self.driver.maximize_window() # 화면 가림 방지를 위해 최대화 안함
@@ -1150,8 +1175,9 @@ class ContentGenerator:
                     return True
             
             # Auto WP 인스턴스의 is_posting 상태 체크
-            if hasattr(self.auto_wp, 'is_posting'):
-                if not self.auto_wp.is_posting:
+            if self.auto_wp is not None:
+                is_posting = getattr(self.auto_wp, 'is_posting', True)
+                if not is_posting:
                     return True
             
             # 모든 체크를 통과하면 계속 진행
@@ -1204,7 +1230,7 @@ class ContentGenerator:
         else:
             gemini_api_key = self.config_data.get('gemini_api_key', '')
 
-        if GEMINI_AVAILABLE and gemini_api_key and gemini_api_key not in ["your_gemini_api_key", ""]:
+        if GEMINI_AVAILABLE and genai is not None and gemini_api_key and gemini_api_key not in ["your_gemini_api_key", ""]:
             try:
                 # API 키 설정
                 genai.configure(api_key=gemini_api_key)
@@ -1271,6 +1297,9 @@ class ContentGenerator:
     def _ensure_gemini_tab(self):
         """Gemini 탭 확인 및 이동"""
         try:
+            if not self.driver:
+                return False
+            assert self.driver is not None
             if self.gemini_tab_handle and self.gemini_tab_handle in self.driver.window_handles:
                 self.driver.switch_to.window(self.gemini_tab_handle)
                 return True
@@ -1307,6 +1336,8 @@ class ContentGenerator:
 
     def _find_gemini_editor(self, timeout=5):
         """Gemini 에디터 찾기"""
+        if not self.driver or By is None:
+            return None
         selectors = ["div.ql-editor.textarea", "div[contenteditable='true']", "rich-textarea div.ql-editor"]
         end_time = time.time() + timeout
         while time.time() < end_time:
@@ -1321,6 +1352,8 @@ class ContentGenerator:
     def _submit_gemini_prompt(self, prompt):
         """Gemini 프롬프트 전송"""
         try:
+            if not self.driver or Keys is None:
+                return False
             editor = self._find_gemini_editor(timeout=10)
             if not editor: return False
             
@@ -1338,6 +1371,8 @@ class ContentGenerator:
     def _wait_for_gemini_response(self, timeout=120):
         """Gemini 응답 대기 및 추출"""
         try:
+            if not self.driver or By is None:
+                return None
             time.sleep(5) # 초기 대기
             # 응답 생성 완료 대기 (로딩 인디케이터가 사라질 때까지 등)
             # 여기서는 간단히 텍스트가 더 이상 변하지 않을 때까지 대기
@@ -1371,7 +1406,12 @@ class ContentGenerator:
     def call_gemini_api(self, prompt, step_name, max_tokens, temperature, system_content):
         """Gemini API 호출"""
         try:
+            if genai is None:
+                raise Exception("Gemini 라이브러리가 설치되지 않았습니다.")
+            assert genai is not None
             # API 키 재확인
+            if not self.config_manager:
+                raise Exception("설정 관리자를 찾을 수 없습니다.")
             gemini_key = self.config_manager.data.get("api_keys", {}).get("gemini", "").strip()
             if not gemini_key:
                 raise Exception("Gemini API 키가 설정되지 않았습니다.")
@@ -1381,7 +1421,10 @@ class ContentGenerator:
                 raise Exception("Gemini 모델이 초기화되지 않았습니다.")
             
             full_prompt = f"{system_content}\n\n---\n\n{prompt}" if system_content else prompt
-            generation_config = genai.types.GenerationConfig(
+            types_module = getattr(genai, "types", None)
+            if types_module is None:
+                raise Exception("Gemini 타입 모듈을 찾을 수 없습니다.")
+            generation_config = types_module.GenerationConfig(
                 max_output_tokens=max_tokens, 
                 temperature=temperature
             )
@@ -2497,7 +2540,7 @@ class ContentGenerator:
             base_thumbnail_path = os.path.join(get_base_path(), 'images', thumbnail_filename)
 
             # 제목이 있으면 썸네일에 제목 추가
-            thumbnail_path = self.create_thumbnail_with_title(title, keyword)
+            thumbnail_path = self.create_thumbnail(title, keyword)
 
             return title, full_content, thumbnail_path
 
@@ -3735,7 +3778,7 @@ class ContentGenerator:
             self.log(f"썸네일 생성 오류: {e}")
             return None
 
-    def post_to_wordpress(self, site_data, title, content, thumbnail_path=None):
+    def post_to_wordpress(self, site_data, title, content, thumbnail_path=None, status='publish'):
         """워드프레스에 포스트를 게시합니다."""
         try:
             site_name = site_data.get('name', 'Unknown')
@@ -3841,13 +3884,11 @@ class ContentGenerator:
             post_data = {
                 'title': title,
                 'content': content,
-                'status': 'publish',
+                'status': status,
                 'categories': [int(category)]
             }
 
             session = get_requests_session()
-            response = session.post(api_url, headers=headers, json=post_data, timeout=30)
-
             if response.status_code == 201:
                 post_info = response.json()
                 post_id = post_info['id']
@@ -4636,11 +4677,7 @@ class ContentGenerator:
 - 순수 HTML만 사용
 - {keyword}에 대한 유용한 정보 제공"""
 
-    def extract_approval_title_and_intro(self, content, keyword):
-        """승인용 콘텐츠에서 제목과 서론 추출"""
-        return self.extract_title_and_intro(content, keyword)
-
-        return base_prompt
+    
 
                 
 class ConfigManager:
@@ -4690,6 +4727,10 @@ class ConfigManager:
                                 default_data[key].update(loaded_data[key])
                             else:
                                 default_data[key] = loaded_data[key]
+                    # OpenAI는 더 이상 사용하지 않으므로 설정값을 정리
+                    if default_data["global_settings"].get("default_ai") == "openai":
+                        default_data["global_settings"]["default_ai"] = "gemini"
+                        default_data["global_settings"]["ai_model"] = "gemini-2.5-flash-lite"
                     return default_data
             return default_data
         except Exception as e:
@@ -5228,7 +5269,11 @@ class SiteEditDialog(QDialog):
         url = self.url_edit.text().strip()
 
         # 전역 설정에서 사용자명/비밀번호 가져오기
-        config_manager = self.parent().config_manager
+        parent = self.parent()
+        config_manager = getattr(parent, "config_manager", None)
+        if config_manager is None:
+            QMessageBox.warning(self, "경고", "전역 설정을 찾을 수 없습니다.")
+            return
         username = config_manager.data["global_settings"].get("common_username", "")
         password = config_manager.data["global_settings"].get("common_password", "")
 
@@ -5405,7 +5450,11 @@ class SiteEditDialog(QDialog):
     def get_site_data(self):
         """사이트 데이터 반환"""
         # 전역 설정에서 공통 설정 가져오기
-        config_manager = self.parent().config_manager
+        parent = self.parent()
+        config_manager = getattr(parent, "config_manager", None)
+        if config_manager is None:
+            QMessageBox.warning(self, "오류", "전역 설정을 찾을 수 없습니다.")
+            return None
 
         # URL에서 사이트 이름 자동 생성
         url = self.url_edit.text().strip()
@@ -5435,6 +5484,14 @@ class SiteEditDialog(QDialog):
             "keyword_file": keyword_file,        # 키워드 파일명
             "keywords": []  # 키워드는 파일에서 동적으로 로드
         }
+
+class ClickableLabel(QLabel):
+    """클릭 가능한 라벨"""
+    clicked = pyqtSignal()
+
+    def mousePressEvent(self, event):
+        self.clicked.emit()
+        super().mousePressEvent(event)
 
 class SiteWidget(QWidget):
     """개별 사이트 위젯"""
@@ -5489,7 +5546,7 @@ class SiteWidget(QWidget):
             display_url = raw_url.replace('https://', '').replace('http://', '')
         else:
             display_url = raw_url
-        url_info = QLabel(display_url)
+        url_info = ClickableLabel(display_url)
         url_info.setFont(QFont("맑은 고딕", 10))
         url_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         url_info.setStyleSheet(f"""
@@ -5497,7 +5554,7 @@ class SiteWidget(QWidget):
             text-decoration: underline;
         """)
         url_info.setCursor(Qt.CursorShape.PointingHandCursor)
-        url_info.mousePressEvent = lambda event: self.open_wp_admin()
+        url_info.clicked.connect(self.open_wp_admin)
         url_row.addWidget(url_info, 1)
 
         url_row.addStretch()
@@ -5531,7 +5588,7 @@ class SiteWidget(QWidget):
 
         keyword_row = QHBoxLayout()
         keywords_count = self.get_keywords_count()
-        self.keyword_info = QLabel(f"키워드 {keywords_count}개")  # self로 변경하여 나중에 업데이트 가능
+        self.keyword_info = ClickableLabel(f"키워드 {keywords_count}개")  # self로 변경하여 나중에 업데이트 가능
         self.keyword_info.setFont(QFont("맑은 고딕", 10))
         self.keyword_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.keyword_info.setStyleSheet(f"""
@@ -5539,7 +5596,7 @@ class SiteWidget(QWidget):
             text-decoration: underline;
         """)
         self.keyword_info.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.keyword_info.mousePressEvent = lambda event: self.open_keyword_file()
+        self.keyword_info.clicked.connect(self.open_keyword_file)
         keyword_row.addWidget(self.keyword_info, 1)
 
         keyword_row.addStretch()
@@ -5573,7 +5630,7 @@ class SiteWidget(QWidget):
 
         thumbnail_row = QHBoxLayout()
         thumbnail_info = self.get_thumbnail_info()
-        thumbnail_label = QLabel(f"썸네일 {thumbnail_info}")
+        thumbnail_label = ClickableLabel(f"썸네일 {thumbnail_info}")
         thumbnail_label.setFont(QFont("맑은 고딕", 10))
         thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         thumbnail_label.setStyleSheet(f"""
@@ -5581,7 +5638,7 @@ class SiteWidget(QWidget):
             text-decoration: underline;
         """)
         thumbnail_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        thumbnail_label.mousePressEvent = lambda event: self.open_thumbnail_file()
+        thumbnail_label.clicked.connect(self.open_thumbnail_file)
         thumbnail_row.addWidget(thumbnail_label, 1)
 
         thumbnail_row.addStretch()
@@ -5893,8 +5950,8 @@ class MainWindow(QMainWindow):
         # 포스팅 상태 변수
         self.is_posting = False
         self.is_paused = False
-        self.posting_thread = None
-        self.posting_worker = None  # 포스팅 워커 추가
+        self.posting_thread: Optional[QThread] = None
+        self.posting_worker: Optional[PostingWorker] = None  # 포스팅 워커 추가
         self.remaining_keywords = []
         self.current_keyword = ""
         self.config_data = {}  # 설정 데이터 초기화
@@ -5906,9 +5963,19 @@ class MainWindow(QMainWindow):
         self.posting_interval_seconds = 0
         self.countdown_timer = QTimer()
         self.countdown_timer.timeout.connect(self.update_next_posting_countdown)
+        self.next_posting_label = None
         
         # 현재 포스팅 중인 사이트 추적
         self.current_posting_site = None
+
+        # 모니터링/설정 UI 참조 초기화
+        self.ai_model_combo: Optional[QComboBox] = None
+        self.posting_mode_combo: Optional[QComboBox] = None
+        self.wait_time_edit_monitoring: Optional[QLineEdit] = None
+        self.total_keywords_button: Optional[QPushButton] = None
+        self.refresh_button: Optional[QPushButton] = None
+        self.current_site_combo: Optional[QComboBox] = None
+        self.refresh_container: Optional[QWidget] = None
 
         self.setup_ui()
         
@@ -6082,21 +6149,23 @@ class MainWindow(QMainWindow):
             
             # 콤보박스를 편집 가능하게 만들고 텍스트 중앙 정렬 (가시성 확보)
             value_widget.setEditable(True)
-            value_widget.lineEdit().setReadOnly(True)
-            value_widget.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
-            
-            # lineEdit 스타일 설정 (투명 배경, 텍스트 색상)
-            value_widget.lineEdit().setStyleSheet(f"""
-                QLineEdit {{
-                    background: transparent;
-                    border: none;
-                    color: {COLORS['text']};
-                    font-weight: bold;
-                }}
-            """)
+            line_edit = value_widget.lineEdit()
+            if line_edit:
+                line_edit.setReadOnly(True)
+                line_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                
+                # lineEdit 스타일 설정 (투명 배경, 텍스트 색상)
+                line_edit.setStyleSheet(f"""
+                    QLineEdit {{
+                        background: transparent;
+                        border: none;
+                        color: {COLORS['text']};
+                        font-weight: bold;
+                    }}
+                """)
             
             # 스크롤 기능 비활성화
-            value_widget.wheelEvent = lambda event: None
+            value_widget.wheelEvent = self._ignore_wheel_event  # type: ignore[assignment]
             
         elif widget_type == "lineedit":
             # 라인에딕 타입 추가
@@ -6161,7 +6230,8 @@ class MainWindow(QMainWindow):
             
             # 입력창 (오른쪽 정렬, 고정 너비로 설정하여 라벨과 붙어있게 함)
             value_widget.setFixedWidth(60)
-            value_widget.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            if isinstance(value_widget, QLineEdit):
+                value_widget.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             wrapper_layout.addWidget(value_widget)
             
             suffix_label = QLabel(suffix)
@@ -6176,8 +6246,8 @@ class MainWindow(QMainWindow):
             layout.addWidget(value_widget)
 
         # value_widget을 container의 속성으로 저장
-        container.value_button = value_widget
-        container.value_widget = value_widget  # 콤보박스용 별칭
+        setattr(container, "value_button", value_widget)
+        setattr(container, "value_widget", value_widget)  # 콤보박스용 별칭
         
         return container
         self.update_buttons_signal.connect(self._safe_update_button_states)
@@ -6213,7 +6283,7 @@ class MainWindow(QMainWindow):
                 self.current_posting_site = self.clean_url_for_display(last_site_url)
                 
                 # 콤보박스에서 해당 사이트 선택
-                if hasattr(self, 'current_site_combo'):
+                if self.current_site_combo:
                     start_site_id = self.config_manager.get_start_site_id()
                     if start_site_id:
                         for i in range(self.current_site_combo.count()):
@@ -6427,6 +6497,7 @@ class MainWindow(QMainWindow):
     def setup_ui(self):
         """UI 설정 - 간단한 레이아웃"""
         self.setWindowTitle("Auto WP multi-site - 멀티 사이트 관리 시스템")
+        from PyQt6.QtGui import QGuiApplication
         
         # 🔥 프로그램 아이콘 설정 (임베디드 방식)
         try:
@@ -6438,7 +6509,7 @@ class MainWindow(QMainWindow):
                 icon = QIcon(icon_path)
                 self.setWindowIcon(icon)
                 # QApplication에도 설정하여 모든 다이얼로그에 적용
-                QApplication.instance().setWindowIcon(icon)
+                QGuiApplication.setWindowIcon(icon)
                 print(f"✅ 프로그램 아이콘 설정 완료: {icon_path}")
             else:
                 # 아이콘 파일이 없으면 기본 아이콘 생성 (흰색 원)
@@ -6447,15 +6518,17 @@ class MainWindow(QMainWindow):
                 pixmap.fill(QColor("#5E81AC"))
                 icon = QIcon(pixmap)
                 self.setWindowIcon(icon)
-                QApplication.instance().setWindowIcon(icon)
+                QGuiApplication.setWindowIcon(icon)
                 
         except Exception as e:
             print(f"⚠️ 아이콘 설정 오류: {e}")
         
         # 화면 크기에 맞춰 창 크기 자동 조정
-        from PyQt6.QtGui import QGuiApplication
         screen = QGuiApplication.primaryScreen()
-        screen_geometry = screen.availableGeometry()
+        screen_geometry = screen.availableGeometry() if screen else None
+        if screen_geometry is None:
+            self.resize(1200, 800)
+            screen_geometry = self.geometry()
         
         # 화면 크기의 80%로 초기 창 크기 설정
         window_width = int(screen_geometry.width() * 0.8)
@@ -7145,12 +7218,16 @@ class MainWindow(QMainWindow):
         
         # 행 0, 열 0: AI 설정
         self.ai_model_label = self.create_unified_card("🤖 AI 설정", "", self.goto_settings_ai, "combobox")
-        self.ai_model_combo = self.ai_model_label.value_widget
+        self.ai_model_combo = self._get_card_value_widget(self.ai_model_label)
+        if self.ai_model_combo is None:
+            raise RuntimeError("ai_model_combo not available")
         self.settings_grid.addWidget(self.ai_model_label, 0, 0, 1, 1)
         
         # 행 0, 열 1: 포스팅 모드
         self.posting_mode_label = self.create_unified_card("📝 포스팅 모드", "", self.goto_settings_posting_mode, "combobox")
-        self.posting_mode_combo = self.posting_mode_label.value_widget
+        self.posting_mode_combo = self._get_card_value_widget(self.posting_mode_label)
+        if self.posting_mode_combo is None:
+            raise RuntimeError("posting_mode_combo not available")
         self.settings_grid.addWidget(self.posting_mode_label, 0, 1, 1, 1)
         
         # 행 0, 열 2: 사이트
@@ -7160,19 +7237,25 @@ class MainWindow(QMainWindow):
         # 행 1, 열 0: 포스팅 간격 (입력 가능)
         wait_time_value = self.config_manager.data["global_settings"].get("default_wait_time", "47~50")
         self.interval_label = self.create_unified_card("⏱️ 포스팅 간격", wait_time_value, None, "lineedit", suffix="분")
-        self.wait_time_edit_monitoring = self.interval_label.value_widget
+        self.wait_time_edit_monitoring = self._get_card_value_widget(self.interval_label)
+        if self.wait_time_edit_monitoring is None:
+            raise RuntimeError("wait_time_edit_monitoring not available")
         self.wait_time_edit_monitoring.setText(wait_time_value)
         self.wait_time_edit_monitoring.textChanged.connect(self.on_interval_changed)
         self.settings_grid.addWidget(self.interval_label, 1, 0, 1, 1)
         
         # 행 1, 열 1: 남은 키워드
         self.total_keywords_label = self.create_unified_card("📊 남은 키워드", "0개", self.goto_site_management, "button")
-        self.total_keywords_button = self.total_keywords_label.value_button
+        self.total_keywords_button = self._get_card_value_button(self.total_keywords_label)
+        if self.total_keywords_button is None:
+            raise RuntimeError("total_keywords_button not available")
         self.settings_grid.addWidget(self.total_keywords_label, 1, 1, 1, 1)
         
         # 행 1, 열 2: 새로고침
         self.refresh_button_label = self.create_unified_card("🔄 새로고침", "F5", self.refresh_all_status, "button")
-        self.refresh_button = self.refresh_button_label.value_button
+        self.refresh_button = self._get_card_value_button(self.refresh_button_label)
+        if self.refresh_button is None:
+            raise RuntimeError("refresh_button not available")
         self.settings_grid.addWidget(self.refresh_button_label, 1, 2, 1, 1)
         
         status_layout.addLayout(self.settings_grid)
@@ -7354,7 +7437,7 @@ class MainWindow(QMainWindow):
         """)
 
         # Ctrl+휠 확대/축소 기능 활성화하고 커스텀 휠 이벤트 적용
-        self.progress_text.wheelEvent = self.progress_wheel_event
+        self.progress_text.wheelEvent = self.progress_wheel_event  # type: ignore[assignment]
         
         # 사용자 스크롤 추적 변수 초기화
         self.user_scrolling = False
@@ -7444,17 +7527,21 @@ class MainWindow(QMainWindow):
 
     def initialize_monitoring_combos(self):
         """모니터링 탭의 콤보박스들 초기화"""
+        print("🔧 initialize_monitoring_combos 호출됨", flush=True)
         try:
             # AI 설정 콤보박스 초기화
-            if hasattr(self, 'ai_model_combo'):
+            if self.ai_model_combo:
                 self.ai_model_combo.clear()
                 
                 # API와 웹사이트 옵션 추가
                 ai_options = ["웹사이트 자동화", "API 연동"]
                 self.ai_model_combo.addItems(ai_options)
                 
-                # 현재 설정 확인
-                ai_provider = self.config_manager.data["global_settings"].get("default_ai", "web-gemini")
+                # 현재 설정 확인 (안전하게)
+                try:
+                    ai_provider = self.config_manager.data.get("global_settings", {}).get("default_ai", "web-gemini")
+                except:
+                    ai_provider = "web-gemini"
                 
                 # 현재 모드에 맞게 선택
                 if "web" in ai_provider:
@@ -7462,25 +7549,46 @@ class MainWindow(QMainWindow):
                 else:
                     self.ai_model_combo.setCurrentText("API 연동")
                 
-                # AI 설정 변경 시 업데이트
+                # AI 설정 변경 시 업데이트 - 시그널 연결 확인
+                try:
+                    self.ai_model_combo.currentTextChanged.disconnect()
+                except:
+                    pass
                 self.ai_model_combo.currentTextChanged.connect(self.on_ai_model_changed)
+                print(f"✅ AI 설정 콤보박스 초기화 완료: {ai_provider}", flush=True)
+            else:
+                print("⚠️ ai_model_combo 위젯을 찾을 수 없습니다.", flush=True)
             
             # 포스팅 모드 콤보박스 초기화
-            if hasattr(self, 'posting_mode_combo'):
+            if self.posting_mode_combo:
                 self.posting_mode_combo.clear()
                 self.posting_mode_combo.addItems(["승인용", "수익용"])
-                current_mode = self.config_manager.data["global_settings"].get("posting_mode", "승인용")
+                
+                try:
+                    current_mode = self.config_manager.data.get("global_settings", {}).get("posting_mode", "승인용")
+                except:
+                    current_mode = "승인용"
+                    
                 self.posting_mode_combo.setCurrentText(current_mode)
                 
                 # 포스팅 모드 변경 시 설정 업데이트
+                try:
+                    self.posting_mode_combo.currentTextChanged.disconnect()
+                except:
+                    pass
                 self.posting_mode_combo.currentTextChanged.connect(self.on_posting_mode_changed)
+                print(f"✅ 포스팅 모드 콤보박스 초기화 완료: {current_mode}", flush=True)
+            else:
+                print("⚠️ posting_mode_combo 위젯을 찾을 수 없습니다.", flush=True)
             
             # 다음 포스팅 카운트다운 초기화
-            if hasattr(self, 'next_posting_label') and hasattr(self.next_posting_label, 'value_button'):
-                self.next_posting_label.value_button.setText("대기중")
+            next_label = getattr(self, "next_posting_label", None)
+            self._set_card_value_text(next_label, "대기중")
                 
         except Exception as e:
-            print(f"콤보박스 초기화 오류: {e}")
+            print(f"❌ 콤보박스 초기화 오류: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
 
     def on_ai_model_changed(self, selection):
         """AI 설정 변경 시 업데이트 (API/웹사이트)"""
@@ -7538,7 +7646,7 @@ class MainWindow(QMainWindow):
             self.config_manager.save_config()
             
             # 모니터링 탭의 AI 설정 콤보박스도 업데이트
-            if hasattr(self, 'ai_model_combo'):
+            if self.ai_model_combo:
                 self.ai_model_combo.blockSignals(True)  # 무한 루프 방지
                 self.ai_model_combo.setCurrentText(selection_text)
                 self.ai_model_combo.blockSignals(False)
@@ -7732,7 +7840,7 @@ class MainWindow(QMainWindow):
             self.config_manager.save_config()
             
             # 모니터링 탭의 포스팅 모드 콤보박스도 업데이트
-            if hasattr(self, 'posting_mode_combo'):
+            if self.posting_mode_combo:
                 self.posting_mode_combo.blockSignals(True)  # 무한 루프 방지
                 self.posting_mode_combo.setCurrentText(mode)
                 self.posting_mode_combo.blockSignals(False)
@@ -7746,7 +7854,7 @@ class MainWindow(QMainWindow):
         """설정 저장 후 모니터링 탭의 '현재 설정 상태' 업데이트"""
         try:
             # AI 설정 콤보박스 업데이트
-            if hasattr(self, 'ai_model_combo') and self.ai_model_combo:
+            if self.ai_model_combo:
                 ai_provider = self.config_manager.data["global_settings"].get("default_ai", "web-gemini")
                 
                 # AI 제공자에 따라 선택 항목 업데이트
@@ -7766,7 +7874,7 @@ class MainWindow(QMainWindow):
                 print(f"✅ 모니터링 탭 AI 설정 업데이트: {self.ai_model_combo.currentText()}")
             
             # 포스팅 모드 콤보박스 업데이트
-            if hasattr(self, 'posting_mode_combo') and self.posting_mode_combo:
+            if self.posting_mode_combo:
                 posting_mode = self.config_manager.data["global_settings"].get("posting_mode", "승인용")
                 self.posting_mode_combo.blockSignals(True)
                 self.posting_mode_combo.setCurrentText(posting_mode)
@@ -7792,45 +7900,30 @@ class MainWindow(QMainWindow):
         container = self.create_unified_card("🌐 사이트", "", self.goto_site_management, "combobox")
         
         # 콤보박스 참조 저장
-        self.current_site_combo = container.value_widget
+        current_site_combo = getattr(container, "value_widget", None)
+        if current_site_combo is None:
+            raise RuntimeError("value_widget not available on site selector container.")
+        self.current_site_combo = current_site_combo
         
         return container
-        layout.setSpacing(2)
 
-        # 제목
-        title_label = QLabel(title)
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 10pt; font-weight: bold;")
-        layout.addWidget(title_label)
+    def _get_card_value_button(self, card):
+        """카드의 value_button을 안전하게 반환"""
+        return getattr(card, "value_button", None)
 
-        # 값(클릭 가능한 버튼으로 만들기)
-        value_btn = QPushButton(value)
-        value_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS['surface']};
-                color: {COLORS['text']};
-                padding: 4px 8px;
-                border-radius: 4px;
-                border: 1px solid {COLORS['border']};
-                font-size: 8pt;
-                text-align:center;
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS['surface_light']};
-                border: 1px solid {COLORS['info']};
-            }}
-        """)
+    def _get_card_value_widget(self, card):
+        """카드의 value_widget을 안전하게 반환"""
+        return getattr(card, "value_widget", None)
 
-        if callback:
-            value_btn.clicked.connect(callback)
-            value_btn.setToolTip(f"{title} 설정 변경하기")
+    def _set_card_value_text(self, card, text):
+        """카드 value_button에 텍스트를 안전하게 설정"""
+        value_widget = self._get_card_value_button(card)
+        if value_widget and hasattr(value_widget, "setText"):
+            value_widget.setText(text)
 
-        layout.addWidget(value_btn)
-
-        # 값 업데이트를 위한 참조 저장
-        container.value_button = value_btn
-
-        return container
+    def _ignore_wheel_event(self, event):
+        """휠 이벤트 무시"""
+        event.ignore()
 
     def check_settings_sync(self):
         """설정 탭 정보와 JSON 파일 연동 상태 체크"""
@@ -7842,13 +7935,9 @@ class MainWindow(QMainWindow):
             # AI 설정 체크
             ai_provider = self.config_manager.data["global_settings"].get("default_ai", "gemini")
             ai_model = self.config_manager.data["global_settings"].get("ai_model", "")
-            
-            openai_key = self.config_manager.data.get('api_keys', {}).get('openai', '')
             gemini_key = self.config_manager.data.get('api_keys', {}).get('gemini', '')
             
-            if ai_provider == "openai" and not openai_key.startswith('sk-'):
-                check_results.append(f"[{startup_time_short}] ⚠️ OpenAI 선택되었으나 API 키가 없습니다")
-            elif ai_provider == "gemini" and not gemini_key.startswith('AIza'):
+            if ai_provider == "gemini" and not gemini_key.startswith('AIza'):
                 check_results.append(f"[{startup_time_short}] ⚠️ Gemini 선택되었으나 API 키가 없습니다")
             
             # 포스팅 간격 체크
@@ -7921,7 +8010,7 @@ class MainWindow(QMainWindow):
             if self.user_scrolling and (current_time - self.last_scroll_time) >= 10:
                 self.user_scrolling = False
                 # 현재 진행 상황으로 스크롤
-                self.progress_text.moveCursor(self.progress_text.textCursor().End)
+                self.progress_text.moveCursor(QTextCursor.MoveOperation.End)
                 
         except Exception:
             pass
@@ -7933,16 +8022,10 @@ class MainWindow(QMainWindow):
             ai_provider = self.config_manager.data["global_settings"].get("default_ai", "gemini")
             ai_model = self.config_manager.data["global_settings"].get("ai_model", "")
             
-            if ai_provider == "openai":
-                if ai_model:
-                    ai_display = ai_model
-                else:
-                    ai_display = "GPT 4o-mini"
+            if ai_model:
+                ai_display = ai_model
             else:
-                if ai_model:
-                    ai_display = ai_model
-                else:
-                    ai_display = "gemini-2.5-flash-lite"
+                ai_display = "gemini-2.5-flash-lite"
             
             # AI 모델 업데이트는 콤보박스에서 자동 처리됨
             # 포스팅 모드 업데이트도 콤보박스에서 자동 처리됨
@@ -7966,7 +8049,8 @@ class MainWindow(QMainWindow):
                         except Exception as e:
                             print(f"❌ 키워드 파일 읽기 오류 ({keyword_path}): {e}")
 
-            self.total_keywords_button.setText(f"{total_keywords}개")
+            if self.total_keywords_button:
+                self.total_keywords_button.setText(f"{total_keywords}개")
 
             # 현재 포스팅 중인 사이트 정보 업데이트는 드롭다운에서 생략
             # (사용자가 직접 선택할 수 있으므로)
@@ -8320,8 +8404,9 @@ class MainWindow(QMainWindow):
             # 사이트 목록 다시 로드
             self.load_sites()
             # 썸네일 콤보박스도 새로고침
-            if hasattr(self, 'populate_thumbnail_combo'):
-                self.populate_thumbnail_combo()
+            populate_fn = getattr(self, "populate_thumbnail_combo", None)
+            if callable(populate_fn):
+                populate_fn()
             print("🔄 사이트 목록이 새로고침되었습니다.")
         except Exception as e:
             print(f"새로고침 오류: {e}")
@@ -8331,8 +8416,11 @@ class MainWindow(QMainWindow):
         # 기존 사이트 위젯들 제거
         for i in reversed(range(self.sites_layout.count() - 1)):  # stretch 제외하고 제거
             child = self.sites_layout.itemAt(i)
-            if child.widget():
-                child.widget().deleteLater()
+            if not child:
+                continue
+            widget = child.widget()
+            if widget:
+                widget.deleteLater()
 
         # 새 사이트 위젯들 추가
         try:
@@ -8417,7 +8505,7 @@ class MainWindow(QMainWindow):
     def update_start_site_combo(self, sites_data):
         """사이트 드롭다운 업데이트"""
         try:
-            if hasattr(self, 'current_site_combo'):
+            if self.current_site_combo:
                 self.current_site_combo.clear()
                 self.current_site_combo.addItem("🔄 전체 사이트 순환", "all")
                 
@@ -8447,6 +8535,9 @@ class MainWindow(QMainWindow):
             dialog = SiteEditDialog(self, site_data)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 updated_data = dialog.get_site_data()
+                if not updated_data:
+                    QMessageBox.warning(self, "오류", "사이트 정보를 가져오지 못했습니다.")
+                    return
                 if self.config_manager.update_site(site_id, updated_data):
                     QMessageBox.information(self, "성공", "사이트가 업데이트되었습니다!")
                     self.load_sites()
@@ -8841,6 +8932,16 @@ class MainWindow(QMainWindow):
         gemini_widget = QWidget()
         gemini_widget.setLayout(gemini_row)
         api_form.addRow("Gemini API Key:", gemini_widget)
+
+        # Gemini 상태 라벨
+        self.gemini_status_label = QLabel()
+        if gemini_key_value and len(gemini_key_value) > 10:
+            self.gemini_status_label.setText("🔑 설정됨")
+            self.gemini_status_label.setStyleSheet("color: #88C0D0; font-weight: bold;")
+        else:
+            self.gemini_status_label.setText("❌ 미설정")
+            self.gemini_status_label.setStyleSheet("color: #BF616A; font-weight: bold;")
+        api_form.addRow("Gemini 상태:", self.gemini_status_label)
         
         # API 테스트 버튼 - 중앙 정렬 및 스타일 개선
         test_api_container = QWidget()
@@ -9030,37 +9131,28 @@ class MainWindow(QMainWindow):
     def test_api_connections(self):
         """API 연결 테스트"""
         self.update_posting_status("🧪 API 연결 테스트 시작")
-        
-        # OpenAI 테스트
-        openai_key = self.openai_key_edit.text().strip()
-        if openai_key:
-            try:
-                from openai import OpenAI
-                client = OpenAI(api_key=openai_key)
-                response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": "안녕"}],
-                    max_tokens=10,
-                    timeout=10
-                )
-                self.openai_status_label.setText("✅ 연결됨")
-                self.openai_status_label.setStyleSheet("color: #A3BE8C; font-weight: bold;")
-                self.update_posting_status("✅ OpenAI API 연결 성공!")
-            except Exception as e:
-                self.openai_status_label.setText("❌ 실패")
-                self.openai_status_label.setStyleSheet("color: #BF616A; font-weight: bold;")
-                self.update_posting_status(f"❌ OpenAI API 연결 실패: {str(e)}")
-        else:
-            self.openai_status_label.setText("❌ 미설정")
-            self.openai_status_label.setStyleSheet("color: #BF616A; font-weight: bold;")
             
         # Gemini 테스트
         gemini_key = self.gemini_key_edit.text().strip()
         if gemini_key:
             try:
                 if GEMINI_AVAILABLE:
-                    import google.generativeai as genai
-                    genai.configure(api_key=gemini_key)
+                    try:
+                        import google.generativeai as genai
+                    except Exception as import_error:
+                        self.gemini_status_label.setText("❌ 라이브러리 오류")
+                        self.gemini_status_label.setStyleSheet("color: #EBCB8B; font-weight: bold;")
+                        self.update_posting_status(f"❌ google-generativeai 로드 실패: {import_error}")
+                        return
+                    configure_fn = getattr(genai, "configure", None)
+                    gen_model_cls = getattr(genai, "GenerativeModel", None)
+                    types_module = getattr(genai, "types", None)
+                    if not configure_fn or not gen_model_cls or not types_module:
+                        self.gemini_status_label.setText("? 라이브러리 오류")
+                        self.gemini_status_label.setStyleSheet("color: #EBCB8B; font-weight: bold;")
+                        self.update_posting_status("? google-generativeai 모듈 구성 요소를 찾을 수 없습니다")
+                        return
+                    configure_fn(api_key=gemini_key)
                     
                     # 최신 Gemini 모델들 순서대로 시도 (2025년 최신 모델 포함)
                     models_to_try = [
@@ -9077,10 +9169,10 @@ class MainWindow(QMainWindow):
                     for model_name in models_to_try:
                         try:
                             print(f"🔍 Gemini 모델 시도: {model_name}")
-                            model = genai.GenerativeModel(model_name)
+                            model = gen_model_cls(model_name)
                             response = model.generate_content(
                                 "안녕", 
-                                generation_config=genai.types.GenerationConfig(
+                                generation_config=types_module.GenerationConfig(
                                     max_output_tokens=10,
                                     temperature=0.7
                                 ),
@@ -9214,12 +9306,20 @@ class MainWindow(QMainWindow):
                 saved_data = json.load(f)
             
             # GUI에서 현재 입력된 값들
+            if hasattr(self, 'ai_mode_combo'):
+                if self.ai_mode_combo.currentIndex() == 1:
+                    gui_default_ai = "gemini"
+                else:
+                    web_model = self.web_model_combo.currentText() if hasattr(self, 'web_model_combo') else ""
+                    gui_default_ai = "web-perplexity" if "Perplexity" in web_model else "web-gemini"
+            else:
+                gui_default_ai = self.config_manager.data.get("global_settings", {}).get("default_ai", "gemini")
+
             gui_values = {
-                'openai_key': self.openai_key_edit.text().strip(),
                 'gemini_key': self.gemini_key_edit.text().strip(),
-                'default_ai': self.default_ai_combo.currentText(),
-                'ai_model': self.ai_model_combo.currentText(),
-                'posting_mode': self.posting_mode_combo.currentText(),
+                'default_ai': gui_default_ai,
+                'ai_model': self.ai_model_combo.currentText() if self.ai_model_combo else "",
+                'posting_mode': self.posting_mode_combo.currentText() if self.posting_mode_combo else "",
                 'wait_time': self.wait_time_edit.text().strip(),
                 'username': self.common_username_edit.text().strip(),
                 'password': self.common_password_edit.text().strip()
@@ -9227,7 +9327,6 @@ class MainWindow(QMainWindow):
             
             # JSON에서 저장된 값들
             json_values = {
-                'openai_key': saved_data.get('api_keys', {}).get('openai', ''),
                 'gemini_key': saved_data.get('api_keys', {}).get('gemini', ''),
                 'default_ai': saved_data.get('global_settings', {}).get('default_ai', ''),
                 'ai_model': saved_data.get('global_settings', {}).get('ai_model', ''),
@@ -9246,13 +9345,13 @@ class MainWindow(QMainWindow):
                 json_val = json_values[key]
                 
                 if gui_val == json_val:
-                    if key in ['openai_key', 'gemini_key', 'password']:
+                    if key in ['gemini_key', 'password']:
                         print(f"✅ [VERIFY] {key}: GUI와 JSON 일치 (길이: {len(gui_val)})")
                     else:
                         print(f"✅ [VERIFY] {key}: '{gui_val}' == '{json_val}'")
                 else:
                     verification_passed = False
-                    if key in ['openai_key', 'gemini_key', 'password']:
+                    if key in ['gemini_key', 'password']:
                         print(f"❌ [VERIFY] {key}: GUI(길이:{len(gui_val)}) != JSON(길이:{len(json_val)})")
                     else:
                         print(f"❌ [VERIFY] {key}: GUI='{gui_val}' != JSON='{json_val}'")
@@ -9292,8 +9391,9 @@ class MainWindow(QMainWindow):
                 updated_count += 1
             
             # 사이트 관리 탭의 UI도 새로고침 (존재하는 경우)
-            if hasattr(self, 'refresh_sites_list'):
-                self.refresh_sites_list()
+            refresh_fn = getattr(self, "refresh_site_list", None)
+            if callable(refresh_fn):
+                refresh_fn()
                 print(f"🔄 [DEBUG] 사이트 관리 탭 UI 새로고침 완료")
                 
         except Exception as e:
@@ -9303,15 +9403,6 @@ class MainWindow(QMainWindow):
 
     def update_api_status_labels(self):
         """API 상태 라벨 업데이트"""
-        # OpenAI 상태 확인
-        openai_key = self.openai_key_edit.text().strip()
-        if openai_key and len(openai_key) > 10:
-            self.openai_status_label.setText("🔑 설정됨")
-            self.openai_status_label.setStyleSheet("color: #88C0D0; font-weight: bold;")
-        else:
-            self.openai_status_label.setText("❌ 미설정")
-            self.openai_status_label.setStyleSheet("color: #BF616A; font-weight: bold;")
-            
         # Gemini 상태 확인
         gemini_key = self.gemini_key_edit.text().strip()
         if gemini_key and len(gemini_key) > 10:
@@ -9323,15 +9414,12 @@ class MainWindow(QMainWindow):
 
     def update_ai_model_options(self):
         """AI 제공자에 따라 모델 옵션 업데이트"""
+        if not self.ai_model_combo:
+            return
         self.ai_model_combo.clear()
-        ai_provider = self.default_ai_combo.currentText()
-        
-        if ai_provider == "openai":
-            models = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
-            default_model = "gpt-4o-mini"  # OpenAI 기본 모델
-        else:  # gemini
-            models = ["gemini-2.5-flash-lite", "gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-pro"]
-            default_model = "gemini-2.5-flash-lite"  # Gemini 기본 모델
+        ai_provider = self.config_manager.data.get("global_settings", {}).get("default_ai", "gemini")
+        models = ["gemini-2.5-flash-lite", "gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-pro"]
+        default_model = "gemini-2.5-flash-lite"
         
         self.ai_model_combo.addItems(models)
         
@@ -9403,11 +9491,10 @@ class MainWindow(QMainWindow):
                 return
 
             # API 키 확인 (시작 메시지에서 이미 표시됨)
-            openai_key = self.config_manager.data["api_keys"].get("openai", "")
             gemini_key = self.config_manager.data["api_keys"].get("gemini", "")
             
-            if not openai_key and not gemini_key:
-                print("⚠️ OpenAI 또는 Gemini API 키가 설정되지 않았습니다.")
+            if not gemini_key:
+                print("⚠️ Gemini API 키가 설정되지 않았습니다.")
                 self.update_posting_status("⚠️ API 키가 설정되지 않았습니다.")
                 return
 
@@ -9428,7 +9515,7 @@ class MainWindow(QMainWindow):
                         self.update_posting_status(f"🔗 {site_name}에서 포스팅 시작")
                     
                     # 현재 사이트 콤보박스 업데이트
-                    if hasattr(self, 'current_site_combo'):
+                    if self.current_site_combo:
                         for i in range(self.current_site_combo.count()):
                             if self.current_site_combo.itemData(i) == start_site_id:
                                 self.current_site_combo.setCurrentIndex(i)
@@ -9560,12 +9647,16 @@ class MainWindow(QMainWindow):
                             pass
 
             # 모니터링 탭의 키워드 개수 업데이트
-            self.total_keywords_button.setText(f"{total_keywords}개")
+            if self.total_keywords_button:
+                self.total_keywords_button.setText(f"{total_keywords}개")
             
             # 모든 SiteWidget의 키워드 표시 업데이트
             if hasattr(self, 'sites_layout'):
                 for i in range(self.sites_layout.count()):
-                    widget = self.sites_layout.itemAt(i).widget()
+                    item = self.sites_layout.itemAt(i)
+                    if not item:
+                        continue
+                    widget = item.widget()
                     if isinstance(widget, SiteWidget):
                         widget.update_keyword_display()
             
@@ -9694,7 +9785,7 @@ class MainWindow(QMainWindow):
                     self.pause_btn.setText("▶️ 재개")
                     
                     # 일시정지 시 현재 포스팅 중이던 사이트를 콤보박스에서 선택
-                    if hasattr(self, 'current_posting_site') and hasattr(self, 'current_site_combo') and self.current_posting_site:
+                    if self.current_posting_site and self.current_site_combo:
                         index = self.current_site_combo.findText(self.current_posting_site)
                         if index >= 0:
                             self.current_site_combo.setCurrentIndex(index)
@@ -9776,7 +9867,7 @@ class MainWindow(QMainWindow):
             self.pause_btn.setText("⏸️ 일시정지")
             
             # 포스팅 중지 시 현재 포스팅 중이던 사이트를 콤보박스에서 선택
-            if hasattr(self, 'current_posting_site') and hasattr(self, 'current_site_combo') and self.current_posting_site:
+            if self.current_posting_site and self.current_site_combo:
                 index = self.current_site_combo.findText(self.current_posting_site)
                 if index >= 0:
                     self.current_site_combo.setCurrentIndex(index)
@@ -9850,6 +9941,9 @@ class MainWindow(QMainWindow):
             
             # 일반 스크롤 처리
             scrollbar = self.progress_text.verticalScrollBar()
+            if scrollbar is None:
+                event.ignore()
+                return
             current_value = scrollbar.value()
             min_value = scrollbar.minimum()
             max_value = scrollbar.maximum()
@@ -9932,7 +10026,8 @@ class MainWindow(QMainWindow):
             self.next_posting_time = datetime.now() + timedelta(seconds=self.posting_interval_seconds)
             
             # 초기 카운트다운 표시
-            if hasattr(self, 'next_posting_label') and hasattr(self.next_posting_label, 'value_button'):
+            value_button = self._get_card_value_button(self.next_posting_label)
+            if value_button:
                 # 시간, 분, 초로 나누어 표시
                 hours = self.posting_interval_seconds // 3600
                 minutes = (self.posting_interval_seconds % 3600) // 60
@@ -9951,7 +10046,7 @@ class MainWindow(QMainWindow):
                     next_site = f"\n다음: {self.current_posting_site}"
                 
                 display_text = f"{time_str}{next_site}"
-                self.next_posting_label.value_button.setText(display_text)
+                self._set_card_value_text(self.next_posting_label, display_text)
             
             # 카운트다운 타이머 시작 (1초마다 업데이트)
             self.countdown_timer.start(1000)
@@ -9965,7 +10060,7 @@ class MainWindow(QMainWindow):
         """다음 포스팅까지 남은 시간 실시간 업데이트"""
         try:
             # next_posting_time이나 next_posting_label이 없으면 리턴
-            if not self.next_posting_time or not hasattr(self, 'next_posting_label'):
+            if not self.next_posting_time:
                 return
                 
             from datetime import datetime
@@ -9973,8 +10068,7 @@ class MainWindow(QMainWindow):
             
             if now >= self.next_posting_time:
                 # 카운트다운 완료 - 다음 포스팅 시작
-                if hasattr(self.next_posting_label, 'value_button'):
-                    self.next_posting_label.value_button.setText("포스팅 시작!")
+                self._set_card_value_text(self.next_posting_label, "포스팅 시작!")
                 
                 self.countdown_timer.stop()
                 self.next_posting_time = None
@@ -9985,15 +10079,12 @@ class MainWindow(QMainWindow):
                     self.update_posting_status("⏰ 카운트다운 완료! 다음 사이트 포스팅을 시작합니다.")
                     
                     # 잠시 후 다시 "대기중"으로 변경
-                    QTimer.singleShot(2000, lambda: (
-                        self.next_posting_label.value_button.setText("대기중") 
-                        if hasattr(self, 'next_posting_label') and hasattr(self.next_posting_label, 'value_button') 
-                        else None
-                    ))
+                    def reset_label():
+                        self._set_card_value_text(self.next_posting_label, "대기중")
+                    QTimer.singleShot(2000, reset_label)
                 else:
                     # 포스팅이 중지된 상태라면 "대기중"으로 표시
-                    if hasattr(self.next_posting_label, 'value_button'):
-                        self.next_posting_label.value_button.setText("대기중")
+                    self._set_card_value_text(self.next_posting_label, "대기중")
                 return
                 
             # 남은 시간 계산
@@ -10019,9 +10110,7 @@ class MainWindow(QMainWindow):
                 next_site = f"\n다음: {self.current_posting_site}"
             
             display_text = f"{time_str}{next_site}"
-                
-            if hasattr(self.next_posting_label, 'value_button'):
-                self.next_posting_label.value_button.setText(display_text)
+            self._set_card_value_text(self.next_posting_label, display_text)
             
         except Exception as e:
             print(f"카운트다운 업데이트 오류: {e}")
@@ -10080,7 +10169,8 @@ class MainWindow(QMainWindow):
             self.posting_interval_seconds = wait_seconds
             
             # 초기 카운트다운 표시
-            if hasattr(self, 'next_posting_label') and hasattr(self.next_posting_label, 'value_button'):
+            value_button = self._get_card_value_button(self.next_posting_label)
+            if value_button:
                 # 시간, 분, 초로 나누어 표시
                 hours = wait_seconds // 3600
                 minutes = (wait_seconds % 3600) // 60
@@ -10099,7 +10189,7 @@ class MainWindow(QMainWindow):
                     next_site = f"\n다음: {self.current_posting_site}"
                 
                 display_text = f"{time_str}{next_site}"
-                self.next_posting_label.value_button.setText(display_text)
+                self._set_card_value_text(self.next_posting_label, display_text)
             
             # 카운트다운 시작 (1초마다 업데이트)
             self.countdown_timer.start(1000)
@@ -10123,8 +10213,7 @@ class MainWindow(QMainWindow):
             self.countdown_timer.stop()
             
         # 다음 포스팅 카드를 "대기중"으로 리셋
-        if hasattr(self, 'next_posting_label') and hasattr(self.next_posting_label, 'value_button'):
-            self.next_posting_label.value_button.setText("대기중")
+        self._set_card_value_text(self.next_posting_label, "대기중")
             
         # 다음 포스팅 시간 초기화
         self.next_posting_time = None
@@ -10231,13 +10320,16 @@ def main():
     
     # UTF-8 인코딩 강제 설정 (이모지 지원을 위해)
     try:
-        if hasattr(sys.stdout, 'reconfigure'):
-            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-        else:
+        stdout = getattr(sys, "stdout", None)
+        stderr = getattr(sys, "stderr", None)
+        if stdout and hasattr(stdout, "reconfigure"):
+            stdout.reconfigure(encoding='utf-8', errors='replace')
+            if stderr and hasattr(stderr, "reconfigure"):
+                stderr.reconfigure(encoding='utf-8', errors='replace')
+        elif stdout and stderr and hasattr(stdout, "buffer") and hasattr(stderr, "buffer"):
             # Python 3.6 이하 호환성
-            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+            sys.stdout = io.TextIOWrapper(stdout.buffer, encoding='utf-8', errors='replace')
+            sys.stderr = io.TextIOWrapper(stderr.buffer, encoding='utf-8', errors='replace')
     except Exception:
         # 인코딩 설정 실패 시 무시하고 계속 진행
         pass
@@ -10246,6 +10338,22 @@ def main():
         # QApplication 생성
         app = QApplication(sys.argv)
         # QApplication 생성 완료
+
+        def _set_windows_sleep_prevention(enable):
+            """Windows 절전/화면 꺼짐 방지 설정"""
+            if os.name != "nt":
+                return
+            try:
+                import ctypes
+                ES_CONTINUOUS = 0x80000000
+                ES_SYSTEM_REQUIRED = 0x00000001
+                ES_DISPLAY_REQUIRED = 0x00000002
+                flags = ES_CONTINUOUS
+                if enable:
+                    flags |= ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+                ctypes.windll.kernel32.SetThreadExecutionState(flags)
+            except Exception:
+                pass
         
         # --- 라이선스 체크 로직 시작 ---
         print("🔐 라이선스 확인 중...")
@@ -10365,6 +10473,8 @@ def main():
             
             def copy_machine_id():
                 clipboard = QApplication.clipboard()
+                if clipboard is None:
+                    return
                 clipboard.setText(license_manager.get_machine_id())
                 copy_btn.setText("✓ 복사됨")
                 copy_btn.setStyleSheet("""
@@ -10506,7 +10616,12 @@ def main():
             print("Auto WP multi-site program started")
             # 프로그램 실행
             
-        sys.exit(app.exec())
+        _set_windows_sleep_prevention(True)
+        try:
+            return_code = app.exec()
+        finally:
+            _set_windows_sleep_prevention(False)
+        sys.exit(return_code)
 
     except Exception as e:
         try:

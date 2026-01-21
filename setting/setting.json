@@ -1,7 +1,6 @@
 {
   "api_keys": {
-    "gemini": "AIzaSyBKKhTJsepmLM2I2W86mCqiDQ8tRmG7oKE",
-    "openai": ""
+    "gemini": "AIzaSyBKKhTJsepmLM2I2W86mCqiDQ8tRmG7oKE"
   },
   "global_settings": {
     "default_ai": "gemini",
