@@ -3926,17 +3926,19 @@ class NaverBlogAutomation:
             options.add_experimental_option('useAutomationExtension', False)
 
             # [중요] 구글 로그인 유지를 위한 사용자 데이터 폴더 설정
-            root_setting = os.path.join(os.path.dirname(self.data_dir), "setting")
+            # 수정: self.data_dir 내부의 setting 폴더 사용 (기존 상위 폴더 참조 제거)
+            root_setting = os.path.join(self.data_dir, "setting")
             os.makedirs(root_setting, exist_ok=True)
             user_data_dir = os.path.join(root_setting, "chrome_profile")
             os.makedirs(user_data_dir, exist_ok=True)
             options.add_argument(f"--user-data-dir={user_data_dir}")
-            # 알림, 비밀번호 관리자, Chrome 로그인 팝업 비활성화
+            
+            # 알림, 비밀번호 관리자, Chrome 로그인 팝업 설정
+            # [수정] 구글 로그인 허용을 위해 signin.allowed 제거
             prefs = {
                 "profile.default_content_setting_values.notifications": 2,
-                "credentials_enable_service": False,
-                "profile.password_manager_enabled": False,
-                "signin.allowed": False
+                "credentials_enable_service": True,  # 로그인 정보 저장 허용
+                "profile.password_manager_enabled": True,  # 비밀번호 관리자 허용
             }
             options.add_experimental_option("prefs", prefs)
             
