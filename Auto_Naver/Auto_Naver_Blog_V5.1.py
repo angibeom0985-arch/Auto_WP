@@ -8361,7 +8361,7 @@ if __name__ == "__main__":
     # 0. 라이선스 로직 무결성 체크
     def _verify_license_code_integrity():
         try:
-            expected_hash = "3fb1678af1fa7eeb6a82484841f1a6cc1cfb2bbbaa8f135362460ed159657e25"
+            expected_hash = "0e15128e6a3f90321cad318fc5dd97353a9274a96e8839df7f0243ef103c54e4"
             if getattr(sys, 'frozen', False):
                 base_dir = sys._MEIPASS
             else:
