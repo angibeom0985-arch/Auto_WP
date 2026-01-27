@@ -95,6 +95,8 @@ from datetime import datetime
 from license_check import LicenseManager
 import random
 
+_last_error_signature = None
+
 if TYPE_CHECKING:
     from selenium import webdriver
     from selenium.webdriver.common.by import By
@@ -302,6 +304,7 @@ class NaverBlogAutomation:
         self.should_stop = False  # 정지 플래그
         self.should_pause = False  # 일시정지 플래그
         self.current_keyword = ""  # 현재 사용 중인 키워드
+        self.last_callback_time = 0 # 콜백 쓰로틀링용
         
         # 디렉토리 설정 (exe 실행 시 고려)
         if getattr(sys, 'frozen', False):
@@ -366,16 +369,50 @@ class NaverBlogAutomation:
         except Exception as e:
             self._update_status(f"⚠️ 파일 정리 중 오류: {str(e)[:50]}")
     
-    def _update_status(self, message):
+    def _message_starts_with_emoji(self, message: str) -> bool:
+        """문자열이 이모지로 시작하면 True"""
+        if not message:
+            return False
+        stripped = message.lstrip()
+        if not stripped:
+            return False
+        first = ord(stripped[0])
+        emoji_ranges = [
+            (0x1F300, 0x1F5FF),
+            (0x1F600, 0x1F64F),
+            (0x1F680, 0x1F6FF),
+            (0x1F700, 0x1F77F),
+            (0x2600, 0x26FF),
+            (0x2700, 0x27BF),
+            (0x1F900, 0x1F9FF),
+        ]
+        return any(start <= first <= end for start, end in emoji_ranges)
+
+    def _format_status_message(self, message: str) -> str:
+        """모든 로그 메시지를 이모지로 시작하도록 정리"""
+        if self._message_starts_with_emoji(message):
+            return message
+        return f"💬 {message}"
+
+    def _update_status(self, message, overwrite=False):
         """상태 메시지 업데이트 (중복 방지)"""
+        formatted = self._format_status_message(message)
         # 마지막 메시지와 동일하면 출력하지 않음
-        if not hasattr(self, '_last_status_message') or self._last_status_message != message:
-            self._last_status_message = message
-            # GUI와 터미널 모두에 출력
+        if not hasattr(self, '_last_status_message') or self._last_status_message != formatted:
+            self._last_status_message = formatted
+            
+            # 콜백(GUI) 업데이트 로직
             if self.callback:
-                self.callback(message)
+                # overwrite=True여도 1초마다 갱신되도록 스로틀링 제거 또는 최소화
+                self.callback(formatted, overwrite)
+            
             # 터미널에도 진행 현황 표시
-            print(message)
+            if overwrite:
+                # 커서를 줄 처음으로 이동하고 메시지 출력 (줄바꿈 없음)
+                print(f"\r{formatted}", end="", flush=True)
+            else:
+                # 일반 출력 (줄바꿈 있음)
+                print(formatted)
     
     def _report_error(self, error_context, exception, show_traceback=True):
         """오류 상세 정보를 로그에 표시"""
@@ -541,9 +578,59 @@ class NaverBlogAutomation:
                 break
             time.sleep(min(step, remaining))
 
+    def _send_virtual_key(self, vk_code):
+        """가상 키 코드를 보내 OS 레벨 키 입력을 시뮬레이션"""
+        try:
+            user32 = ctypes.windll.user32
+            KEYEVENTF_KEYUP = 0x0002
+            user32.keybd_event(vk_code, 0, 0, 0)
+            user32.keybd_event(vk_code, 0, KEYEVENTF_KEYUP, 0)
+            return True
+        except Exception:
+            return False
+
+    def _simulate_escape(self):
+        """ESC 키를 직접 전송"""
+        return self._send_virtual_key(0x1B)
+
+    def _safe_escape_press(self):
+        """pyautogui가 준비되면 ESC를 누르고, 실패하면 가상 키로 대체"""
+        if 'pyautogui' in globals() and pyautogui:
+            try:
+                pyautogui.press('esc')
+                return True
+            except Exception:
+                pass
+        return self._simulate_escape()
+
+    def _close_dialog_with_escape(self, attempts=3):
+        """ESC만 사용하여 업로드 대화상자를 닫는다 (로그는 시도/성공만 남김)"""
+        # self._update_status("⚠️ 대화상자 닫기 시도")
+        for i in range(attempts):
+            # 활성 창에 포커스 주기 (클릭 시도)
+            try:
+                # 화면 중앙 클릭 시도 (다이얼로그 포커스용)
+                if i == 0:
+                    import pyautogui
+                    screen_width, screen_height = pyautogui.size()
+                    pyautogui.click(screen_width // 2, screen_height // 2)
+                    time.sleep(0.5)
+            except:
+                pass
+
+            self._safe_escape_press()
+            self._sleep_with_checks(0.5)
+            
+            # 강제로 한 번 더
+            self._simulate_escape()
+            self._sleep_with_checks(0.3)
+            
+        # self._update_status("✅ 대화상자 닫기 루틴 완료")
+
     def generate_content_with_ai(self):
         """AI를 사용하여 블로그 글 생성 (Gemini 고정)"""
         try:
+            self.last_ai_error = ""
             self._wait_if_paused()
             model_name = "Gemini 2.5 Flash-Lite"
             self._update_status(f"🤖 AI 모델 준비 중: {model_name}")
@@ -569,7 +656,6 @@ class NaverBlogAutomation:
             
             # 파일 경로 설정
             prompt_files = {
-                "system": os.path.join(self.data_dir, "setting", "system_prompt.txt"),
                 "prompt1": os.path.join(self.data_dir, "setting", "prompt1.txt"),
                 "prompt2": os.path.join(self.data_dir, "setting", "prompt2.txt"),
                 "output_form": os.path.join(self.data_dir, "setting", "prompt_output_form.txt")
@@ -588,14 +674,9 @@ class NaverBlogAutomation:
 
             if prompts["prompt1"] and prompts["prompt2"]:
                 # 프롬프트 조합
-                # system_prompt가 없으면 기본값 사용 (하위 호환성)
-                if not prompts["system"]:
-                    prompts["system"] = "당신은 블로그 글 작성 전문가입니다. 아래 프롬프트들을 정확히 따라 글을 작성하세요."
-                
                 # output_form이 없으면 빈 문자열 (하위 호환성)
                 
-                full_prompt = f"""{prompts["system"]}
-
+                full_prompt = f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [프롬프트 1 - 제목과 서론 작성]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -632,6 +713,8 @@ class NaverBlogAutomation:
 
             if not content or not content.strip():
                 self._update_status("❌ AI 응답이 비어 있습니다")
+                if self.gemini_mode == "web":
+                    self.last_ai_error = "gemini_web_failed"
                 return None, None
             
             self._update_status("📝 AI 응답 처리 중...")
@@ -653,6 +736,7 @@ class NaverBlogAutomation:
 
             # 제목/서론/소제목/본문 분리
             title, intro, sections = self._parse_ai_response(content)
+            self._update_status("✅ 라벨 제거 완료 - 네이버 글쓰기창에 입력합니다")
             if not title:
                 for line in content.splitlines():
                     if line.strip():
@@ -729,7 +813,9 @@ class NaverBlogAutomation:
             "본문2": "body",
             "본문3": "body",
         }
-        has_labels = any(line in label_map for line in lines)
+        label_pattern = re.compile(r"^\s*(제목|서론|소제목\s*([1-3])?|본문\s*([1-3])?)\s*[:：]?\s*$")
+        label_prefix_pattern = re.compile(r"^\s*(제목|서론|소제목\s*([1-3])?|본문\s*([1-3])?)\s*[:：.]?\s+(.+)$")
+        has_labels = any(line in label_map or label_pattern.match(line) or label_prefix_pattern.match(line) for line in lines)
         if has_labels:
             title = ""
             intro = ""
@@ -760,9 +846,21 @@ class NaverBlogAutomation:
                 buffer = []
 
             for line in lines:
-                if line in label_map:
+                # 라벨 단독 라인 (제목/서론/소제목1/본문2 등)
+                if line in label_map or label_pattern.match(line):
+                    label_key = line
+                    if label_key not in label_map:
+                        label_key = label_pattern.match(line).group(1).replace(" ", "")
                     flush()
-                    current = label_map[line]
+                    current = label_map[label_key]
+                    continue
+                # 라벨 + 내용이 같은 줄에 있는 경우 (예: "제목: ...")
+                prefix_match = label_prefix_pattern.match(line)
+                if prefix_match:
+                    label_key = prefix_match.group(1).replace(" ", "")
+                    flush()
+                    current = label_map[label_key]
+                    buffer.append(prefix_match.group(4))
                     continue
                 buffer.append(line)
             flush()
@@ -846,21 +944,33 @@ class NaverBlogAutomation:
         return sum(marker in text for marker in markers) >= 2
 
     def _ensure_gemini_tab(self):
-        """Gemini 웹 탭을 준비하고 포커스 (매번 새 탭 생성)"""
+        """Gemini 웹 탭을 준비하고 포커스 (기존 탭 재사용)"""
         if not self.driver:
             return False
         gemini_url = "https://gemini.google.com/app?hl=ko"
         try:
-            # 항상 새 탭으로 열기 (기존 탭은 그대로 둘기)
-            self.driver.execute_script("window.open(arguments[0], '_blank');", gemini_url)
-            time.sleep(0.5)
-            self.driver.switch_to.window(self.driver.window_handles[-1])
-            self.gemini_tab_handle = self.driver.current_window_handle
-            self._update_status("✅ 새 Gemini 탭 생성")
-            time.sleep(2)  # 페이지 로딩 대기
+            if self.gemini_tab_handle and self.gemini_tab_handle in self.driver.window_handles:
+                self.driver.switch_to.window(self.gemini_tab_handle)
+            else:
+                # 현재 탭이 비어있으면 그대로 사용
+                try:
+                    current_url = (self.driver.current_url or "").lower()
+                except Exception:
+                    current_url = ""
+                if current_url.startswith("data:") or current_url.startswith("about:blank"):
+                    pass
+                else:
+                    self.driver.execute_script("window.open('about:blank', '_blank');")
+                    self.driver.switch_to.window(self.driver.window_handles[-1])
+                self.gemini_tab_handle = self.driver.current_window_handle
+
+            if "gemini.google.com" not in (self.driver.current_url or ""):
+                self.driver.get(gemini_url)
+            self._update_status("✅ Gemini 탭 준비 완료")
+            time.sleep(2)
             return True
         except Exception as e:
-            self._update_status(f"⚠️ Perplexity 탭 열기 실패: {str(e).split(chr(10))[0][:80]}")
+            self._update_status(f"⚠️ Gemini 탭 열기 실패: {str(e).split(chr(10))[0][:80]}")
             return False
 
     def _ensure_blog_tab(self, url=None):
@@ -1155,21 +1265,27 @@ class NaverBlogAutomation:
                 self._update_status("🔄 Gemini 웹 모드: 브라우저 실행 중...")
                 if not self.setup_driver():
                     self._update_status("❌ Gemini 웹 모드: 브라우저 실행 실패")
+                    self.last_ai_error = "gemini_web_failed"
                     return ""
 
             if not self._ensure_gemini_tab():
+                self.last_ai_error = "gemini_web_failed"
                 return ""
 
             # 로그인 확인 및 진행
             self._update_status("🔐 Gemini 로그인 상태 확인 중...")
             time.sleep(3)
-            
-            # 로그인 버튼이 있는지 확인
-            try:
-                login_btn = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='ServiceLogin'], a[aria-label='로그인']")
-                if login_btn:
-                    self._update_status("🔐 로그인 필요: 로그인 절차 시작")
-                    login_btn[0].click()
+
+            # 이미 에디터가 보이면 로그인 스킵
+            if self._find_gemini_editor(timeout=2):
+                self._update_status("✅ 이미 로그인 되어 있습니다 (에디터 감지)")
+            else:
+                # 로그인 버튼이 있는지 확인
+                try:
+                    login_btn = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='ServiceLogin'], a[aria-label='로그인']")
+                    if login_btn:
+                        self._update_status("🔐 로그인 필요: 로그인 절차 시작")
+                        login_btn[0].click()
                     time.sleep(3)
                     
                     # (임시) GUI 필드가 없으면 config에서 찾음
@@ -1178,6 +1294,7 @@ class NaverBlogAutomation:
                     
                     if not google_id or not google_pw:
                          self._update_status("❌ 구글 계정 정보가 없습니다. 설정에서 입력해주세요.")
+                         self.last_ai_error = "gemini_web_failed"
                          return ""
 
                     # 1. 이메일 입력
@@ -1215,6 +1332,29 @@ class NaverBlogAutomation:
                     # 다음 버튼 클릭
                     self.driver.find_element(By.ID, "passwordNext").click()
                     self._update_status("⏳ 로그인 완료 및 2차 인증 대기 중...")
+
+                    # 1. 이메일 입력 (중복 제거됨)
+
+                    time.sleep(1)
+                    
+                    # 다음 버튼 클릭
+                    self.driver.find_element(By.ID, "identifierNext").click()
+                    self._update_status("⏳ 비밀번호 페이지 로딩 대기 (5초)...")
+                    time.sleep(5)
+                    
+                    # 2. 비밀번호 입력
+                    self._update_status("🔑 비밀번호 입력 중...")
+                    pw_input = WebDriverWait(self.driver, 10).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='password']"))
+                    )
+                    time.sleep(2)
+                    pw_input.clear()
+                    pw_input.send_keys(google_pw)
+                    time.sleep(2)
+                    
+                    # 다음 버튼 클릭
+                    self.driver.find_element(By.ID, "passwordNext").click()
+                    self._update_status("⏳ 로그인 완료 및 2차 인증 대기 중...")
                     
                     # 3. 2차 인증 대기 (네이버 로그인과 동일한 로직)
                     max_wait = 120  # 2분 대기
@@ -1225,13 +1365,19 @@ class NaverBlogAutomation:
                         # 1초마다 에디터(로그인 성공 화면)가 나타났는지 확인
                         if self._find_gemini_editor(timeout=0.1):
                             login_success = True
+                            print() # 줄바꿈
                             break
                         
                         # 진행 상황 표시
                         minutes = i // 60
                         seconds = i % 60
-                        self._update_status(f"⏳ 2차 인증 대기 중... {minutes:02d}:{seconds:02d}")
+                        self._update_status(f"⏳ 2차 인증 대기 중... {minutes:02d}:{seconds:02d}", overwrite=True)
                         time.sleep(1)
+                    
+                    # 반복 종료 후 줄바꿈 (터미널용)
+                    if not login_success:
+                        print() 
+
                     
                     if login_success:
                         self._update_status("✅ 로그인 성공! (에디터 감지됨)")
@@ -1239,11 +1385,11 @@ class NaverBlogAutomation:
                         self._update_status("⚠️ 대기 시간 초과: 2차 인증이 완료되지 않았을 수 있습니다.")
                         # 실패하더라도 일단 진행 (이미 되어있을 수도 있으므로)
                     
-            except Exception as e:
-                # 이미 로그인 되어있거나 다른 오류
-                # 에디터가 있으면 로그인 된 것으로 간주
-                if not self._find_gemini_editor(timeout=2):
-                     self._update_status(f"⚠️ 로그인 절차 중 오류: {str(e)}")
+                except Exception as e:
+                    # 이미 로그인 되어있거나 다른 오류
+                    # 에디터가 있으면 로그인 된 것으로 간주
+                    if not self._find_gemini_editor(timeout=2):
+                         self._update_status(f"⚠️ 로그인 절차 중 오류: {str(e)}")
 
             # self._update_status("🔄 Gemini 웹앱 입력창 확인 중...")
             before_count = 0
@@ -1257,6 +1403,7 @@ class NaverBlogAutomation:
             self._update_status("📤 프롬프트 입력 중...")
             if not self._submit_gemini_prompt(prompt):
                 self._update_status("❌ Gemini 웹앱 입력 실패 - 로그인 상태를 확인해주세요")
+                self.last_ai_error = "gemini_web_failed"
                 return ""
 
             self._update_status("🔄 Gemini 응답 대기 중...")
@@ -1279,6 +1426,7 @@ class NaverBlogAutomation:
                     content = ""
             if not content:
                 self._update_status("❌ Gemini 응답 대기 실패 - 로그인/네트워크 확인 필요")
+                self.last_ai_error = "gemini_web_failed"
             else:
                 self._update_status(f"✅ AI 글 생성 완료 (길이: {len(content)}자)")
             return content
@@ -1408,11 +1556,8 @@ class NaverBlogAutomation:
     def create_thumbnail(self, title):
         """setting/image 폴더의 jpg를 배경으로 300x300 썸네일 생성"""
         try:
-            # 썸네일 기능이 OFF인 경우 None 반환
-            if not self.config.get("use_thumbnail", True):
-                self._update_status("⚪ 썸네일 기능 OFF - 스킵")
-                return None
-            
+        # 썸네일 기능은 항상 ON
+
             # PIL imports 확인
             try:
                 from PIL import Image, ImageDraw, ImageFont
@@ -2906,63 +3051,9 @@ class NaverBlogAutomation:
                         file_input.send_keys(abs_path)
                         
                         # 업로드 대기
-                        self._sleep_with_checks(5)
                         self._update_status("✅ 썸네일 업로드 명령 전달 완료")
+                        self._close_dialog_with_escape()
 
-                        # 탐색기 대화상자 닫기 (Win32 API 사용)
-                        # self._update_status("🔘 파일 업로드 대화상자 닫는 중...")
-                        try:
-                            import win32gui
-                            import win32con
-                            
-                            def close_file_dialogs():
-                                """파일 업로드 관련 창 모두 닫기"""
-                                def enum_callback(hwnd, results):
-                                    try:
-                                        window_text = win32gui.GetWindowText(hwnd)
-                                        class_name = win32gui.GetClassName(hwnd)
-                                        
-                                        # 파일 업로드/열기 관련 창 찾기
-                                        lower_text = window_text.lower()
-                                        lower_class = class_name.lower()
-                                        
-                                        if any(k in lower_text for k in ['열기', 'open', '업로드', 'upload', '사진', 'image']) or \
-                                           any(k in lower_class for k in ['dialog', '#32770']):
-                                            try:
-                                                win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-                                                results.append(window_text or class_name)
-                                            except:
-                                                pass
-                                    except:
-                                        pass
-                                
-                                closed_windows = []
-                                try:
-                                    win32gui.EnumWindows(enum_callback, closed_windows)
-                                except:
-                                    pass
-                                return closed_windows
-                            
-                            # 대화상자 닫기 시도 (3번)
-                            for attempt in range(3):
-                                closed = close_file_dialogs()
-                                if closed:
-                                    # self._update_status(f"✅ 대화상자 닫기 성공 ({len(closed)}개)")
-                                    self._sleep_with_checks(0.5)
-                                    break
-                                self._sleep_with_checks(0.3)
-                            
-                            # 추가로 ESC 키도 전송
-                            pyautogui.press('esc')
-                            self._sleep_with_checks(0.5)
-                            
-                        except ImportError:
-                            self._update_status("⚠️ pywin32 없음, ESC로 시도")
-                            pyautogui.press('esc')
-                            self._sleep_with_checks(0.5)
-                        except Exception as e:
-                            self._update_status(f"⚠️ 대화상자 닫기 실패: {str(e)[:50]}")
-                        
                         # -----------------------------------------------------------
                         # [추가] 썸네일 편집 (액자/서명/폰트 크기) 및 사진 설명 입력
                         # -----------------------------------------------------------
@@ -3377,9 +3468,13 @@ class NaverBlogAutomation:
                 
                 
                 
-# 4. 관련 글 섹션 추가
+                # 4. 관련 글 섹션 추가
                 try:
-                    related_posts = self._load_related_posts_from_file()
+                    if self.config and not self.config.get("related_posts_enabled", True):
+                        self._update_status("ℹ️ 관련 글 기능이 OFF 상태입니다. 관련 글 섹션을 건너뜁니다.")
+                        related_posts = []
+                    else:
+                        related_posts = self._load_related_posts_from_file()
                     section_title = ""
                     if self.config:
                         section_title = self.config.get("related_posts_title", "").strip()
@@ -3583,26 +3678,8 @@ class NaverBlogAutomation:
                         file_input.send_keys(abs_path)
                         
                         # 동영상 업로드 대기 (동영상은 더 오래 걸릴 수 있음)
-                        self._sleep_with_checks(10)
                         self._update_status("✅ 동영상 업로드 명령 전달 완료")
-                        
-                        # Windows 탐색기 창 닫기 (pyautogui 사용 - OS 레벨 키보드 입력)
-                        self._update_status("🔘 Windows 탐색기 창 닫는 중...")
-                        try:
-                            # ESC 키로 Windows 탐색기 창 닫기
-                            # self._update_status("⌨️ ESC 키로 탐색기 창 닫기 (pyautogui)")
-                            pyautogui.press('esc')
-                            self._sleep_with_checks(1)
-                            self._update_status("✅ 탐색기 창 닫기 성공")
-                        except Exception as e:
-                            self._update_status(f"⚠️ ESC 실패, Alt+F4 시도: {str(e)[:30]}")
-                            try:
-                                # Alt+F4로 시도
-                                pyautogui.hotkey('alt', 'f4')
-                                self._sleep_with_checks(1)
-                                self._update_status("✅ Alt+F4로 탐색기 창 닫기 성공")
-                            except Exception as e2:
-                                self._update_status(f"⚠️ 탐색기 창 닫기 실패: {str(e2)[:30]}")
+                        self._close_dialog_with_escape()
                         
                         # 제목 입력란에 키워드 입력
                         self._update_status("✍️ 동영상 제목 입력 중...")
@@ -3629,15 +3706,7 @@ class NaverBlogAutomation:
                         except Exception as e:
                             self._update_status(f"⚠️ 완료 버튼 클릭 실패: {str(e)[:50]}")
                         
-                        # ESC 키로 동영상 업로드 대화상자 닫기
-                        self._update_status("🔘 동영상 대화상자 닫는 중...")
-                        try:
-                            # ESC 키로 대화상자 닫기 (썸네일 대화상자와 동일)
-                            pyautogui.press('esc')
-                            self._sleep_with_checks(0.5)
-                            
-                        except Exception as e:
-                            self._update_status(f"⚠️ 대화상자 닫기 실패: {str(e)[:50]}")
+                        self._close_dialog_with_escape()
 
                         
                         self._update_status("✅ 동영상 삽입 완료")
@@ -3665,8 +3734,11 @@ class NaverBlogAutomation:
                 
                     minutes = remaining // 60
                     seconds = remaining % 60
-                    self._update_status(f"⏰ 남은 시간: {minutes:02d}:{seconds:02d}")
+                    self._update_status(f"⏰ 남은 시간: {minutes:02d}:{seconds:02d}", overwrite=True)
                     self._sleep_with_checks(1)
+                
+                print() # 대기 종료 후 줄바꿈
+
                 
                 self._update_status("✅ 발행 간격 대기 완료!")
             # 발행 처리
@@ -3854,9 +3926,11 @@ class NaverBlogAutomation:
             options.add_experimental_option('useAutomationExtension', False)
 
             # [중요] 구글 로그인 유지를 위한 사용자 데이터 폴더 설정
-            user_data_dir = os.path.join(self.data_dir, "chrome_profile")
+            root_setting = os.path.join(os.path.dirname(self.data_dir), "setting")
+            os.makedirs(root_setting, exist_ok=True)
+            user_data_dir = os.path.join(root_setting, "chrome_profile")
+            os.makedirs(user_data_dir, exist_ok=True)
             options.add_argument(f"--user-data-dir={user_data_dir}")
-
             # 알림, 비밀번호 관리자, Chrome 로그인 팝업 비활성화
             prefs = {
                 "profile.default_content_setting_values.notifications": 2,
@@ -3905,118 +3979,116 @@ class NaverBlogAutomation:
             import traceback
             print(f"상세 오류:\n{traceback.format_exc()}")
             return False
-    
-    def login(self):
-        """네이버 로그인"""
+            
+    def is_logged_in(self):
+        """네이버 로그인 여부 확인"""
         try:
-            self._update_status("🔐 네이버 로그인 페이지 접속 중...")
+            self.driver.get("https://www.naver.com")
+            self._sleep_with_checks(2)
             
-            # [수정] 새 탭을 확실하게 열고 로그인 페이지로 이동
+            # 로그아웃 버튼이나 내정보 버튼이 있는지 확인
             try:
-                initial_handles = self.driver.window_handles
-                self.driver.execute_script("window.open('https://nid.naver.com/nidlogin.login', '_blank');")
+                logout_btn = self.driver.find_elements(By.CLASS_NAME, "btn_logout")
+                my_info = self.driver.find_elements(By.CLASS_NAME, "MyView-module__link_login___HpHMW") # 최신 네이버 메인 클래스명 반영 필요 혹은 일반적인 로그아웃 버튼
                 
-                # 새 탭이 열릴 때까지 대기 (최대 5초)
-                WebDriverWait(self.driver, 5).until(lambda d: len(d.window_handles) > len(initial_handles))
+                # 네이버 메인 개편으로 클래스명이 자주 바뀜 -> 로그아웃 텍스트로 찾는 것이 안전
+                logout_texts = self.driver.find_elements(By.XPATH, "//span[contains(text(), '로그아웃')]")
                 
-                # 새 탭으로 전환
-                self.driver.switch_to.window(self.driver.window_handles[-1])
-                self.login_tab_handle = self.driver.current_window_handle
-                
-            except Exception as e:
-                self._update_status(f"⚠️ 새 탭 열기 실패({str(e)}) -> 현재 탭에서 로그인 진행")
-                self.driver.get("https://nid.naver.com/nidlogin.login")
-                self.login_tab_handle = self.driver.current_window_handle
-            
-            time.sleep(3)
-            
-            self._update_status("📝 아이디 입력 중...")
-            
-            # 아이디 입력
-            id_input = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "#id"))
-            )
-            
-            self.driver.execute_script("""
-                var input = arguments[0];
-                var value = arguments[1];
-                var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-                nativeInputValueSetter.call(input, value);
-                var event = new Event('input', { bubbles: true});
-                input.dispatchEvent(event);
-            """, id_input, self.naver_id)
-            
-            time.sleep(1)
-            
-            self._update_status("🔑 비밀번호 입력 중...")
-            # 비밀번호 입력
-            pw_input = self.driver.find_element(By.CSS_SELECTOR, "#pw")
-            self.driver.execute_script("""
-                var input = arguments[0];
-                var value = arguments[1];
-                var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-                nativeInputValueSetter.call(input, value);
-                var event = new Event('input', { bubbles: true});
-                input.dispatchEvent(event);
-            """, pw_input, self.naver_pw)
-            
-            time.sleep(1)
-            
-            self._update_status("👆 로그인 버튼 클릭 중...")
-            
-            # 로그인 버튼 클릭
-            login_button = self.driver.find_element(By.ID, "log.login")
-            login_button.click()
-            
-            total_seconds = 120
-            self._update_status("⏳ 로그인 처리 중... (02:00 대기)")
-            for remaining in range(total_seconds, 0, -1):
-                if "nidlogin" not in self.driver.current_url:
-                    self._update_status("✅ 로그인 성공!")
-                    self.login_tab_handle = self.driver.current_window_handle
+                if logout_btn or logout_texts:
                     return True
-                minutes = remaining // 60
-                seconds = remaining % 60
-                self._update_status(f"⏳ 로그인 처리 중... {minutes:02d}:{seconds:02d}")
-                time.sleep(1)
-            
-            # 로그인 성공 확인
-            current_url = self.driver.current_url
-            
-            if "nidlogin" not in current_url:
-                self._update_status("✅ 로그인 성공!")
-                self.login_tab_handle = self.driver.current_window_handle
-                return True
-            else:
-                # 2단계 인증 또는 오류 체크
-                page_source = self.driver.page_source
                 
-                if "인증" in page_source or "확인" in page_source:
-                    interval_min, interval_max = parse_interval_range(self.config.get("interval", 2))
-                    interval_minutes = max(interval_min, interval_max, 1)
-                    total_seconds = interval_minutes * 60
-                    self._update_status(
-                        f"⚠️ 2단계 인증 필요 - 수동으로 인증을 완료해주세요 ({interval_minutes:02d}:00 대기)"
-                    )
-                    for remaining in range(total_seconds, 0, -1):
-                        if "nidlogin" not in self.driver.current_url:
-                            self._update_status("✅ 로그인 성공!")
-                            self.login_tab_handle = self.driver.current_window_handle
-                            return True
-                        minutes = remaining // 60
-                        seconds = remaining % 60
-                        self._update_status(f"⚠️ 2단계 인증 대기: {minutes:02d}:{seconds:02d} 남음")
-                        time.sleep(1)
-                    if "nidlogin" not in self.driver.current_url:
-                        self._update_status("✅ 로그인 성공!")
-                        self.login_tab_handle = self.driver.current_window_handle
-                        return True
-                self._update_status("❌ 로그인 실패: 아이디/비밀번호를 확인하거나 2단계 인증을 완료해주세요")
+                # 로그인 버튼이 있으면 로그인이 안 된 것
+                login_btn = self.driver.find_elements(By.CLASS_NAME, "link_login")
+                if login_btn:
+                    return False
+                    
                 return False
-        except Exception as e:
-            self._update_status(f"❌ 로그인 오류: {str(e)}")
+            except:
+                return False
+        except:
             return False
+
+    def login(self):
+        """네이버 로그인 (캡차 우회: 클립보드 복사 붙여넣기 방식)"""
+        try:
+            # 이미 로그인 되어있는지 확인
+            if self.is_logged_in():
+                 self._update_status("✅ 이미 로그인 되어 있습니다.")
+                 return True
+
+            self._update_status("🔐 네이버 로그인 페이지 이동 중...")
+            self.driver.get("https://nid.naver.com/nidlogin.login")
+            self._sleep_with_checks(2)
             
+            if self.should_stop:
+                return False
+
+            # 아이디 입력
+            self._update_status("🔐 아이디 입력 중...")
+            id_input = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.ID, "id"))
+            )
+            id_input.click()
+            pyperclip.copy(self.naver_id)
+            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
+            self._sleep_with_checks(1)
+            
+            if self.should_stop:
+                return False
+
+            # 비밀번호 입력
+            self._update_status("🔐 비밀번호 입력 중...")
+            pw_input = self.driver.find_element(By.ID, "pw")
+            pw_input.click()
+            pyperclip.copy(self.naver_pw)
+            ActionChains(self.driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
+            self._sleep_with_checks(1)
+            
+            if self.should_stop:
+                return False
+
+            # 로그인 버튼 클릭
+            self._update_status("🔐 로그인 버튼 클릭...")
+            login_btn = self.driver.find_element(By.ID, "log.login")
+            login_btn.click()
+            
+            # 로그인 완료 대기 (최대 60초, 중지 체크 포함)
+            self._update_status("🔐 로그인 완료 대기 중 (최대 60초)...")
+            end_time = time.time() + 60
+            while time.time() < end_time:
+                if self.should_stop:
+                    return False
+                
+                # 기기 등록 페이지 처리 (deviceConfirm)
+                try:
+                    if "deviceConfirm" in self.driver.current_url:
+                        self._update_status("📱 기기 등록 페이지 감지 - '등록' 버튼 클릭 시도")
+                        register_btn = self.driver.find_element(By.ID, "new.save")
+                        register_btn.click()
+                        self._sleep_with_checks(1)
+                except:
+                    pass
+
+                # 로그인 성공 확인
+                try:
+                    if "nid.naver.com" not in self.driver.current_url and "deviceConfirm" not in self.driver.current_url:
+                        self._update_status("✅ 로그인 성공!")
+                        return True
+                    
+                    if self.driver.find_elements(By.ID, "captcha"):
+                        self._update_status("⚠️ 캡차가 감지되었습니다. 수동으로 해결해주세요.")
+                except:
+                    pass
+                
+                self._sleep_with_checks(0.5)
+            
+            self._update_status("❌ 로그인 시간 초과")
+            return False
+
+        except Exception as e:
+            self._update_status(f"❌ 로그인 실패: {str(e)}")
+            return False
+
     def run(self, is_first_run=True):
         """전체 프로세스 실행"""
         try:
@@ -4353,7 +4425,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                               QHBoxLayout, QGridLayout, QPushButton, QLabel, 
                               QLineEdit, QTextEdit, QRadioButton, QCheckBox,
                               QComboBox, QGroupBox, QTabWidget, QMessageBox,
-                              QListView, QButtonGroup,
+                              QListView, QButtonGroup, QDialog,
                                QFrame, QScrollArea, QStackedWidget,
                               QSizePolicy, QSplashScreen)
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
@@ -4386,6 +4458,8 @@ class PremiumCard(QFrame):
                 padding: 5px;
             }}
         """)
+        self.setMinimumWidth(0) # 최소 너비 제한 해제
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -4417,6 +4491,8 @@ class PremiumCard(QFrame):
             padding: 6px 14px;
         """)
         title_label.setFixedHeight(36)
+        title_label.setMinimumWidth(0) # 최소 너비 해제
+        title_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         self.header_layout.addWidget(title_label)
         self.header_layout.addStretch()
         
@@ -4444,12 +4520,92 @@ class PremiumCard(QFrame):
         return label
 
 
+class WebsiteLoginDialog(QDialog):
+    """웹사이트 로그인 정보 입력을 위한 커스텀 다이얼로그"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.setWindowTitle("웹사이트 로그인")
+        self.setMinimumWidth(0) # 최소 너비 제한 해제
+        
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {NAVER_BG};
+            }}
+            QLabel {{
+                font-size: 13px;
+                color: {NAVER_TEXT};
+            }}
+            QLineEdit {{
+                border: 2px solid {NAVER_BORDER};
+                border-radius: 8px;
+                padding: 8px;
+                font-size: 13px;
+                background-color: white;
+            }}
+            QPushButton {{
+                border: none;
+                border-radius: 8px;
+                padding: 10px 20px;
+                font-weight: bold;
+                color: white;
+            }}
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+        
+        # Google ID
+        id_layout = QHBoxLayout()
+        id_label = QLabel("📧 구글 ID:")
+        self.id_entry = QLineEdit()
+        self.id_entry.setPlaceholderText("example@gmail.com")
+        if "google_id" in self.parent.config:
+            self.id_entry.setText(self.parent.config["google_id"])
+        id_layout.addWidget(id_label)
+        id_layout.addWidget(self.id_entry)
+        layout.addLayout(id_layout)
+        
+        # Google Password
+        pw_layout = QHBoxLayout()
+        pw_label = QLabel("🔑 비밀번호:")
+        self.pw_entry = QLineEdit()
+        self.pw_entry.setEchoMode(QLineEdit.EchoMode.Password)
+        if "google_pw" in self.parent.config:
+            self.pw_entry.setText(self.parent.config["google_pw"])
+        pw_layout.addWidget(pw_label)
+        pw_layout.addWidget(self.pw_entry)
+        layout.addLayout(pw_layout)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.save_btn = QPushButton("💾 저장")
+        self.save_btn.setStyleSheet(f"background-color: {NAVER_GREEN};")
+        self.save_btn.clicked.connect(self.save_and_close)
+        
+        self.cancel_btn = QPushButton("❌ 취소")
+        self.cancel_btn.setStyleSheet(f"background-color: {NAVER_RED};")
+        self.cancel_btn.clicked.connect(self.reject)
+        
+        button_layout.addStretch()
+        button_layout.addWidget(self.save_btn)
+        button_layout.addWidget(self.cancel_btn)
+        layout.addLayout(button_layout)
+
+    def save_and_close(self):
+        """설정 저장 및 다이얼로그 닫기"""
+        self.parent.config["google_id"] = self.id_entry.text().strip()
+        self.parent.config["google_pw"] = self.pw_entry.text().strip()
+        self.parent.save_api_key()
+        self.accept()
+
+
 class NaverBlogGUI(QMainWindow):
     """네이버 블로그 자동 포스팅 GUI 메인 클래스"""
     
     # 시그널 정의 (스레드에서 메인 스레드로 신호 전달)
     countdown_signal = pyqtSignal(int)
-    progress_signal = pyqtSignal(str)  # 진행 상황 업데이트용
+    progress_signal = pyqtSignal(str, bool)  # 진행 상황 업데이트용 (메시지, 덮어쓰기 여부)
     
     def __init__(self):
         super().__init__()
@@ -4482,8 +4638,9 @@ class NaverBlogGUI(QMainWindow):
             self.base_dir = os.path.dirname(os.path.abspath(__file__))
             self.data_dir = self.base_dir
         
-        # 초기 크기 및 위치 설정 (더 작고 컴팩트하게)
+        # 초기 크기 및 위치 설정
         self.setGeometry(100, 100, 750, 600)
+        self.setMinimumSize(0, 0)  # 최소 크기 제한 해제 (확실하게 적용)
         
         # 리사이즈 가능하도록 설정 (기본값이지만 명시)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -4835,7 +4992,7 @@ class NaverBlogGUI(QMainWindow):
         header.setFixedHeight(70)
         
         header_layout = QGridLayout(header)
-        header_layout.setContentsMargins(30, 0, 30, 0)
+        header_layout.setContentsMargins(10, 0, 10, 0) # 여백 축소
         header_layout.setColumnStretch(0, 1)
         header_layout.setColumnStretch(1, 0)
         header_layout.setColumnStretch(2, 1)
@@ -4845,6 +5002,8 @@ class NaverBlogGUI(QMainWindow):
         left_label.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
         left_label.setStyleSheet("color: white; background-color: transparent; border: none;")
         left_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        left_label.setMinimumWidth(0) # 최소 너비 해제
+        left_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred) # 공간 부족 시 줄어들도록 설정
         header_layout.addWidget(left_label, 0, 0)
         
         # 중앙 탭 버튼
@@ -4980,8 +5139,10 @@ class NaverBlogGUI(QMainWindow):
         self.naver_id_entry.returnPressed.connect(self.save_login_info)
         self.naver_pw_entry.returnPressed.connect(self.save_login_info)
         self.gemini_api_entry.returnPressed.connect(self.save_api_key)
-        self.google_id_entry.returnPressed.connect(self.save_api_key)
-        self.google_pw_entry.returnPressed.connect(self.save_api_key)
+        if hasattr(self, "google_id_entry"):
+            self.google_id_entry.returnPressed.connect(self.save_api_key)
+        if hasattr(self, "google_pw_entry"):
+            self.google_pw_entry.returnPressed.connect(self.save_api_key)
         self.related_posts_title_entry.returnPressed.connect(self.save_related_posts_settings)
         self.blog_address_entry.returnPressed.connect(self.save_related_posts_settings)
         self.link_url_entry.returnPressed.connect(self.save_link_settings)
@@ -4995,13 +5156,15 @@ class NaverBlogGUI(QMainWindow):
         """모니터링 탭 생성"""
         tab = QWidget()
         layout = QHBoxLayout(tab)
-        layout.setContentsMargins(30, 25, 30, 25)
-        layout.setSpacing(16)
+        # 여백을 줄여서 더 작게 조절 가능하게 함
+        layout.setContentsMargins(10, 10, 10, 10) 
+        layout.setSpacing(10)
         
         # 좌측 컨테이너
         left_widget = QWidget()
+        left_widget.setMinimumWidth(0) # 최소 너비 해제
         left_layout = QVBoxLayout(left_widget)
-        left_layout.setSpacing(16)
+        left_layout.setSpacing(10)
         
         # 포스팅 제어 카드
         control_card = PremiumCard("포스팅 제어", "🎮")
@@ -5308,6 +5471,7 @@ class NaverBlogGUI(QMainWindow):
         self.license_period_label.setFont(QFont(self.font_family, 13))
         self.license_period_label.setStyleSheet(f"color: #000000; border: none;")
         status_card.content_layout.addWidget(self.license_period_label)
+
         
         # 라이선스 정보 로드
         self._update_license_info()
@@ -5339,7 +5503,9 @@ class NaverBlogGUI(QMainWindow):
         
         log_scroll = ResizableScrollArea()
         log_scroll.setWidgetResizable(True)
-        log_scroll.setMinimumHeight(300)
+        log_scroll.setMinimumHeight(100) # 높이 최소값도 줄임
+        log_scroll.setMinimumWidth(0) # 너비 최소값 해제
+        log_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         log_scroll.setStyleSheet(f"""
             QScrollArea {{
                 border: 2px solid {NAVER_BORDER};
@@ -5404,8 +5570,9 @@ class NaverBlogGUI(QMainWindow):
         content = QWidget()
         content.setStyleSheet("QWidget { background-color: transparent; }")
         layout = QGridLayout(content)
-        layout.setContentsMargins(24, 18, 24, 24)
-        layout.setSpacing(16)
+        # 여백 최소화
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
 
         save_btn_style = f"""
             QPushButton {{
@@ -5447,8 +5614,7 @@ class NaverBlogGUI(QMainWindow):
         
         self.settings_log_scroll = QScrollArea()
         self.settings_log_scroll.setWidgetResizable(True)
-        self.settings_log_scroll.setMinimumHeight(120)
-        self.settings_log_scroll.setMaximumHeight(180)
+        self.settings_log_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.settings_log_scroll.setStyleSheet(f"""
             QScrollArea {{
                 border: 2px solid {NAVER_BORDER};
@@ -5708,7 +5874,7 @@ class NaverBlogGUI(QMainWindow):
         checkbox_layout.setContentsMargins(0, 0, 0, 0)
         checkbox_layout.setSpacing(10)
         
-        self.use_link_checkbox = QCheckBox("✅ 사용")
+        self.use_link_checkbox = QCheckBox("사용")
         self.use_link_checkbox.setChecked(False)
         self.use_link_checkbox.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
         self.use_link_checkbox.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent; border: none;")
@@ -5939,21 +6105,23 @@ class NaverBlogGUI(QMainWindow):
         # 라디오 버튼 이벤트 연결 (스택 위젯 페이지 전환)
         # (스택 위젯이 제거되었으므로 관련 코드도 제거)
 
-        # 아이디 입력
-        web_id_widget = QWidget()
-        web_id_widget.setStyleSheet("QWidget { background-color: transparent; }")
-        web_id_layout = QVBoxLayout(web_id_widget)
-        web_id_layout.setSpacing(4)
-        web_id_layout.setContentsMargins(0, 0, 0, 0)
+        # Google 계정 입력
+        google_id_widget = QWidget()
+        google_id_widget.setStyleSheet("QWidget { background-color: transparent; }")
+        google_id_layout = QHBoxLayout(google_id_widget)
+        google_id_layout.setSpacing(12)
+        google_id_layout.setContentsMargins(0, 0, 0, 0)
         
-        web_id_label = PremiumCard.create_section_label("🆔 아이디", self.font_family)
-        web_id_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        web_id_layout.addWidget(web_id_label)
+        google_id_box = QVBoxLayout()
+        google_id_box.setSpacing(4)
+        google_id_label = PremiumCard.create_section_label("📧 구글 ID", self.font_family)
+        google_id_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        google_id_box.addWidget(google_id_label)
         
-        self.web_ai_id_entry = QLineEdit()
-        self.web_ai_id_entry.setPlaceholderText("웹사이트 아이디")
-        self.web_ai_id_entry.setCursorPosition(0)
-        self.web_ai_id_entry.setStyleSheet(f"""
+        self.google_id_entry = QLineEdit()
+        self.google_id_entry.setPlaceholderText("example@gmail.com")
+        self.google_id_entry.setCursorPosition(0)
+        self.google_id_entry.setStyleSheet(f"""
             QLineEdit {{
                 border: 2px solid {NAVER_BORDER};
                 border-radius: 8px;
@@ -5967,8 +6135,38 @@ class NaverBlogGUI(QMainWindow):
                 border-color: {NAVER_GREEN};
             }}
         """)
-        # [삭제] 중복된 웹 자격 증명 설정 코드 제거
-        # (이미 Google ID/PW 입력 필드가 추가되었으므로 이 부분은 삭제합니다)
+        google_id_box.addWidget(self.google_id_entry)
+        google_id_layout.addLayout(google_id_box)
+        
+        google_pw_box = QVBoxLayout()
+        google_pw_box.setSpacing(4)
+        google_pw_label = PremiumCard.create_section_label("🔑 비밀번호", self.font_family)
+        google_pw_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        google_pw_box.addWidget(google_pw_label)
+        
+        self.google_pw_entry = QLineEdit()
+        self.google_pw_entry.setPlaceholderText("Google 계정 비밀번호")
+        self.google_pw_entry.setEchoMode(QLineEdit.EchoMode.Password)
+        self.google_pw_entry.setCursorPosition(0)
+        self.google_pw_entry.setStyleSheet(f"""
+            QLineEdit {{
+                border: 2px solid {NAVER_BORDER};
+                border-radius: 8px;
+                padding: 6px 10px;
+                background-color: white;
+                color: {NAVER_TEXT};
+                font-size: 13px;
+                min-height: 32px;
+            }}
+            QLineEdit:focus {{
+                border-color: {NAVER_GREEN};
+            }}
+        """)
+        google_pw_box.addWidget(self.google_pw_entry)
+        google_id_layout.addLayout(google_pw_box)
+        
+        # Google 계정 입력 위젯 배치
+        gemini_web_layout.addWidget(google_id_widget)
 
         # --- Left: Gemini API 입력 ---
         gemini_api_widget = QWidget()
@@ -6161,15 +6359,8 @@ class NaverBlogGUI(QMainWindow):
         thumbnail_layout.addWidget(thumbnail_label)
         thumbnail_layout.addStretch()
         
-        # 썸네일 ON/OFF 토글 버튼
-        self.thumbnail_toggle_btn = QPushButton("ON")
-        self.thumbnail_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.thumbnail_toggle_btn.setFixedSize(60, 24)
-        self.thumbnail_toggle_btn.setCheckable(True)
-        self.thumbnail_toggle_btn.setChecked(self.config.get("use_thumbnail", True))
-        self.thumbnail_toggle_btn.clicked.connect(self.toggle_thumbnail)
-        self.update_thumbnail_button_style()
-        thumbnail_layout.addWidget(self.thumbnail_toggle_btn)
+        # 썸네일 기능은 항상 ON (토글 제거)
+        self.thumbnail_toggle_btn = None
         
         thumbnail_open_btn = QPushButton("📂 열기")
         thumbnail_open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -6228,6 +6419,12 @@ class NaverBlogGUI(QMainWindow):
         # '로그 폴더 열기' 버튼 제거
         
         file_card.content_layout.addLayout(file_grid)
+
+        thumbnail_note = QLabel("'동영상'은 '썸네일'을 기반으로 만들어집니다.")
+        thumbnail_note.setFont(QFont(self.font_family, 11))
+        thumbnail_note.setStyleSheet(f"color: {NAVER_TEXT_SUB}; background-color: transparent;")
+        file_card.content_layout.addWidget(thumbnail_note)
+
         file_card.content_layout.addStretch()
         
         file_card.setMinimumHeight(card_min_height)
@@ -6279,28 +6476,59 @@ class NaverBlogGUI(QMainWindow):
         related_posts_header = related_posts_card.header_layout.itemAt(0).widget()
         related_posts_header.setText("📚 관련 글 설정")
 
+        # 관련 글 ON/OFF
+        related_toggle_container = QWidget()
+        related_toggle_container.setStyleSheet("QWidget { background-color: transparent; }")
+        related_toggle_layout = QHBoxLayout(related_toggle_container)
+        related_toggle_layout.setContentsMargins(0, 0, 0, 0)
+        related_toggle_layout.setSpacing(10)
+
+        self.use_related_posts_checkbox = QCheckBox("사용")
+        self.use_related_posts_checkbox.setChecked(True)
+        self.use_related_posts_checkbox.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
+        self.use_related_posts_checkbox.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent; border: none;")
+        self.use_related_posts_checkbox.stateChanged.connect(self.toggle_related_posts)
+        related_toggle_layout.addWidget(self.use_related_posts_checkbox)
+
+        self.related_posts_status_chip = QLabel("ON")
+        self.related_posts_status_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.related_posts_status_chip.setMinimumWidth(40)
+        self.related_posts_status_chip.setMaximumHeight(22)
+        self.related_posts_status_chip.setStyleSheet(f"""
+            QLabel {{
+                background-color: {NAVER_GREEN};
+                color: white;
+                border-radius: 6px;
+                padding: 2px 6px;
+                font-size: 13px;
+                font-weight: bold;
+            }}
+        """)
+        related_toggle_layout.addWidget(self.related_posts_status_chip)
+
         mode_header_container = QWidget()
         mode_header_container.setStyleSheet("QWidget { background-color: transparent; }")
         mode_header_layout = QHBoxLayout(mode_header_container)
         mode_header_layout.setContentsMargins(0, 0, 0, 0)
         mode_header_layout.setSpacing(12)
 
-        self.related_posts_mode_latest = QRadioButton("🆕 최신 글")
-        self.related_posts_mode_popular = QRadioButton("🔥 인기 글")
+        self.related_posts_mode_latest = QRadioButton("최신 글")
+        self.related_posts_mode_popular = QRadioButton("인기 글")
         for radio in (self.related_posts_mode_latest, self.related_posts_mode_popular):
             radio.setFont(QFont(self.font_family, 13, QFont.Weight.Bold))
             radio.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent;")
             radio.toggled.connect(lambda checked, r=radio: self._sync_related_posts_title(r.text()) if checked else None)
             mode_header_layout.addWidget(radio)
 
-        related_posts_card.header_layout.insertWidget(1, mode_header_container)
+        related_posts_card.header_layout.insertWidget(1, related_toggle_container)
+        related_posts_card.header_layout.insertWidget(2, mode_header_container)
         related_posts_card.header_layout.addStretch()
 
         # 2열 그리드 레이아웃 생성
         inputs_grid = QGridLayout()
         inputs_grid.setHorizontalSpacing(12)
         inputs_grid.setVerticalSpacing(8)
-        inputs_grid.setContentsMargins(0, 12, 0, 0)
+        inputs_grid.setContentsMargins(0, 6, 0, 0)
         
         # 왼쪽 열: 섹션 제목
         section_container = QWidget()
@@ -6382,15 +6610,18 @@ class NaverBlogGUI(QMainWindow):
         related_posts_card.content_layout.addLayout(inputs_grid)
 
         # 저장 버튼
-        related_posts_save_btn = QPushButton("💾 설정 저장")
-        related_posts_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        related_posts_save_btn.setStyleSheet(save_btn_style)
-        related_posts_save_btn.setMinimumHeight(save_btn_height)
-        related_posts_save_btn.clicked.connect(self.save_related_posts_settings)
-        related_posts_card.content_layout.addWidget(related_posts_save_btn)
+        self.related_posts_save_btn = QPushButton("💾 설정 저장")
+        self.related_posts_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.related_posts_save_btn.setStyleSheet(save_btn_style)
+        self.related_posts_save_btn.setMinimumHeight(save_btn_height)
+        self.related_posts_save_btn.clicked.connect(self.save_related_posts_settings)
+        related_posts_card.content_layout.addWidget(self.related_posts_save_btn)
 
         related_posts_card.setMinimumHeight(card_min_height)
         layout.addWidget(related_posts_card, 3, 1)
+        
+        # 초기 관련 글 상태 반영
+        self.toggle_related_posts()
 
         # 설정 변경 시 모니터링 상태를 실시간으로 갱신
         def _refresh_settings_status():
@@ -6422,7 +6653,9 @@ class NaverBlogGUI(QMainWindow):
             radio.toggled.connect(_refresh_settings_status)
 
         self.use_link_checkbox.stateChanged.connect(_refresh_settings_status)
-        self.thumbnail_toggle_btn.clicked.connect(_refresh_settings_status)
+        self.use_related_posts_checkbox.stateChanged.connect(_refresh_settings_status)
+        if self.thumbnail_toggle_btn is not None:
+            self.thumbnail_toggle_btn.clicked.connect(_refresh_settings_status)
 
         # 설정 탭 클릭 즉시 로그 표시
         def _log_settings_click(message):
@@ -6452,9 +6685,13 @@ class NaverBlogGUI(QMainWindow):
         self.use_link_checkbox.stateChanged.connect(
             lambda state: _log_settings_click("🔗 외부 링크: 사용" if state else "🔗 외부 링크: 미사용")
         )
-        self.thumbnail_toggle_btn.clicked.connect(
-            lambda: _log_settings_click("🖼️ 썸네일: ON" if self.thumbnail_toggle_btn.isChecked() else "🖼️ 썸네일: OFF")
+        self.use_related_posts_checkbox.stateChanged.connect(
+            lambda state: _log_settings_click("📚 관련 글: 사용" if state else "📚 관련 글: 미사용")
         )
+        if self.thumbnail_toggle_btn is not None:
+            self.thumbnail_toggle_btn.clicked.connect(
+                lambda: _log_settings_click("🖼️ 썸네일: ON" if self.thumbnail_toggle_btn.isChecked() else "🖼️ 썸네일: OFF")
+            )
         
         # 설정 로그 카드를 'AI 설정' 오른쪽에 배치
         settings_progress_card.setMinimumHeight(card_min_height)
@@ -6543,6 +6780,8 @@ class NaverBlogGUI(QMainWindow):
             self.link_text_entry.setText(self.config["external_link_text"])
         
         # 함께 보면 좋은 글 설정
+        if "related_posts_enabled" in self.config:
+            self.use_related_posts_checkbox.setChecked(bool(self.config.get("related_posts_enabled")))
         if "blog_address" in self.config:
             blog_address = self.config["blog_address"]
             # 전체 URL에서 아이디만 추출해서 표시
@@ -6559,6 +6798,8 @@ class NaverBlogGUI(QMainWindow):
                 self.related_posts_mode_popular.setChecked(True)
             else:
                 self.related_posts_mode_latest.setChecked(True)
+        if hasattr(self, "use_related_posts_checkbox"):
+            self.toggle_related_posts()
         
 
         # Qt 이벤트 루프가 텍스트를 완전히 반영한 후 상태 업데이트
@@ -6754,10 +6995,21 @@ class NaverBlogGUI(QMainWindow):
         interval_text = self._get_interval_display_text()
         self.interval_label.setText(f"⏱️ 발행 간격: {interval_text}분")
         
-        # 썸네일 기능 상태
-        use_thumbnail = self.config.get("use_thumbnail", True)
-        if use_thumbnail:
-            self.thumbnail_status_label.setText("🖼️ 썸네일: ON")
+        # 썸네일 폴더 JPG 존재 여부 상태
+        thumbnail_dir = os.path.join(self.data_dir, "setting", "image")
+        has_jpg = False
+        try:
+            if os.path.isdir(thumbnail_dir):
+                for name in os.listdir(thumbnail_dir):
+                    lower = name.lower()
+                    if lower.endswith(".jpg") or lower.endswith(".jpeg"):
+                        has_jpg = True
+                        break
+        except Exception:
+            has_jpg = False
+
+        if has_jpg:
+            self.thumbnail_status_label.setText("🖼️ 썸네일: JPG 있음")
             self.thumbnail_setup_btn.setText("설정하기")
             self.thumbnail_setup_btn.setStyleSheet(f"""
                 QPushButton {{
@@ -6773,7 +7025,7 @@ class NaverBlogGUI(QMainWindow):
                 }}
             """)
         else:
-            self.thumbnail_status_label.setText("🖼️ 썸네일: OFF")
+            self.thumbnail_status_label.setText("🖼️ 썸네일: JPG 없음")
             self.thumbnail_setup_btn.setText("설정하기")
             self.thumbnail_setup_btn.setStyleSheet(f"""
                 QPushButton {{
@@ -6825,8 +7077,25 @@ class NaverBlogGUI(QMainWindow):
             """)
         
         # 관련 글 상태
+        related_enabled = self.use_related_posts_checkbox.isChecked() if hasattr(self, "use_related_posts_checkbox") else True
         blog_address = (self.blog_address_entry.text().strip() if hasattr(self, "blog_address_entry") else "").strip()
-        if blog_address:
+        if not related_enabled:
+            self.related_posts_status_label.setText("📚 관련 글: OFF")
+            self.related_posts_setup_btn.setText("설정하기")
+            self.related_posts_setup_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {NAVER_RED};
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 3px 10px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: #D32F2F;
+                }}
+            """)
+        elif blog_address:
             if self.related_posts_mode_popular.isChecked():
                 mode_text = "인기 글"
             else:
@@ -6951,11 +7220,14 @@ class NaverBlogGUI(QMainWindow):
 
     def on_web_ai_provider_changed(self):
         if self.web_ai_gpt_radio.isChecked():
-            provider = "gpt"
-        elif self.web_ai_perplexity_radio.isChecked():
-            provider = "perplexity"
-        else:
-            provider = "gemini"
+            self._show_auto_close_message("⏳ 업데이트 준비 중입니다.", QMessageBox.Icon.Information)
+            self.web_ai_gemini_radio.setChecked(True)
+            return
+        if self.web_ai_perplexity_radio.isChecked():
+            self._show_auto_close_message("⏳ 업데이트 준비 중입니다.", QMessageBox.Icon.Information)
+            self.web_ai_gemini_radio.setChecked(True)
+            return
+        provider = "gemini"
             
         self.config["web_ai_provider"] = provider
         self._update_settings_status(f"🌐 웹사이트 AI: {provider.upper()}")
@@ -7009,6 +7281,47 @@ class NaverBlogGUI(QMainWindow):
                 }}
             """)
             self._update_settings_status("🔗 외부 링크 기능 OFF")
+
+    def toggle_related_posts(self):
+        """관련 글 활성화/비활성화"""
+        enabled = self.use_related_posts_checkbox.isChecked()
+        self.config["related_posts_enabled"] = enabled
+
+        for widget in (
+            self.related_posts_title_entry,
+            self.blog_address_entry,
+            self.related_posts_mode_latest,
+            self.related_posts_mode_popular,
+            self.related_posts_save_btn,
+        ):
+            widget.setEnabled(enabled)
+
+        if enabled:
+            self.related_posts_status_chip.setText("ON")
+            self.related_posts_status_chip.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {NAVER_GREEN};
+                    color: white;
+                    border-radius: 8px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                    font-weight: bold;
+                }}
+            """)
+            self._update_settings_status("📚 관련 글 기능 ON")
+        else:
+            self.related_posts_status_chip.setText("OFF")
+            self.related_posts_status_chip.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {NAVER_RED};
+                    color: white;
+                    border-radius: 8px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                    font-weight: bold;
+                }}
+            """)
+            self._update_settings_status("📚 관련 글 기능 OFF")
     
     def _clear_example_text(self, widget, example_text):
         """예시 텍스트 삭제"""
@@ -7104,6 +7417,22 @@ class NaverBlogGUI(QMainWindow):
                 lines = current_log.split("\n")
                 last_message = lines[-1].strip() if lines else ""
                 
+                # 카운트다운 메시지는 마지막 줄을 덮어쓰기 (로그 누적 방지)
+                countdown_pattern = r"\b\d{1,2}:\d{2}\b"
+                if re.search(countdown_pattern, message) and re.search(countdown_pattern, last_message):
+                    normalized_last = re.sub(countdown_pattern, "{time}", last_message)
+                    normalized_current = re.sub(countdown_pattern, "{time}", message)
+                    if normalized_last.startswith(normalized_current):
+                        lines[-1] = message_with_time
+                        new_log = "\n".join(lines)
+                        self.settings_log_label.setText(new_log)
+                        self.settings_log_label.setStyleSheet(f"color: {NAVER_TEXT}; background-color: transparent; padding: 5px;")
+                        if hasattr(self, 'settings_log_scroll'):
+                            scrollbar = self.settings_log_scroll.verticalScrollBar()
+                            scrollbar.setValue(scrollbar.maximum())
+                        self._update_settings_summary()
+                        return
+                
                 # 완전히 동일한 메시지는 무시 (시간 제외)
                 if last_message.startswith(message.strip()):
                     return
@@ -7168,14 +7497,9 @@ class NaverBlogGUI(QMainWindow):
             self.settings_login_status.setText(login_text)
             self.settings_login_status.setStyleSheet(f"color: {login_color}; background-color: transparent; border: none; font-weight: bold;")
             
-            # 썸네일 상태
-            use_thumbnail = self.config.get("use_thumbnail", True)
-            if use_thumbnail:
-                thumb_text = "🖼️ 썸네일: ON (동영상 ON)"
-                thumb_color = NAVER_GREEN
-            else:
-                thumb_text = "🖼️ 썸네일: OFF (동영상 OFF)"
-                thumb_color = NAVER_TEXT_SUB
+            # 썸네일 상태 (항상 ON)
+            thumb_text = "🖼️ 썸네일: ON (동영상 ON)"
+            thumb_color = NAVER_GREEN
             
             self.settings_thumbnail_status.setText(thumb_text)
             self.settings_thumbnail_status.setStyleSheet(f"color: {thumb_color}; background-color: transparent; border: none; font-weight: bold;")
@@ -7287,86 +7611,6 @@ class NaverBlogGUI(QMainWindow):
         self.update_status_display()
         self._update_settings_summary()
         self._show_auto_close_message("✅ AI 설정이 저장되었습니다", QMessageBox.Icon.Information)
-class WebsiteLoginDialog(QDialog):
-    """웹사이트 로그인 정보 입력을 위한 커스텀 다이얼로그"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.parent = parent
-        self.setWindowTitle("웹사이트 로그인")
-        self.setMinimumWidth(400)
-        
-        self.setStyleSheet(f"""
-            QDialog {{
-                background-color: {NAVER_BG};
-            }}
-            QLabel {{
-                font-size: 13px;
-                color: {NAVER_TEXT};
-            }}
-            QLineEdit {{
-                border: 2px solid {NAVER_BORDER};
-                border-radius: 8px;
-                padding: 8px;
-                font-size: 13px;
-                background-color: white;
-            }}
-            QPushButton {{
-                border: none;
-                border-radius: 8px;
-                padding: 10px 20px;
-                font-weight: bold;
-                color: white;
-            }}
-        """)
-        
-        layout = QVBoxLayout(self)
-        layout.setSpacing(15)
-        
-        # Google ID
-        id_layout = QHBoxLayout()
-        id_label = QLabel("📧 구글 ID:")
-        self.id_entry = QLineEdit()
-        self.id_entry.setPlaceholderText("example@gmail.com")
-        if "google_id" in self.parent.config:
-            self.id_entry.setText(self.parent.config["google_id"])
-        id_layout.addWidget(id_label)
-        id_layout.addWidget(self.id_entry)
-        layout.addLayout(id_layout)
-        
-        # Google Password
-        pw_layout = QHBoxLayout()
-        pw_label = QLabel("🔑 비밀번호:")
-        self.pw_entry = QLineEdit()
-        self.pw_entry.setEchoMode(QLineEdit.EchoMode.Password)
-        if "google_pw" in self.parent.config:
-            self.pw_entry.setText(self.parent.config["google_pw"])
-        pw_layout.addWidget(pw_label)
-        pw_layout.addWidget(self.pw_entry)
-        layout.addLayout(pw_layout)
-        
-        # Buttons
-        button_layout = QHBoxLayout()
-        self.save_btn = QPushButton("💾 저장")
-        self.save_btn.setStyleSheet(f"background-color: {NAVER_GREEN};")
-        self.save_btn.clicked.connect(self.save_and_close)
-        
-        self.cancel_btn = QPushButton("❌ 취소")
-        self.cancel_btn.setStyleSheet(f"background-color: {NAVER_RED};")
-        self.cancel_btn.clicked.connect(self.reject)
-        
-        button_layout.addStretch()
-        button_layout.addWidget(self.save_btn)
-        button_layout.addWidget(self.cancel_btn)
-        layout.addLayout(button_layout)
-
-    def save_and_close(self):
-        """설정 저장 및 다이얼로그 닫기"""
-        self.parent.config["google_id"] = self.id_entry.text().strip()
-        self.parent.config["google_pw"] = self.pw_entry.text().strip()
-        self.parent.save_api_key()
-        self.accept()
-
-
     def on_posting_method_changed(self):
         """포스팅 방법 라디오 변경 시 상태 반영"""
         method = "home" if self.posting_home_radio.isChecked() else "search"
@@ -7443,19 +7687,20 @@ class WebsiteLoginDialog(QDialog):
     
     def toggle_thumbnail(self):
         """썸네일 ON/OFF 토글"""
-        is_on = self.thumbnail_toggle_btn.isChecked()
-        self.config["use_thumbnail"] = is_on
-        self.thumbnail_toggle_btn.setText("ON" if is_on else "OFF")
-        self.update_thumbnail_button_style()
-        if is_on:
-            self._update_settings_status("🖼️ 썸네일 기능 ON, 🎬 동영상 기능 ON")
-        else:
-            self._update_settings_status("🖼️ 썸네일 기능 OFF, 🎬 동영상 기능 OFF")
+        # 썸네일 기능은 항상 ON
+        self.config["use_thumbnail"] = True
+        if self.thumbnail_toggle_btn is not None:
+            self.thumbnail_toggle_btn.setText("ON")
+            self.thumbnail_toggle_btn.setChecked(True)
+            self.update_thumbnail_button_style()
+        self._update_settings_status("🖼️ 썸네일 기능 ON, 🎬 동영상 기능 ON")
         self.save_config_file()
         self.update_status_display()
     
     def update_thumbnail_button_style(self):
         """썸네일 토글 버튼 스타일 업데이트"""
+        if self.thumbnail_toggle_btn is None:
+            return
         is_on = self.thumbnail_toggle_btn.isChecked()
         if is_on:
             self.thumbnail_toggle_btn.setStyleSheet(f"""
@@ -7516,6 +7761,7 @@ class WebsiteLoginDialog(QDialog):
         blog_address = normalize_blog_address(self.blog_address_entry.text().strip())
         mode_text = "인기 글" if self.related_posts_mode_popular.isChecked() else "최신 글"
         mode_value = "popular" if self.related_posts_mode_popular.isChecked() else "latest"
+        enabled = self.use_related_posts_checkbox.isChecked() if hasattr(self, "use_related_posts_checkbox") else True
 
         if not title:
             title = mode_text if mode_text else "함께 보면 좋은 글"
@@ -7524,9 +7770,12 @@ class WebsiteLoginDialog(QDialog):
         self.config["blog_address"] = blog_address
         self.config["related_posts_title"] = title
         self.config["related_posts_mode"] = mode_value
+        self.config["related_posts_enabled"] = enabled
         
         status_msg = f"📚 '함께 보면 좋은 글' 설정이 저장되었습니다"
-        if blog_address:
+        if not enabled:
+            status_msg += "\n   (기능 OFF)"
+        elif blog_address:
             status_msg += f"\n   블로그: {blog_address}"
             status_msg += f"\n   모드: {mode_text}"
         else:
@@ -7565,6 +7814,39 @@ class WebsiteLoginDialog(QDialog):
             return
         if not self.naver_id_entry.text() or not self.naver_pw_entry.text():
             self.show_message("⚠️ 경고", "네이버 로그인 정보를 입력해주세요!", "warning")
+            return
+
+        def _reset_start_state():
+            self.is_running = False
+            self.is_paused = False
+            self.start_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+            self.pause_btn.setEnabled(False)
+            self.resume_btn.setEnabled(False)
+
+        # 썸네일 JPG 파일 존재 확인 (필수)
+        thumbnail_dir = os.path.join(self.data_dir, "setting", "image")
+        try:
+            jpg_files = []
+            if os.path.isdir(thumbnail_dir):
+                for name in os.listdir(thumbnail_dir):
+                    lower = name.lower()
+                    if lower.endswith(".jpg") or lower.endswith(".jpeg"):
+                        jpg_files.append(name)
+            if not jpg_files:
+                self.show_message("⚠️ 경고", "썸네일 폴더에 JPG 파일이 없습니다.\nsetting/image 폴더에 JPG를 추가해주세요.", "warning")
+                _reset_start_state()
+                return
+        except Exception:
+            self.show_message("⚠️ 경고", "썸네일 폴더 확인 중 오류가 발생했습니다.\nsetting/image 폴더를 확인해주세요.", "warning")
+            _reset_start_state()
+            return
+
+        # 키워드 파일 확인 (필수)
+        keyword_count = self.count_keywords()
+        if keyword_count <= 0:
+            self.show_message("⚠️ 경고", "keywords.txt에 키워드가 없습니다.\nsetting/keywords.txt에 키워드를 추가해주세요.", "warning")
+            _reset_start_state()
             return
         
         # 진행 상태 업데이트
@@ -7630,6 +7912,19 @@ class WebsiteLoginDialog(QDialog):
                     # 실패 시 원인 구분하여 처리
                     if result is False:
                         if self.stop_requested or not self.is_running:
+                            break
+                        if self.automation and getattr(self.automation, "last_ai_error", "") == "gemini_web_failed":
+                            self.update_progress_status("⚠️ Gemini 웹 접속/입력 문제로 중단합니다. 로그인 상태를 확인해주세요.")
+                            QTimer.singleShot(100, lambda: self.show_message(
+                                "⚠️ 경고",
+                                "Gemini 웹 접속/입력에 실패했습니다.\n브라우저에서 Gemini 로그인 후 다시 시작해주세요.",
+                                "warning"
+                            ))
+                            self.is_running = False
+                            self.start_btn.setEnabled(True)
+                            self.stop_btn.setEnabled(False)
+                            self.pause_btn.setEnabled(False)
+                            self.resume_btn.setEnabled(False)
                             break
                         # 키워드가 없어서 실패한 경우 (정상 종료)
                         if self.automation and not self.automation.current_keyword:
@@ -7810,7 +8105,7 @@ class WebsiteLoginDialog(QDialog):
                 # start_posting()을 호출하지 않고 직접 실행 (is_first_start=False)
                 self.start_posting(is_first_start=False)
     
-    def log_message(self, message):
+    def log_message(self, message, overwrite=False):
         """로그 메시지 출력 및 진행 상태 업데이트 (중복 방지)"""
         # 키워드 관련 특수 메시지 처리 (알림창 없이 로그만 표시)
         if message.startswith("KEYWORD_"):
@@ -7823,29 +8118,29 @@ class WebsiteLoginDialog(QDialog):
             self._last_log_message = message
             
             # 진행 현황을 실시간으로 업데이트
-            self.update_progress_status(message)
+            self.update_progress_status(message, overwrite)
             
             # 터미널에도 출력 (이미 _update_status에서 print 됨)
     
-    def update_progress_status(self, message):
+    def update_progress_status(self, message, overwrite=False):
         """진행 현황 로그 메시지 추가 (스레드 안전)"""
         # 시그널을 통해 메인 스레드에서 실행
-        self.progress_signal.emit(message)
+        self.progress_signal.emit(message, overwrite)
     
-    def _update_progress_status_safe(self, message):
+    def _update_progress_status_safe(self, message, overwrite=False):
         """진행 현황 로그 메시지 추가 (메인 스레드에서 실행)"""
         try:
             # 1. 모니터링 탭 로그 업데이트
-            self._update_label_log(self.log_label, message)
+            self._update_label_log(self.log_label, message, overwrite)
             
             # 2. 설정 탭 로그 업데이트 (있다면)
             if hasattr(self, 'settings_log_label'):
-                self._update_label_log(self.settings_log_label, message)
+                self._update_label_log(self.settings_log_label, message, overwrite)
                 
         except Exception as e:
             print(f"로그 업데이트 오류: {e}")
 
-    def _update_label_log(self, label_widget, message):
+    def _update_label_log(self, label_widget, message, overwrite=False):
         """특정 라벨 위젯에 로그 업데이트 (강력한 중복 방지 로직 적용)"""
         try:
             message = message.strip()
@@ -7859,12 +8154,49 @@ class WebsiteLoginDialog(QDialog):
                 label_widget.setText(message)
                 return
 
+            # 2. 덮어쓰기 로직 (카운트다운 등)
+            if overwrite:
+                lines = current_log.split("\n")
+                if lines:
+                    # 마지막 줄 교체
+                    lines[-1] = message
+                    new_text = "\n".join(lines)
+                    label_widget.setText(new_text)
+                    
+                    # 스크롤 최하단 이동 (QScrollArea 사용 시 필요하지만 QLabel이라 자동 조정됨)
+                    return
+
             # 2. 강력한 중복 체크 (최근 메시지들과 비교)
             lines = [line.strip() for line in current_log.split("\n") if line.strip()]
             
             # 마지막 3줄 이내에 동일한 메시지가 있으면 무시 (반복적인 오류 메시지 방지)
             if any(message == line for line in lines[-3:]):
                 return
+
+            # 카운트다운 메시지는 마지막 줄 덮어쓰기 (로그 누적 방지)
+            countdown_pattern = r"\b\d{1,2}:\d{2}\b"
+            if lines and re.search(countdown_pattern, message):
+                last_message = lines[-1] if lines else ""
+                if re.search(countdown_pattern, last_message):
+                    normalized_last = re.sub(countdown_pattern, "{time}", last_message)
+                    normalized_current = re.sub(countdown_pattern, "{time}", message)
+                    if normalized_last == normalized_current:
+                        lines[-1] = message
+                        new_log = "\n".join(lines)
+                        label_widget.setText(new_log)
+                        # 자동 스크롤 (부모 ScrollArea 찾기)
+                        scroll_area = None
+                        parent = label_widget.parent()
+                        while parent:
+                            if isinstance(parent, QScrollArea):
+                                scroll_area = parent
+                                break
+                            parent = parent.parent()
+                        if scroll_area:
+                            bar = scroll_area.verticalScrollBar()
+                            if bar.value() >= bar.maximum() - 20:
+                                bar.setValue(bar.maximum())
+                        return
             
             # 3. 진행형 이모지 처리 (상태 업데이트용)
             last_message = lines[-1] if lines else ""
@@ -8026,6 +8358,49 @@ if __name__ == "__main__":
     splash.show()
     app.processEvents()  # 즉시 화면에 표시
     
+    # 0. 라이선스 로직 무결성 체크
+    def _verify_license_code_integrity():
+        try:
+            expected_hash = "3fb1678af1fa7eeb6a82484841f1a6cc1cfb2bbbaa8f135362460ed159657e25"
+            if getattr(sys, 'frozen', False):
+                base_dir = sys._MEIPASS
+            else:
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+            target_path = os.path.join(base_dir, "license_check.py")
+            if not os.path.exists(target_path):
+                return True, ""
+
+            import hashlib
+            with open(target_path, "rb") as f:
+                actual_hash = hashlib.sha256(f.read()).hexdigest()
+
+            if actual_hash != expected_hash:
+                report = (
+                    "⚠️ 라이선스 보호 코드가 변경되었습니다.\n\n"
+                    f"파일: {target_path}\n"
+                    f"기대 해시: {expected_hash}\n"
+                    f"현재 해시: {actual_hash}\n\n"
+                    "제작자에게 즉시 알려주세요."
+                )
+                try:
+                    os.makedirs(os.path.join(base_dir, "setting"), exist_ok=True)
+                    report_path = os.path.join(base_dir, "setting", "license_tamper_report.txt")
+                    with open(report_path, "w", encoding="utf-8") as rf:
+                        rf.write(report)
+                except:
+                    pass
+                try:
+                    from PyQt6.QtWidgets import QMessageBox
+                    QMessageBox.warning(None, "라이선스 경고", report)
+                except:
+                    pass
+                return False, report
+            return True, ""
+        except:
+            return True, ""
+
+    _verify_license_code_integrity()
+
     # 1. 라이선스 체크 (Google Spreadsheet 기반)
     license_manager = LicenseManager()
     is_valid, message = license_manager.verify_license()
@@ -8034,8 +8409,8 @@ if __name__ == "__main__":
         splash.close()  # 스플래시 닫기
         # GUI 에러 메시지 표시
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QWidget, QHBoxLayout
-        from PyQt6.QtCore import Qt
-        from PyQt6.QtGui import QFont
+        from PyQt6.QtCore import Qt, QUrl
+        from PyQt6.QtGui import QFont, QDesktopServices, QIcon
         
         # 커스텀 다이얼로그 생성
         dialog = QDialog()
@@ -8043,9 +8418,22 @@ if __name__ == "__main__":
         dialog.setMinimumWidth(500)
         dialog.setMinimumHeight(350)
         
+        # 아이콘 설정
+        if getattr(sys, 'frozen', False):
+            base_dir = sys._MEIPASS
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        icon_path = os.path.join(base_dir, "setting", "david153.ico")
+        if os.path.exists(icon_path):
+            dialog.setWindowIcon(QIcon(icon_path))
+        
         layout = QVBoxLayout()
         layout.setContentsMargins(30, 30, 30, 30)
         layout.setSpacing(20)
+        
+        # 만료 여부 확인
+        is_expired = "만료" in message
         
         # 경고 아이콘과 제목
         warning_container = QWidget()
@@ -8059,6 +8447,9 @@ if __name__ == "__main__":
         warning_layout.addWidget(warning_icon)
         
         warning_text = QLabel("등록되지 않은 사용자입니다.")
+        if is_expired:
+             warning_text.setText("사용 기간이 만료되었습니다.")
+             
         warning_text.setFont(QFont("맑은 고딕", 16, QFont.Weight.Bold))
         warning_text.setStyleSheet("color: #D32F2F;")
         warning_layout.addWidget(warning_text)
@@ -8066,111 +8457,156 @@ if __name__ == "__main__":
         
         layout.addWidget(warning_container)
         
-        # IP 정보 카드
-        ip_card = QWidget()
-        ip_card.setStyleSheet("""
-            QWidget {
-                background-color: #FFF3E0;
-                border-radius: 12px;
-                padding: 20px;
-            }
-        """)
-        ip_layout = QVBoxLayout(ip_card)
-        ip_layout.setSpacing(10)
-        
-        machine_id_label = QLabel(f"현재 머신 ID: {license_manager.get_machine_id()}")
-        machine_id_label.setFont(QFont("맑은 고딕", 14, QFont.Weight.Bold))
-        machine_id_label.setStyleSheet("color: #E65100; background: transparent; padding: 0;")
-        machine_id_label.setWordWrap(True)
-        ip_layout.addWidget(machine_id_label)
-        
-        info_label = QLabel("판매자에게 위 머신 ID를 알려주세요.")
-        info_label.setFont(QFont("맑은 고딕", 12))
-        info_label.setStyleSheet("color: #424242; background: transparent; padding: 0;")
-        ip_layout.addWidget(info_label)
-        
-        layout.addWidget(ip_card)
-        
-        # 안내 카드
-        guide_card = QWidget()
-        guide_card.setStyleSheet("""
-            QWidget {
-                background-color: #E3F2FD;
-                border-radius: 12px;
-                padding: 20px;
-            }
-        """)
-        guide_layout = QVBoxLayout(guide_card)
-        guide_layout.setSpacing(8)
-        
-        guide_title = QLabel("📋 판매자에게 다음 정보를 전달하세요")
-        guide_title.setFont(QFont("맑은 고딕", 11, QFont.Weight.Bold))
-        guide_title.setStyleSheet("color: #1565C0; background: transparent; padding: 0;")
-        guide_layout.addWidget(guide_title)
-        
-        # 머신 ID와 복사 버튼
-        machine_row = QWidget()
-        machine_row.setStyleSheet("background: transparent;")
-        machine_row_layout = QHBoxLayout(machine_row)
-        machine_row_layout.setContentsMargins(0, 0, 0, 0)
-        machine_row_layout.setSpacing(15)
-        
-        machine_info = QLabel(f"🔑 머신 ID    {license_manager.get_machine_id()}")
-        machine_info.setFont(QFont("맑은 고딕", 10))
-        machine_info.setStyleSheet("color: #424242; background: transparent; padding: 0;")
-        machine_info.setWordWrap(True)
-        machine_row_layout.addWidget(machine_info)
-        
-        copy_btn = QPushButton("📋 복사")
-        copy_btn.setFont(QFont("맑은 고딕", 9, QFont.Weight.Bold))
-        copy_btn.setMinimumHeight(28)
-        copy_btn.setMinimumWidth(70)
-        copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        copy_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #1976D2;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 5px 10px;
-            }
-            QPushButton:hover {
-                background-color: #1565C0;
-            }
-            QPushButton:pressed {
-                background-color: #0D47A1;
-            }
-        """)
-        
-        def copy_machine_id():
-            from PyQt6.QtWidgets import QApplication
-            clipboard = QApplication.clipboard()
-            clipboard.setText(license_manager.get_machine_id())
-            copy_btn.setText("✓ 복사됨")
+        if is_expired:
+            info_card = QWidget()
+            info_card.setStyleSheet("""
+                QWidget {
+                    background-color: #FFF3E0;
+                    border-radius: 12px;
+                    padding: 20px;
+                }
+            """)
+            info_layout = QVBoxLayout(info_card)
+            info_layout.setSpacing(10)
+            
+            info_label = QLabel("기간 연장이 필요합니다. 아래 오픈카톡으로 문의해주세요.")
+            info_label.setFont(QFont("맑은 고딕", 12))
+            info_label.setStyleSheet("color: #1F2937; background: transparent; padding: 0;")
+            info_label.setWordWrap(True)
+            info_layout.addWidget(info_label)
+            
+            link_button = QPushButton("오픈카톡 바로가기")
+            link_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            link_button.setMinimumHeight(36)
+            link_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #1976D2;
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    padding: 8px 14px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #1565C0;
+                }
+                QPushButton:pressed {
+                    background-color: #0D47A1;
+                }
+            """)
+            link_button.clicked.connect(
+                lambda: QDesktopServices.openUrl(QUrl("https://open.kakao.com/me/david0985"))
+            )
+            info_layout.addWidget(link_button)
+            
+            layout.addWidget(info_card)
+
+        else:
+            # IP 정보 카드 (기존 로직)
+            ip_card = QWidget()
+            ip_card.setStyleSheet("""
+                QWidget {
+                    background-color: #FFF3E0;
+                    border-radius: 12px;
+                    padding: 20px;
+                }
+            """)
+            ip_layout = QVBoxLayout(ip_card)
+            ip_layout.setSpacing(10)
+            
+            machine_id_label = QLabel(f"현재 머신 ID: {license_manager.get_machine_id()}")
+            machine_id_label.setFont(QFont("맑은 고딕", 14, QFont.Weight.Bold))
+            machine_id_label.setStyleSheet("color: #E65100; background: transparent; padding: 0;")
+            machine_id_label.setWordWrap(True)
+            ip_layout.addWidget(machine_id_label)
+            
+            info_label = QLabel("판매자에게 위 머신 ID를 알려주세요.")
+            info_label.setFont(QFont("맑은 고딕", 12))
+            info_label.setStyleSheet("color: #424242; background: transparent; padding: 0;")
+            ip_layout.addWidget(info_label)
+            
+            layout.addWidget(ip_card)
+            
+            # 안내 카드
+            guide_card = QWidget()
+            guide_card.setStyleSheet("""
+                QWidget {
+                    background-color: #E3F2FD;
+                    border-radius: 12px;
+                    padding: 20px;
+                }
+            """)
+            guide_layout = QVBoxLayout(guide_card)
+            guide_layout.setSpacing(8)
+            
+            guide_title = QLabel("📋 판매자에게 다음 정보를 전달하세요")
+            guide_title.setFont(QFont("맑은 고딕", 11, QFont.Weight.Bold))
+            guide_title.setStyleSheet("color: #1565C0; background: transparent; padding: 0;")
+            guide_layout.addWidget(guide_title)
+            
+            # 머신 ID와 복사 버튼
+            machine_row = QWidget()
+            machine_row.setStyleSheet("background: transparent;")
+            machine_row_layout = QHBoxLayout(machine_row)
+            machine_row_layout.setContentsMargins(0, 0, 0, 0)
+            machine_row_layout.setSpacing(15)
+            
+            machine_info = QLabel(f"🔑 머신 ID    {license_manager.get_machine_id()}")
+            machine_info.setFont(QFont("맑은 고딕", 10))
+            machine_info.setStyleSheet("color: #424242; background: transparent; padding: 0;")
+            machine_info.setWordWrap(True)
+            machine_row_layout.addWidget(machine_info)
+            
+            copy_btn = QPushButton("📋 복사")
+            copy_btn.setFont(QFont("맑은 고딕", 9, QFont.Weight.Bold))
+            copy_btn.setMinimumHeight(28)
+            copy_btn.setMinimumWidth(70)
+            copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             copy_btn.setStyleSheet("""
                 QPushButton {
-                    background-color: #4CAF50;
+                    background-color: #1976D2;
                     color: white;
                     border: none;
                     border-radius: 6px;
                     padding: 5px 10px;
                 }
+                QPushButton:hover {
+                    background-color: #1565C0;
+                }
+                QPushButton:pressed {
+                    background-color: #0D47A1;
+                }
             """)
-        
-        copy_btn.clicked.connect(copy_machine_id)
-        machine_row_layout.addWidget(copy_btn)
-        machine_row_layout.addStretch()
-        
-        guide_layout.addWidget(machine_row)
-        
-        layout.addWidget(guide_card)
-        
-        # 참고 메시지
-        note_label = QLabel("💡 참고: 위 머신 ID를 판매자에게 보내면 프로그램 사용 권한을 등록할 수 있습니다.\n(와이파이 변경, 재부팅 시에도 머신 ID는 변경되지 않습니다)")
-        note_label.setFont(QFont("맑은 고딕", 9))
-        note_label.setStyleSheet("color: #757575;")
-        note_label.setWordWrap(True)
-        layout.addWidget(note_label)
+            
+            def copy_machine_id():
+                from PyQt6.QtWidgets import QApplication
+                clipboard = QApplication.clipboard()
+                clipboard.setText(license_manager.get_machine_id())
+                copy_btn.setText("✓ 복사됨")
+                copy_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #4CAF50;
+                        color: white;
+                        border: none;
+                        border-radius: 6px;
+                        padding: 5px 10px;
+                    }
+                """)
+            
+            copy_btn.clicked.connect(copy_machine_id)
+            machine_row_layout.addWidget(copy_btn)
+            machine_row_layout.addStretch()
+            
+            guide_layout.addWidget(machine_row)
+            
+            layout.addWidget(guide_card)
+            
+            # 참고 메시지
+            note_label = QLabel("💡 참고: 위 머신 ID를 판매자에게 보내면 프로그램 사용 권한을 등록할 수 있습니다.\\n(와이파이 변경, 재부팅 시에도 머신 ID는 변경되지 않습니다)")
+            note_label.setFont(QFont("맑은 고딕", 9))
+            note_label.setStyleSheet("color: #757575;")
+            note_label.setWordWrap(True)
+            layout.addWidget(note_label)
         
         layout.addStretch()
         
@@ -8224,6 +8660,8 @@ if __name__ == "__main__":
             sys.__excepthook__(exc_type, exc_value, exc_traceback)
             return
         
+        global _last_error_signature
+
         # 오류 상세 정보 수집
         error_details = {
             "type": exc_type.__name__,
@@ -8233,6 +8671,12 @@ if __name__ == "__main__":
             "python_version": platform.python_version(),
             "os": platform.platform(),
         }
+
+        # 동일한 오류는 한 번만 표시
+        signature = (error_details["type"], error_details["message"], error_details["traceback"])
+        if _last_error_signature == signature:
+            return
+        _last_error_signature = signature
         
         # 콘솔에 출력
         print("\n" + "="*80)
@@ -8320,6 +8764,29 @@ if __name__ == "__main__":
                     f"{error_details['traceback']}\n"
                     f"=" * 80
                 )
+
+                # 동일 문구가 반복되는 경우 한 번만 표시
+                _lines = report_content.splitlines()
+                _deduped = []
+                _prev = None
+                _seen_banner = set()
+                _banner_lines = {("=" * 80), "🚨 NAVER BLOG AUTO POSTING ERROR REPORT"}
+                for _line in _lines:
+                    _norm = _line.strip()
+                    # 연속 중복 라인 제거
+                    if _prev == _norm:
+                        continue
+                    # 배너 라인 중복 제거
+                    if _norm in _banner_lines:
+                        if _norm in _seen_banner:
+                            continue
+                        _seen_banner.add(_norm)
+                    # 공백 라인 과다 중복 제거
+                    if _norm == "" and _prev == "":
+                        continue
+                    _deduped.append(_line)
+                    _prev = _norm
+                report_content = "\n".join(_deduped)
                 
                 report_text = QTextEdit()
                 report_text.setPlainText(report_content)

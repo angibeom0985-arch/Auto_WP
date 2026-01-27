@@ -7,6 +7,7 @@ import socket
 import hashlib
 import json
 import os
+import sys
 from datetime import datetime
 # import requests  <-- removed top-level import
 import uuid
@@ -21,8 +22,15 @@ class LicenseManager:
     SHEET_NAME = "시트1"
     
     def __init__(self):
-        self.license_file = os.path.join("setting", "license.json")
+        self.base_dir = self._get_base_dir()
+        self.license_file = os.path.join(self.base_dir, "setting", "license.json")
         self.license_data = self.load_license()
+
+    def _get_base_dir(self):
+        """Auto_Naver 기준 경로 반환 (EXE/PY 모두 지원)"""
+        if getattr(sys, 'frozen', False):
+            return os.path.dirname(sys.executable)
+        return os.path.dirname(os.path.abspath(__file__))
     
     def get_local_ip(self):
         """로컬 IP 주소 가져오기 (참고용)"""
@@ -78,17 +86,10 @@ class LicenseManager:
     def get_machine_id(self):
         """머신 고유 ID 생성 및 로드 (한 번 생성 후 저장)"""
         # 저장된 머신 ID 파일 경로
-        machine_id_file = os.path.join("setting", "machine_id.txt")
+        machine_id_file = os.path.join(self.base_dir, "setting", "machine_id.txt")
         
-        # 1. 이미 저장된 머신 ID가 있으면 사용
-        try:
-            if os.path.exists(machine_id_file):
-                with open(machine_id_file, 'r', encoding='utf-8') as f:
-                    saved_id = f.read().strip()
-                    if saved_id and len(saved_id) == 32:
-                        return saved_id
-        except:
-            pass
+        # 1. 이미 저장된 머신 ID가 있으면 사용 -> 보안 문제로 제거 (항상 하드웨어 ID 사용)
+        # (파일을 복사해서 다른 PC에서 사용하는 것을 방지)
         
         # 2. 저장된 ID가 없으면 새로 생성
         mac = self.get_mac_address()
@@ -98,7 +99,7 @@ class LicenseManager:
         
         # 3. 생성된 ID를 파일에 저장
         try:
-            os.makedirs("setting", exist_ok=True)
+            os.makedirs(os.path.join(self.base_dir, "setting"), exist_ok=True)
             with open(machine_id_file, 'w', encoding='utf-8') as f:
                 f.write(machine_id)
         except Exception as e:
@@ -119,7 +120,7 @@ class LicenseManager:
     def save_license(self, license_key, machine_id):
         """라이선스 정보 저장"""
         try:
-            os.makedirs("setting", exist_ok=True)
+            os.makedirs(os.path.join(self.base_dir, "setting"), exist_ok=True)
             
             license_data = {
                 "license_key": license_key,
