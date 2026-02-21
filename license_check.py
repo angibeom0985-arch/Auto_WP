@@ -26,6 +26,33 @@ class LicenseManager:
             return ""
         return str(value).strip().replace("\x00", "").replace("\r", "").replace("\n", "")
 
+    def _run_cmd(self, command):
+        """쉘 명령 결과를 안전하게 1줄 문자열로 반환"""
+        try:
+            result = subprocess.check_output(
+                command,
+                shell=isinstance(command, str),
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+            )
+            return self._normalize_text(result)
+        except Exception:
+            return ""
+
+    def _first_non_empty_line(self, text, excludes=None):
+        excludes = excludes or []
+        exclude_set = {x.lower() for x in excludes}
+        for line in (text or "").split("\n"):
+            v = self._normalize_text(line)
+            if not v:
+                continue
+            if v.lower() in exclude_set:
+                continue
+            return v
+        return ""
+
     def get_local_ip(self):
         """로컬 IP (참고용)"""
         try:
@@ -49,50 +76,52 @@ class LicenseManager:
         """Windows UUID 조회"""
         try:
             if platform.system() == "Windows":
-                try:
-                    result = subprocess.check_output(
-                        ["powershell", "-Command", "(Get-CimInstance -Class Win32_ComputerSystemProduct).UUID"],
-                        shell=False,
-                        stderr=subprocess.DEVNULL,
-                        text=True,
-                        encoding="utf-8",
-                        errors="ignore",
-                    )
-                    uuid_str = self._normalize_text(result)
-                    if uuid_str and len(uuid_str) > 10:
-                        return uuid_str
-                except Exception:
-                    pass
+                ps = self._run_cmd(
+                    ["powershell", "-Command", "(Get-CimInstance -Class Win32_ComputerSystemProduct).UUID"]
+                )
+                uuid_str = self._first_non_empty_line(ps, excludes=["uuid"])
+                if uuid_str and len(uuid_str) > 10:
+                    return uuid_str
 
-                try:
-                    result = subprocess.check_output(
-                        "wmic csproduct get uuid",
-                        shell=True,
-                        stderr=subprocess.DEVNULL,
-                        text=True,
-                        encoding="utf-8",
-                        errors="ignore",
-                    )
-                    lines = [self._normalize_text(x) for x in result.split("\n")]
-                    lines = [x for x in lines if x and x.lower() != "uuid"]
-                    uuid_str = lines[0] if lines else ""
-                    if uuid_str and len(uuid_str) > 10:
-                        return uuid_str
-                except Exception:
-                    pass
+                wmic = self._run_cmd("wmic csproduct get uuid")
+                uuid_str = self._first_non_empty_line(wmic, excludes=["uuid"])
+                if uuid_str and len(uuid_str) > 10:
+                    return uuid_str
 
             return self._normalize_text(str(uuid.getnode()))
         except Exception:
             return self._normalize_text(str(uuid.getnode()))
 
+    def _get_windows_hardware_fingerprint_parts(self):
+        """1PC 제한 강화를 위한 하드웨어 식별자 수집"""
+        parts = []
+        if platform.system() != "Windows":
+            return parts
+
+        queries = [
+            ("cs_uuid", "(Get-CimInstance -Class Win32_ComputerSystemProduct).UUID"),
+            ("bios", "(Get-CimInstance -Class Win32_BIOS).SerialNumber"),
+            ("board", "(Get-CimInstance -Class Win32_BaseBoard).SerialNumber"),
+            ("cpu", "(Get-CimInstance -Class Win32_Processor | Select-Object -First 1).ProcessorId"),
+            ("disk", "(Get-CimInstance -Class Win32_DiskDrive | Select-Object -First 1).SerialNumber"),
+        ]
+        for label, script in queries:
+            raw = self._run_cmd(["powershell", "-Command", script])
+            value = self._first_non_empty_line(raw, excludes=["serialnumber", "processorid", "uuid"])
+            if value:
+                parts.append(f"{label}:{value.lower()}")
+
+        return parts
+
     def get_machine_id(self):
-        """고정 머신 ID 반환"""
-        # 파일 저장 없이 하드웨어 지문으로 계산
+        """고정 머신 ID 반환 (하드웨어 지문 기반)"""
         mac = self._normalize_text(self.get_mac_address()).lower()
         win_id = self._normalize_text(self.get_windows_machine_id()).lower()
-        host_name = self._normalize_text(platform.node()).lower()
-        os_name = self._normalize_text(platform.system()).lower()
-        fingerprint = f"{win_id}|{mac}|{host_name}|{os_name}"
+        hw_parts = self._get_windows_hardware_fingerprint_parts()
+
+        # 변동 가능성이 높은 host/os 값은 제외하고 하드웨어 항목만 사용
+        fingerprint_parts = [f"uuid:{win_id}", f"mac:{mac}"] + hw_parts
+        fingerprint = "|".join([p for p in fingerprint_parts if p and not p.endswith(":")])
         machine_id = hashlib.sha256(fingerprint.encode("utf-8", errors="ignore")).hexdigest()[:32].lower()
         return machine_id
 
