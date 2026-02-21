@@ -17,4 +17,3 @@ setting/chrome_profile/
 # Sensitive local settings
 setting/license.json
 setting/setting.json
-setting/etc/machine_id.json

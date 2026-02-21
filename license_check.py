@@ -19,39 +19,12 @@ class LicenseManager:
 
     def __init__(self):
         self.license_file = os.path.join("setting", "license.json")
-        self.machine_id_file = os.path.join("setting", "etc", "machine_id.json")
         self.license_data = self.load_license()
 
     def _normalize_text(self, value):
         if value is None:
             return ""
         return str(value).strip().replace("\x00", "").replace("\r", "").replace("\n", "")
-
-    def _load_cached_machine_id(self):
-        try:
-            if not os.path.exists(self.machine_id_file):
-                return ""
-            with open(self.machine_id_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            machine_id = self._normalize_text(data.get("machine_id", "")).lower()
-            if len(machine_id) == 32 and all(c in "0123456789abcdef" for c in machine_id):
-                return machine_id
-            return ""
-        except Exception:
-            return ""
-
-    def _save_cached_machine_id(self, machine_id):
-        try:
-            os.makedirs(os.path.dirname(self.machine_id_file), exist_ok=True)
-            payload = {
-                "machine_id": machine_id,
-                "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "source": "stable_machine_fingerprint_v2",
-            }
-            with open(self.machine_id_file, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
 
     def get_local_ip(self):
         """로컬 IP (참고용)"""
@@ -114,21 +87,13 @@ class LicenseManager:
 
     def get_machine_id(self):
         """고정 머신 ID 반환"""
-        # 1) 저장된 값이 있으면 항상 우선 사용
-        cached_id = self._load_cached_machine_id()
-        if cached_id:
-            return cached_id
-
-        # 2) 최초 1회 생성
+        # 파일 저장 없이 하드웨어 지문으로 계산
         mac = self._normalize_text(self.get_mac_address()).lower()
         win_id = self._normalize_text(self.get_windows_machine_id()).lower()
         host_name = self._normalize_text(platform.node()).lower()
         os_name = self._normalize_text(platform.system()).lower()
         fingerprint = f"{win_id}|{mac}|{host_name}|{os_name}"
         machine_id = hashlib.sha256(fingerprint.encode("utf-8", errors="ignore")).hexdigest()[:32].lower()
-
-        # 3) 생성값 저장 후 재사용
-        self._save_cached_machine_id(machine_id)
         return machine_id
 
     def load_license(self):
