@@ -10778,107 +10778,75 @@ def main():
         is_valid, message = license_manager.verify_license()
         
         if not is_valid:
-            # GUI 에러 메시지 표시 (머신 ID 복사 기능 포함)
-            
-            # 커스텀 다이얼로그 생성
+            # 미등록 안내창
+            machine_id = license_manager.get_machine_id()
             dialog = QDialog()
             icon_path = get_resource_path(os.path.join("setting", "etc", "auto_wp.ico"))
             if os.path.exists(icon_path):
                 dialog.setWindowIcon(QIcon(icon_path))
-            dialog.setWindowTitle("🔒 프로그램 사용 권한")
-            dialog.setMinimumWidth(500)
-            dialog.setMinimumHeight(350)
-            
+            dialog.setWindowTitle("프로그램 사용 권한")
+            dialog.setMinimumWidth(640)
+            dialog.setMinimumHeight(300)
+
             layout = QVBoxLayout()
-            layout.setContentsMargins(30, 30, 30, 30)
-            layout.setSpacing(20)
-            
-            # 경고 아이콘과 제목
-            warning_container = QWidget()
-            warning_layout = QHBoxLayout(warning_container)
-            warning_layout.setContentsMargins(0, 0, 0, 0)
-            warning_layout.setSpacing(15)
-            
-            warning_icon = QLabel("⚠")
-            warning_icon.setFont(QFont("Segoe UI Emoji", 36))
-            warning_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            warning_layout.addWidget(warning_icon)
-            
-            warning_text = QLabel("등록되지 않은 사용자입니다.")
-            warning_text.setFont(QFont("맑은 고딕", 16, QFont.Weight.Bold))
-            warning_text.setStyleSheet("color: #D32F2F;")
-            warning_layout.addWidget(warning_text)
-            warning_layout.addStretch()
-            
-            layout.addWidget(warning_container)
-            
-            # 머신 ID 정보 카드
-            ip_card = QWidget()
-            ip_card.setStyleSheet("""
-                QWidget {
-                    background-color: #FFF3E0;
-                    border-radius: 12px;
-                    padding: 20px;
+            layout.setContentsMargins(24, 24, 24, 24)
+            layout.setSpacing(14)
+
+            title_label = QLabel("등록되지 않은 머신 ID입니다.")
+            title_label.setFont(QFont("맑은 고딕", 15, QFont.Weight.Bold))
+            title_label.setStyleSheet("color: #D32F2F;")
+            title_label.setWordWrap(False)
+            layout.addWidget(title_label)
+
+            id_title = QLabel("현재 머신 ID")
+            id_title.setFont(QFont("맑은 고딕", 11, QFont.Weight.Bold))
+            id_title.setStyleSheet("color: #1E1E1E;")
+            id_title.setWordWrap(False)
+            layout.addWidget(id_title)
+
+            machine_id_edit = QLineEdit(machine_id)
+            machine_id_edit.setReadOnly(True)
+            machine_id_edit.setFont(QFont("Consolas", 12))
+            machine_id_edit.setMinimumHeight(40)
+            machine_id_edit.setStyleSheet("""
+                QLineEdit {
+                    background-color: #F5F5F5;
+                    color: #111111;
+                    border: 1px solid #C8C8C8;
+                    border-radius: 8px;
+                    padding: 6px 10px;
                 }
             """)
-            ip_layout = QVBoxLayout(ip_card)
-            ip_layout.setSpacing(10)
-            
-            machine_id_label = QLabel(f"현재 머신 ID: {license_manager.get_machine_id()}")
-            machine_id_label.setFont(QFont("맑은 고딕", 14, QFont.Weight.Bold))
-            machine_id_label.setStyleSheet("color: #E65100; background: transparent; padding: 0;")
-            machine_id_label.setWordWrap(True)
-            ip_layout.addWidget(machine_id_label)
-            
-            info_label = QLabel("판매자에게 위 머신 ID를 알려주세요.")
-            info_label.setFont(QFont("맑은 고딕", 12))
-            info_label.setStyleSheet("color: #424242; background: transparent; padding: 0;")
-            ip_layout.addWidget(info_label)
-            
-            layout.addWidget(ip_card)
-            
-            # 안내 카드
-            guide_card = QWidget()
-            guide_card.setStyleSheet("""
-                QWidget {
-                    background-color: #E3F2FD;
-                    border-radius: 12px;
-                    padding: 20px;
-                }
-            """)
-            guide_layout = QVBoxLayout(guide_card)
-            guide_layout.setSpacing(8)
-            
-            guide_title = QLabel("📋 판매자에게 다음 정보를 전달하세요")
-            guide_title.setFont(QFont("맑은 고딕", 11, QFont.Weight.Bold))
-            guide_title.setStyleSheet("color: #1565C0; background: transparent; padding: 0;")
-            guide_layout.addWidget(guide_title)
-            
-            # 머신 ID와 복사 버튼
-            machine_row = QWidget()
-            machine_row.setStyleSheet("background: transparent;")
-            machine_row_layout = QHBoxLayout(machine_row)
-            machine_row_layout.setContentsMargins(0, 0, 0, 0)
-            machine_row_layout.setSpacing(15)
-            
-            machine_info = QLabel(f"🔑 머신 ID    {license_manager.get_machine_id()}")
-            machine_info.setFont(QFont("맑은 고딕", 10))
-            machine_info.setStyleSheet("color: #424242; background: transparent; padding: 0;")
-            machine_info.setWordWrap(True)
-            machine_row_layout.addWidget(machine_info)
-            
-            copy_btn = QPushButton("📋 복사")
-            copy_btn.setFont(QFont("맑은 고딕", 9, QFont.Weight.Bold))
-            copy_btn.setMinimumHeight(28)
-            copy_btn.setMinimumWidth(70)
+            layout.addWidget(machine_id_edit)
+
+            guide_label = QLabel("판매자에게 위 머신 ID를 전달해 등록을 요청하세요.")
+            guide_label.setFont(QFont("맑은 고딕", 10))
+            guide_label.setStyleSheet("color: #333333;")
+            guide_label.setWordWrap(False)
+            layout.addWidget(guide_label)
+
+            stability_label = QLabel("머신 ID는 EXE 업데이트 후에도 동일하게 유지됩니다.")
+            stability_label.setFont(QFont("맑은 고딕", 10))
+            stability_label.setStyleSheet("color: #333333;")
+            stability_label.setWordWrap(False)
+            layout.addWidget(stability_label)
+
+            button_layout = QHBoxLayout()
+            button_layout.setContentsMargins(0, 10, 0, 0)
+            button_layout.setSpacing(10)
+
+            copy_btn = QPushButton("머신 ID 복사")
+            copy_btn.setFont(QFont("맑은 고딕", 10, QFont.Weight.Bold))
+            copy_btn.setMinimumHeight(40)
+            copy_btn.setMinimumWidth(140)
             copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             copy_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #1976D2;
                     color: white;
                     border: none;
-                    border-radius: 6px;
-                    padding: 5px 10px;
+                    border-radius: 8px;
+                    padding: 8px 14px;
                 }
                 QPushButton:hover {
                     background-color: #1565C0;
@@ -10892,45 +10860,26 @@ def main():
                 clipboard = QApplication.clipboard()
                 if clipboard is None:
                     return
-                clipboard.setText(license_manager.get_machine_id())
-                copy_btn.setText("✓ 복사됨")
+                clipboard.setText(machine_id)
+                copy_btn.setText("복사 완료")
                 copy_btn.setStyleSheet("""
                     QPushButton {
                         background-color: #4CAF50;
                         color: white;
                         border: none;
-                        border-radius: 6px;
-                        padding: 5px 10px;
+                        border-radius: 8px;
+                        padding: 8px 14px;
                     }
                 """)
-            
+
             copy_btn.clicked.connect(copy_machine_id)
-            machine_row_layout.addWidget(copy_btn)
-            machine_row_layout.addStretch()
-            
-            guide_layout.addWidget(machine_row)
-            
-            layout.addWidget(guide_card)
-            
-            # 참고 메시지
-            note_label = QLabel("💡 참고: 위 머신 ID를 판매자에게 보내면 프로그램 사용 권한을 등록할 수 있습니다.\n(와이파이 변경, 재부팅 시에도 머신 ID는 변경되지 않습니다)")
-            note_label.setFont(QFont("맑은 고딕", 9))
-            note_label.setStyleSheet("color: #757575;")
-            note_label.setWordWrap(True)
-            layout.addWidget(note_label)
-            
-            layout.addStretch()
-            
-            # 확인 버튼
-            button_container = QWidget()
-            button_layout = QHBoxLayout(button_container)
-            button_layout.setContentsMargins(0, 0, 0, 0)
             button_layout.addStretch()
-            
-            ok_button = QPushButton("확인")
-            ok_button.setFont(QFont("맑은 고딕", 11, QFont.Weight.Bold))
-            ok_button.setMinimumWidth(120)
-            ok_button.setMinimumHeight(45)
+            button_layout.addWidget(copy_btn)
+
+            ok_button = QPushButton("닫기")
+            ok_button.setFont(QFont("맑은 고딕", 10, QFont.Weight.Bold))
+            ok_button.setMinimumWidth(100)
+            ok_button.setMinimumHeight(40)
             ok_button.setCursor(Qt.CursorShape.PointingHandCursor)
             ok_button.setStyleSheet("""
                 QPushButton {
@@ -10938,7 +10887,7 @@ def main():
                     color: white;
                     border: none;
                     border-radius: 8px;
-                    padding: 12px 30px;
+                    padding: 8px 16px;
                 }
                 QPushButton:hover {
                     background-color: #45A049;
@@ -10949,9 +10898,8 @@ def main():
             """)
             ok_button.clicked.connect(dialog.close)
             button_layout.addWidget(ok_button)
-            
-            layout.addWidget(button_container)
-            
+            layout.addLayout(button_layout)
+
             dialog.setLayout(layout)
             dialog.setStyleSheet("""
                 QDialog {
