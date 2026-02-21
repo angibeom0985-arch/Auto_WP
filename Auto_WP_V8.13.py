@@ -10780,6 +10780,7 @@ def main():
         if not is_valid:
             # 미등록 안내창
             machine_id = license_manager.get_machine_id()
+            is_expired = ("만료" in (message or "")) or ("expire" in (message or "").lower())
             dialog = QDialog()
             icon_path = get_resource_path(os.path.join("setting", "etc", "auto_wp.ico"))
             if os.path.exists(icon_path):
@@ -10831,6 +10832,13 @@ def main():
             stability_label.setWordWrap(False)
             layout.addWidget(stability_label)
 
+            if is_expired:
+                expired_label = QLabel("사용 기간이 만료되었습니다. 아래 버튼으로 문의해주세요.")
+                expired_label.setFont(QFont("맑은 고딕", 10, QFont.Weight.Bold))
+                expired_label.setStyleSheet("color: #C62828;")
+                expired_label.setWordWrap(False)
+                layout.addWidget(expired_label)
+
             button_layout = QHBoxLayout()
             button_layout.setContentsMargins(0, 10, 0, 0)
             button_layout.setSpacing(10)
@@ -10875,6 +10883,32 @@ def main():
             copy_btn.clicked.connect(copy_machine_id)
             button_layout.addStretch()
             button_layout.addWidget(copy_btn)
+
+            if is_expired:
+                kakao_btn = QPushButton("카카오톡 문의")
+                kakao_btn.setFont(QFont("맑은 고딕", 10, QFont.Weight.Bold))
+                kakao_btn.setMinimumHeight(40)
+                kakao_btn.setMinimumWidth(130)
+                kakao_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                kakao_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #FEE500;
+                        color: #191919;
+                        border: none;
+                        border-radius: 8px;
+                        padding: 8px 14px;
+                    }
+                    QPushButton:hover {
+                        background-color: #F5DA00;
+                    }
+                    QPushButton:pressed {
+                        background-color: #EBCD00;
+                    }
+                """)
+                kakao_btn.clicked.connect(
+                    lambda: QDesktopServices.openUrl(QUrl("https://open.kakao.com/me/david0985"))
+                )
+                button_layout.addWidget(kakao_btn)
 
             ok_button = QPushButton("닫기")
             ok_button.setFont(QFont("맑은 고딕", 10, QFont.Weight.Bold))
