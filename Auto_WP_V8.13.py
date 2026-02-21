@@ -6761,8 +6761,40 @@ class MainWindow(QMainWindow):
         self.theme_radio_light = QRadioButton("라이트")
         self.theme_radio_dark.setCursor(Qt.CursorShape.PointingHandCursor)
         self.theme_radio_light.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.theme_radio_dark.setStyleSheet("font-weight: 700;")
-        self.theme_radio_light.setStyleSheet("font-weight: 700;")
+        radio_text_color = "#273A52" if self.current_theme == "라이트" else "#CFE2F4"
+        radio_checked_color = "#0A84FF" if self.current_theme == "라이트" else "#F4FBFF"
+        radio_indicator_border = "#4E6D8D" if self.current_theme == "라이트" else "#8CB2D3"
+        radio_indicator_bg = "#F8FBFF" if self.current_theme == "라이트" else COLORS['surface']
+        theme_radio_style = f"""
+            QRadioButton {{
+                color: {radio_text_color};
+                font-weight: 800;
+                font-size: 13px;
+                spacing: 6px;
+                padding: 2px 2px;
+                background: transparent;
+            }}
+            QRadioButton::indicator {{
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                border: 2px solid {radio_indicator_border};
+                background-color: {radio_indicator_bg};
+            }}
+            QRadioButton::indicator:checked {{
+                border: 2px solid {COLORS['primary']};
+                background-color: {COLORS['primary']};
+            }}
+            QRadioButton:checked {{
+                color: {radio_checked_color};
+                font-weight: 900;
+            }}
+            QRadioButton:hover {{
+                color: {radio_checked_color};
+            }}
+        """
+        self.theme_radio_dark.setStyleSheet(theme_radio_style)
+        self.theme_radio_light.setStyleSheet(theme_radio_style)
 
         self.theme_radio_group.addButton(self.theme_radio_dark)
         self.theme_radio_group.addButton(self.theme_radio_light)
