@@ -6146,9 +6146,9 @@ class MainWindow(QMainWindow):
                     color: {COLORS['text']};
                     border: 2px solid {COLORS['primary']};
                     border-radius: 10px;
-                    padding: 16px 22px;
+                    padding: 14px 18px;
                     font-weight: 600;
-                    font-size: 11pt;
+                    font-size: 10pt;
                     text-align:center;
                 }}
                 QPushButton:hover {{
@@ -6171,9 +6171,9 @@ class MainWindow(QMainWindow):
                     color: {COLORS['text']};
                     border: 2px solid {COLORS['primary']};
                     border-radius: 10px;
-                    padding: 17px 18px;
-                    font-size: 11pt;
-                    font-weight: 700;
+                    padding: 14px 18px;
+                    font-size: 10pt;
+                    font-weight: 600;
                 }}
                 QComboBox:hover {{
                     background-color: {COLORS['primary']};
@@ -6199,7 +6199,7 @@ class MainWindow(QMainWindow):
                     outline: none;
                     border: 1px solid {COLORS['border']};
                     border-radius: 5px;
-                    font-size: 11pt;
+                    font-size: 10pt;
                     font-weight: normal;
                     padding: 5px;
                 }}
@@ -8174,7 +8174,7 @@ class MainWindow(QMainWindow):
                 color: {COLORS['text']};
                 border: 2px solid {COLORS['primary']};
                 border-radius: 10px;
-                font-size: 11pt;
+                font-size: 10pt;
                 padding: 8px 12px;
             }}
             QLineEdit:focus {{
