@@ -710,20 +710,20 @@ LIGHT_COLORS = {
     'surface': '#F8FBFF',
     'surface_light': '#FFFFFF',
     'surface_dark': '#DCE8F5',
-    'primary': '#007BFF',
-    'primary_hover': '#2D95FF',
-    'secondary': '#00A3FF',
-    'accent': '#0067D8',
-    'success': '#16A34A',
-    'warning': '#D18E00',
-    'warning_hover': '#E0A100',
-    'danger': '#DC2626',
-    'info': '#0284C7',
-    'info_hover': '#0EA5E9',
+    'primary': '#0A84FF',
+    'primary_hover': '#2E9BFF',
+    'secondary': '#00B5FF',
+    'accent': '#006BFF',
+    'success': '#10B84A',
+    'warning': '#F0A100',
+    'warning_hover': '#FFB733',
+    'danger': '#E11937',
+    'info': '#007FE8',
+    'info_hover': '#1A9CFF',
     'text': '#122033',
     'text_secondary': '#2A3B52',
     'text_muted': '#4A657F',
-    'border': '#A8C0D9',
+    'border': '#96B4D6',
     'hover': '#E8F1FB'
 }
 
@@ -5597,16 +5597,16 @@ class SiteWidget(QWidget):
         edit_btn.clicked.connect(lambda: self.edit_requested.emit(self.site_data["id"]))
         edit_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: #006BCB;
+                background-color: #0077E6;
                 color: white;
-                border: 1px solid #0056A3;
+                border: 1px solid #005FBA;
                 border-radius: 6px;
                 padding: 5px 15px;
                 font-weight: 800;
                 font-size: 10pt;
             }}
             QPushButton:hover {{
-                background-color: #007BE9;
+                background-color: #1490FF;
             }}
         """)
         url_row.addWidget(edit_btn)
@@ -5638,16 +5638,16 @@ class SiteWidget(QWidget):
         keyword_btn.clicked.connect(lambda: self.keywords_requested.emit(self.site_data["id"]))
         keyword_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: #B08D00;
+                background-color: #C49B00;
                 color: white;
-                border: 1px solid #8A6E00;
+                border: 1px solid #9E7E00;
                 border-radius: 6px;
                 padding: 5px 15px;
                 font-weight: 800;
                 font-size: 10pt;
             }}
             QPushButton:hover {{
-                background-color: #CCA300;
+                background-color: #E7B600;
             }}
         """)
         keyword_row.addWidget(keyword_btn)
@@ -5679,16 +5679,16 @@ class SiteWidget(QWidget):
         thumbnail_btn.clicked.connect(lambda: self.thumbnails_requested.emit(self.site_data["id"]))
         thumbnail_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: #0078C8;
+                background-color: #0087E6;
                 color: white;
-                border: 1px solid #005F9E;
+                border: 1px solid #006CBC;
                 border-radius: 6px;
                 padding: 5px 15px;
                 font-weight: 800;
                 font-size: 10pt;
             }}
             QPushButton:hover {{
-                background-color: #0091EC;
+                background-color: #15A1FF;
             }}
         """)
         thumbnail_row.addWidget(thumbnail_btn)
@@ -5710,16 +5710,16 @@ class SiteWidget(QWidget):
         toggle_btn.setMinimumSize(90, 30)
         toggle_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: {'#1E8E3E' if is_active else '#D90000'};
+                background-color: {'#12A34A' if is_active else '#E2162D'};
                 color: white;
-                border: 1px solid {'#186F31' if is_active else '#B00000'};
+                border: 1px solid {'#0F863D' if is_active else '#B71124'};
                 border-radius: 4px;
                 padding: 6px 12px;
                 font-weight: 800;
                 font-size: 10pt;
             }}
             QPushButton:hover {{
-                background-color: {'#26A44A' if is_active else '#F00000'};
+                background-color: {'#18BE56' if is_active else '#FF273D'};
             }}
         """)
         action_row.addWidget(toggle_btn)
@@ -5731,16 +5731,16 @@ class SiteWidget(QWidget):
         delete_btn.setMinimumSize(70, 30)
         delete_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: #C1121F;
+                background-color: #D9112A;
                 color: white;
-                border: 1px solid #990E18;
+                border: 1px solid #B00D22;
                 border-radius: 4px;
                 padding: 6px 12px;
                 font-weight: 800;
                 font-size: 10pt;
             }}
             QPushButton:hover {{
-                background-color: #E21727;
+                background-color: #F6253E;
             }}
         """)
         action_row.addWidget(delete_btn)
@@ -7084,8 +7084,8 @@ class MainWindow(QMainWindow):
         self.add_site_btn.setMinimumWidth(130)
         self.add_site_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_site_btn.setStyleSheet("""
-            QPushButton { background-color: #D90000; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #B00000; font-size: 14px; }
-            QPushButton:hover { background-color: #F00000; }
+            QPushButton { background-color: #F00014; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #C5001A; font-size: 14px; }
+            QPushButton:hover { background-color: #FF1E30; }
         """)
         self.add_site_btn.clicked.connect(self.toggle_add_site_form)
         button_layout.addWidget(self.add_site_btn)
@@ -7095,8 +7095,8 @@ class MainWindow(QMainWindow):
         self.keywords_folder_btn.setMinimumWidth(130)
         self.keywords_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.keywords_folder_btn.setStyleSheet("""
-            QPushButton { background-color: #C77700; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #9F6000; font-size: 14px; }
-            QPushButton:hover { background-color: #E28700; }
+            QPushButton { background-color: #E38700; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #B96D00; font-size: 14px; }
+            QPushButton:hover { background-color: #FFA000; }
         """)
         self.keywords_folder_btn.clicked.connect(self.open_keywords_folder)
         button_layout.addWidget(self.keywords_folder_btn)
@@ -7106,8 +7106,8 @@ class MainWindow(QMainWindow):
         self.prompts_folder_btn.setMinimumWidth(130)
         self.prompts_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.prompts_folder_btn.setStyleSheet("""
-            QPushButton { background-color: #B08D00; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #8A6E00; font-size: 14px; }
-            QPushButton:hover { background-color: #CCA300; }
+            QPushButton { background-color: #C49B00; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #9E7E00; font-size: 14px; }
+            QPushButton:hover { background-color: #E7B600; }
         """)
         self.prompts_folder_btn.clicked.connect(self.open_prompts_folder)
         button_layout.addWidget(self.prompts_folder_btn)
@@ -7117,8 +7117,8 @@ class MainWindow(QMainWindow):
         self.wp_settings_btn.setMinimumWidth(130)
         self.wp_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.wp_settings_btn.setStyleSheet("""
-            QPushButton { background-color: #1E8E3E; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #186F31; font-size: 14px; }
-            QPushButton:hover { background-color: #26A44A; }
+            QPushButton { background-color: #12A34A; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #0F863D; font-size: 14px; }
+            QPushButton:hover { background-color: #18BE56; }
         """)
         self.wp_settings_btn.clicked.connect(self.open_wp_settings_dialog)
         button_layout.addWidget(self.wp_settings_btn)
@@ -7128,8 +7128,8 @@ class MainWindow(QMainWindow):
         self.gemini_api_btn.setMinimumWidth(130)
         self.gemini_api_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.gemini_api_btn.setStyleSheet("""
-            QPushButton { background-color: #006BCB; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #0056A3; font-size: 14px; }
-            QPushButton:hover { background-color: #007BE9; }
+            QPushButton { background-color: #0077E6; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #005FBA; font-size: 14px; }
+            QPushButton:hover { background-color: #1490FF; }
         """)
         self.gemini_api_btn.clicked.connect(self.open_gemini_api_dialog)
         button_layout.addWidget(self.gemini_api_btn)
@@ -7139,8 +7139,8 @@ class MainWindow(QMainWindow):
         self.website_login_btn.setMinimumWidth(130)
         self.website_login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.website_login_btn.setStyleSheet("""
-            QPushButton { background-color: #3158D6; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #2948B0; font-size: 14px; }
-            QPushButton:hover { background-color: #3B66F0; }
+            QPushButton { background-color: #3A63E8; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #2F52C1; font-size: 14px; }
+            QPushButton:hover { background-color: #4D76FF; }
         """)
         self.website_login_btn.clicked.connect(self.open_wp_settings_dialog)
         button_layout.addWidget(self.website_login_btn)
@@ -7150,8 +7150,8 @@ class MainWindow(QMainWindow):
         self.refresh_sites_btn.setMinimumWidth(110)
         self.refresh_sites_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_sites_btn.setStyleSheet("""
-            QPushButton { background-color: #6E2B93; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #5A2278; font-size: 14px; }
-            QPushButton:hover { background-color: #8333AF; }
+            QPushButton { background-color: #7E33B0; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #652990; font-size: 14px; }
+            QPushButton:hover { background-color: #9441CC; }
         """)
         self.refresh_sites_btn.clicked.connect(self.refresh_site_list)
         button_layout.addWidget(self.refresh_sites_btn)
