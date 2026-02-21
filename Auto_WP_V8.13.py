@@ -6674,7 +6674,7 @@ class MainWindow(QMainWindow):
         # 🔥 프로그램 아이콘 설정 (임베디드 방식)
         try:
             # 아이콘 파일 경로 (PyInstaller 리소스 경로 사용)
-            icon_path = get_resource_path(os.path.join("setting", "etc", "auto_wp_로고.ico"))
+            icon_path = get_resource_path(os.path.join("setting", "etc", "auto_wp.ico"))
             
             # 아이콘 파일이 있으면 로드
             if os.path.exists(icon_path):
@@ -10782,7 +10782,7 @@ def main():
             
             # 커스텀 다이얼로그 생성
             dialog = QDialog()
-            icon_path = get_resource_path(os.path.join("setting", "etc", "auto_wp_로고.ico"))
+            icon_path = get_resource_path(os.path.join("setting", "etc", "auto_wp.ico"))
             if os.path.exists(icon_path):
                 dialog.setWindowIcon(QIcon(icon_path))
             dialog.setWindowTitle("🔒 프로그램 사용 권한")
@@ -10999,7 +10999,7 @@ def main():
         app.setFont(font)
 
         # 아이콘 설정 (PyInstaller 리소스 경로 사용)
-        icon_path = get_resource_path(os.path.join("setting", "etc", "auto_wp_로고.ico"))
+        icon_path = get_resource_path(os.path.join("setting", "etc", "auto_wp.ico"))
         if os.path.exists(icon_path):
             app.setWindowIcon(QIcon(icon_path))
             print(f"✅ 애플리케이션 아이콘 설정 완료: {icon_path}")
