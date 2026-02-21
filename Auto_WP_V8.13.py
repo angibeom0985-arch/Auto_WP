@@ -1249,12 +1249,18 @@ class ContentGenerator:
             return '썸네일 (1).jpg'  # 최후 기본값
 
     def initialize_apis(self):
-        """사용 가능한 API 초기화"""
-        
+        """사용 가능한 API 초기화 (웹 모드에서는 API 초기화 생략)"""
         # API 상태 초기화
-        self.api_status = {'gemini': False, 'web': True} # Web은 항상 True로 가정(실행 시 체크)
+        self.api_status = {'gemini': False, 'web': True}  # Web은 항상 True로 가정(실행 시 체크)
 
-        # Gemini 초기화
+        current_provider = (self.current_ai_provider or "").lower()
+        use_gemini_api = (current_provider == "gemini")
+        if not use_gemini_api:
+            self.gemini_model = None
+            self.api_status['gemini'] = False
+            return
+
+        # Gemini API 모드에서만 초기화
         if self.config_manager:
             gemini_api_key = self.config_manager.data.get("api_keys", {}).get("gemini", "")
         else:
@@ -2966,9 +2972,10 @@ class ContentGenerator:
             # 콘텐츠 생성 시작 - 포스팅 상태 활성화
             self.is_posting = True
 
-            # 사용 가능한 AI 모델 확인
-            if not self.api_status.get('gemini', False):
-                self.log("🔥 사용 가능한 AI 모델이 없습니다.")
+            # 선택된 AI 모드별 사전 점검
+            ai_provider = (self.current_ai_provider or "").lower()
+            if ai_provider == "gemini" and not self.api_status.get('gemini', False):
+                self.log("🔥 API 사용 모드이지만 Gemini API를 사용할 수 없습니다.")
                 self.is_posting = False
                 return None, None, None
 
@@ -3023,8 +3030,8 @@ class ContentGenerator:
                 else:
                     user_prompt = f"{keyword}에 대한 콘텐츠를 작성해주세요."
                 
-                # AI API 호출
-                self.log(f"🤖 {step_num}단계 AI API 호출")
+                # AI 호출
+                self.log(f"🤖 {step_num}단계 AI 호출")
                 response_text = self.call_ai_api(
                     user_prompt, f"수익용 {step_num}단계", 
                     max_tokens=1500, 
