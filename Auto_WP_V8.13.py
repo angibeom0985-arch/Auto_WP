@@ -309,7 +309,7 @@ class PostingWorker(QThread):
                 return
             
             # AI 설정 가져오기
-            ai_provider = self.config_manager.data["global_settings"].get("default_ai", "gemini")
+            ai_provider = self.config_manager.data["global_settings"].get("default_ai", "web-gemini")
             posting_mode = self.config_manager.data["global_settings"].get("posting_mode", "수익용")
             
             # ContentGenerator 인스턴스 생성
@@ -333,7 +333,7 @@ class PostingWorker(QThread):
             class MockAutoWP:
                 def __init__(self, config_manager, worker_thread):
                     self.config_manager = config_manager
-                    self.current_ai_provider = config_manager.data.get("global_settings", {}).get("default_ai", "gemini")
+                    self.current_ai_provider = config_manager.data.get("global_settings", {}).get("default_ai", "web-gemini")
                     self.posting_mode = config_manager.data.get("global_settings", {}).get("posting_mode", "수익용")
                     # Worker Thread 참조 저장
                     self.worker_thread = worker_thread
@@ -1079,15 +1079,15 @@ class ContentGenerator:
         }
 
         # GUI에서 선택한 AI 모델 (기본값 먼저 설정)
-        self.current_ai_provider = "gemini"  # 기본값
+        self.current_ai_provider = "web-gemini"  # 기본값
         
         # config_manager에서 설정 가져오기
         if self.config_manager:
             try:
                 global_settings = self.config_manager.data.get("global_settings", {})
-                self.current_ai_provider = global_settings.get("default_ai", "gemini")
+                self.current_ai_provider = global_settings.get("default_ai", "web-gemini")
             except Exception:
-                self.current_ai_provider = "gemini"
+                self.current_ai_provider = "web-gemini"
             
         # auto_wp_instance에서 직접 가져오기 (우선순위 높음)
         if self.auto_wp and hasattr(self.auto_wp, 'current_ai_provider'):
@@ -4727,7 +4727,7 @@ class ConfigManager:
                 "gemini": ""
             },
             "global_settings": {
-                "default_ai": "gemini",
+                "default_ai": "web-gemini",
                 "default_wait_time": "47~50",
                 "posting_mode": "수익용",
                 "ai_model": "gemini-2.5-flash-lite",
@@ -4761,8 +4761,11 @@ class ConfigManager:
                                 default_data[key] = loaded_data[key]
                     # OpenAI는 더 이상 사용하지 않으므로 설정값을 정리
                     if default_data["global_settings"].get("default_ai") == "openai":
-                        default_data["global_settings"]["default_ai"] = "gemini"
+                        default_data["global_settings"]["default_ai"] = "web-gemini"
                         default_data["global_settings"]["ai_model"] = "gemini-2.5-flash-lite"
+                    valid_ai_defaults = {"web-gemini", "web-perplexity", "gemini"}
+                    if default_data["global_settings"].get("default_ai") not in valid_ai_defaults:
+                        default_data["global_settings"]["default_ai"] = "web-gemini"
                     return default_data
             return default_data
         except Exception as e:
@@ -5510,7 +5513,7 @@ class SiteEditDialog(QDialog):
             "username": config_manager.data["global_settings"].get("common_username", ""),
             "password": config_manager.data["global_settings"].get("common_password", ""),
             "category_id": self.category_edit.value(),
-            "ai_provider": config_manager.data["global_settings"].get("default_ai", "gemini"),
+            "ai_provider": config_manager.data["global_settings"].get("default_ai", "web-gemini"),
             "wait_time": config_manager.data["global_settings"].get("default_wait_time", "47~50"),
             "thumbnail_image": thumbnail_image,  # 썸네일 이미지 파일명
             "keyword_file": keyword_file,        # 키워드 파일명
@@ -8307,7 +8310,7 @@ class MainWindow(QMainWindow):
             check_results = []
             
             # AI 설정 체크
-            ai_provider = self.config_manager.data["global_settings"].get("default_ai", "gemini")
+            ai_provider = self.config_manager.data["global_settings"].get("default_ai", "web-gemini")
             ai_model = self.config_manager.data["global_settings"].get("ai_model", "")
             gemini_key = self.config_manager.data.get('api_keys', {}).get('gemini', '')
             
@@ -8394,7 +8397,7 @@ class MainWindow(QMainWindow):
         """모든 UI 상태 정보 업데이트"""
         try:
             # AI 모델 업데이트 - 더 정확한 표시
-            ai_provider = self.config_manager.data["global_settings"].get("default_ai", "gemini")
+            ai_provider = self.config_manager.data["global_settings"].get("default_ai", "web-gemini")
             ai_model = self.config_manager.data["global_settings"].get("ai_model", "")
             
             if ai_model:
@@ -8747,7 +8750,7 @@ class MainWindow(QMainWindow):
             "username": self.config_manager.data["global_settings"].get("common_username", ""),
             "password": self.config_manager.data["global_settings"].get("common_password", ""),
             "category_id": self.inline_category_edit.value(),
-            "ai_provider": self.config_manager.data["global_settings"].get("default_ai", "gemini"),
+            "ai_provider": self.config_manager.data["global_settings"].get("default_ai", "web-gemini"),
             "wait_time": self.config_manager.data["global_settings"].get("default_wait_time", "47~50"),
             "thumbnail_image": self.inline_thumbnail_edit.text() or f"{keyword_prefix}.jpg",
             "keyword_file": self.inline_keywords_edit.text() or f"{keyword_prefix}_keywords.txt",
@@ -9708,7 +9711,7 @@ class MainWindow(QMainWindow):
                     web_model = self.web_model_combo.currentText() if hasattr(self, 'web_model_combo') else ""
                     gui_default_ai = "web-perplexity" if "Perplexity" in web_model else "web-gemini"
             else:
-                gui_default_ai = self.config_manager.data.get("global_settings", {}).get("default_ai", "gemini")
+                gui_default_ai = self.config_manager.data.get("global_settings", {}).get("default_ai", "web-gemini")
 
             gui_values = {
                 'gemini_key': self.gemini_key_edit.text().strip(),
@@ -9812,7 +9815,7 @@ class MainWindow(QMainWindow):
         if not self.ai_model_combo:
             return
         self.ai_model_combo.clear()
-        ai_provider = self.config_manager.data.get("global_settings", {}).get("default_ai", "gemini")
+        ai_provider = self.config_manager.data.get("global_settings", {}).get("default_ai", "web-gemini")
         models = ["gemini-2.5-flash-lite", "gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-pro"]
         default_model = "gemini-2.5-flash-lite"
         
