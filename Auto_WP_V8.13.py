@@ -6621,6 +6621,10 @@ class MainWindow(QMainWindow):
                 w.setMaximumHeight(card_max_h)
                 w.setMinimumWidth(card_min_w)
 
+            # 포스팅 간격 카드는 입력 요소가 많아 최소 폭을 추가 확보
+            if hasattr(self, "interval_label") and self.interval_label:
+                self.interval_label.setMinimumWidth(card_min_w + 70)
+
             for btn in [
                 getattr(self, "start_btn", None),
                 getattr(self, "stop_btn", None),
@@ -8091,7 +8095,7 @@ class MainWindow(QMainWindow):
         container_style = self.get_card_container_style()
         card.setMaximumHeight(container_style['max_height'])
         card.setMinimumHeight(container_style['min_height'])
-        card.setMinimumWidth(container_style['min_width'])
+        card.setMinimumWidth(container_style['min_width'] + 70)
         card.setSizePolicy(*container_style['size_policy'])
         card.setStyleSheet(container_style['stylesheet'])
 
@@ -8120,7 +8124,7 @@ class MainWindow(QMainWindow):
             max_text = raw
 
         value_panel = QFrame()
-        value_panel.setFixedHeight(62)
+        value_panel.setFixedHeight(72)
         value_panel.setStyleSheet(f"""
             QFrame {{
                 background-color: {COLORS['surface_light']};
@@ -8129,8 +8133,8 @@ class MainWindow(QMainWindow):
             }}
         """)
         row = QHBoxLayout(value_panel)
-        row.setContentsMargins(14, 8, 14, 8)
-        row.setSpacing(12)
+        row.setContentsMargins(20, 10, 20, 10)
+        row.setSpacing(16)
 
         box_style = f"""
             QLineEdit {{
@@ -8148,33 +8152,33 @@ class MainWindow(QMainWindow):
 
         self.wait_time_min_edit_monitoring = QLineEdit(min_text)
         self.wait_time_min_edit_monitoring.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.wait_time_min_edit_monitoring.setFixedHeight(40)
-        self.wait_time_min_edit_monitoring.setMinimumWidth(120)
-        self.wait_time_min_edit_monitoring.setMaximumWidth(144)
+        self.wait_time_min_edit_monitoring.setFixedHeight(44)
+        self.wait_time_min_edit_monitoring.setMinimumWidth(130)
+        self.wait_time_min_edit_monitoring.setMaximumWidth(170)
         self.wait_time_min_edit_monitoring.setStyleSheet(box_style)
         self.wait_time_min_edit_monitoring.textChanged.connect(self.on_interval_changed)
         row.addStretch(1)
         row.addWidget(self.wait_time_min_edit_monitoring, 0, Qt.AlignmentFlag.AlignVCenter)
 
         tilde = QLabel("~")
-        tilde.setStyleSheet(f"color: {COLORS['text']}; font-size: 16px; font-weight: bold;")
+        tilde.setStyleSheet(f"color: {COLORS['text']}; font-size: 18px; font-weight: bold;")
         tilde.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tilde.setFixedWidth(24)
+        tilde.setFixedWidth(28)
         row.addWidget(tilde, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.wait_time_max_edit_monitoring = QLineEdit(max_text)
         self.wait_time_max_edit_monitoring.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.wait_time_max_edit_monitoring.setFixedHeight(40)
-        self.wait_time_max_edit_monitoring.setMinimumWidth(120)
-        self.wait_time_max_edit_monitoring.setMaximumWidth(144)
+        self.wait_time_max_edit_monitoring.setFixedHeight(44)
+        self.wait_time_max_edit_monitoring.setMinimumWidth(130)
+        self.wait_time_max_edit_monitoring.setMaximumWidth(170)
         self.wait_time_max_edit_monitoring.setStyleSheet(box_style)
         self.wait_time_max_edit_monitoring.textChanged.connect(self.on_interval_changed)
         row.addWidget(self.wait_time_max_edit_monitoring, 0, Qt.AlignmentFlag.AlignVCenter)
 
         unit = QLabel("분")
-        unit.setStyleSheet(f"color: {COLORS['text']}; font-size: 13px; font-weight: bold;")
+        unit.setStyleSheet(f"color: {COLORS['text']}; font-size: 14px; font-weight: bold;")
         unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        unit.setFixedWidth(30)
+        unit.setFixedWidth(34)
         row.addWidget(unit, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addStretch(1)
 
