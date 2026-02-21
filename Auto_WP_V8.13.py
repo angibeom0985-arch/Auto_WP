@@ -18,6 +18,13 @@ from pathlib import Path
 import shutil
 import platform
 
+# Windows에서 Qt DPI 컨텍스트 재설정 경고(SetProcessDpiAwarenessContext) 방지
+if os.name == "nt":
+    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "0")
+    os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "0")
+    os.environ.setdefault("QT_QPA_PLATFORM", "windows:dpiawareness=1")
+    os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.window=false")
+
 # 라이선스 및 Selenium 관련 라이브러리 추가
 from license_check import LicenseManager
 try:
@@ -444,8 +451,10 @@ class PostingWorker(QThread):
         """포스팅 완료 후 해당 사이트의 키워드가 300개 미만이면 알림"""
         try:
             site_name = site.get('name', 'Unknown')
-            keyword_file = site.get('keyword_file', '')
-            
+            keyword_file_value = site.get('keyword_file', '')
+            if not isinstance(keyword_file_value, str):
+                return
+            keyword_file = keyword_file_value.strip()
             if not keyword_file:
                 return
             
@@ -474,7 +483,10 @@ class PostingWorker(QThread):
     def move_keyword_to_used(self, keyword, site):
         """사용한 키워드를 used 파일로 이동 - 'used_' 접두사 붙인 파일로 이동"""
         try:
-            keyword_file = site.get('keyword_file')
+            keyword_file_value = site.get('keyword_file')
+            if not isinstance(keyword_file_value, str):
+                return False
+            keyword_file = keyword_file_value.strip()
             if not keyword_file:
                 return False
                 
@@ -620,8 +632,9 @@ def try_import_gemini():
         print(f"❌ google-generativeai 라이브러리 예상치 못한 오류: {e}")
         return False, None
 
-# Gemini API 동적 로드
-GEMINI_AVAILABLE, genai = try_import_gemini()
+# Gemini API 지연 로드 (시작 속도 개선)
+GEMINI_AVAILABLE = False
+genai = None
 
 # WordPress API
 try:
@@ -1115,6 +1128,7 @@ class ContentGenerator:
                     _ = self.driver.current_url
                     return True
                 except Exception:
+                    self.log("🧪 [DEBUG] 기존 driver 접근 실패 -> driver=None 재설정")
                     self.driver = None
 
             self.log("🌐 브라우저 실행 준비 중...")
@@ -1128,10 +1142,16 @@ class ContentGenerator:
             
             # 공통 설정
             options.add_argument("--window-size=1280,900")
+            options.add_argument("--start-maximized")
             options.add_argument("--disable-gpu")
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             options.add_argument("--disable-popup-blocking")
+            # 구글 로그인 세션 유지 (한 번 로그인 시 재사용)
+            chrome_profile_dir = os.path.join(get_base_path(), "setting", "chrome_profile")
+            os.makedirs(chrome_profile_dir, exist_ok=True)
+            options.add_argument(f"--user-data-dir={chrome_profile_dir}")
+            options.add_argument("--profile-directory=Default")
             
             # 일반 Selenium일 때만 추가 우회 설정 (uc는 자동 처리됨)
             if uc is None:
@@ -1145,10 +1165,14 @@ class ContentGenerator:
                     # [Fix] WinError 183 및 프로세스 충돌 방지를 위한 사전 정리
                     try:
                         import subprocess
-                        # 기존 프로세스 강제 종료
-                        subprocess.run(['taskkill', '/f', '/im', 'chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        subprocess.run(['taskkill', '/f', '/im', 'undetected_chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        time.sleep(1)
+                        force_cleanup = os.environ.get("AUTO_WP_FORCE_DRIVER_CLEANUP", "0") == "1"
+                        if force_cleanup:
+                            self.log("🧪 [DEBUG] AUTO_WP_FORCE_DRIVER_CLEANUP=1, chromedriver 강제 종료 수행")
+                            subprocess.run(['taskkill', '/f', '/im', 'chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            subprocess.run(['taskkill', '/f', '/im', 'undetected_chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            time.sleep(1)
+                        else:
+                            self.log("🧪 [DEBUG] chromedriver 강제 종료 생략 (로그인 세션 보호)")
                         
                         # 충돌나는 파일 삭제
                         uc_dir = os.path.join(os.environ.get('APPDATA', ''), 'undetected_chromedriver')
@@ -1163,10 +1187,15 @@ class ContentGenerator:
                                 except:
                                     pass
                     except Exception as cleanup_error:
-                        print(f"⚠️ 정리 작업 중 오류 (무시됨): {cleanup_error}")
+                        self.log(f"⚠️ 정리 작업 중 오류 (무시됨): {cleanup_error}")
 
-                    # [Fix] "Binary Location Must be a String" 오류 해결을 위해 version_main 지정
-                    self.driver = uc.Chrome(options=options, version_main=131)
+                    chrome_major = self._detect_chrome_major_version()
+                    if chrome_major is not None:
+                        self.log(f"🔎 감지된 Chrome 메이저 버전: {chrome_major}")
+                        self.driver = uc.Chrome(options=options, version_main=chrome_major)
+                    else:
+                        self.log("⚠️ Chrome 버전 감지 실패, 자동 모드로 실행합니다.")
+                        self.driver = uc.Chrome(options=options)
                 else:
                     if ChromeDriverManager is not None and Service is not None:
                         try:
@@ -1182,7 +1211,10 @@ class ContentGenerator:
                     assert service is not None
                     self.driver = webdriver.Chrome(service=service, options=options)
                 
-                # self.driver.maximize_window() # 화면 가림 방지를 위해 최대화 안함
+                try:
+                    self.driver.maximize_window()
+                except Exception:
+                    pass
             except Exception as e:
                 self.log(f"❌ 브라우저 시작 오류: {str(e)}")
                 raise
@@ -1193,6 +1225,56 @@ class ContentGenerator:
         except Exception as e:
             self.log(f"❌ 브라우저 실행 실패: {str(e)}")
             return False
+
+    def _detect_chrome_major_version(self) -> Optional[int]:
+        """설치된 Chrome 메이저 버전 감지"""
+        try:
+            reg_queries = [
+                r'reg query "HKCU\Software\Google\Chrome\BLBeacon" /v version',
+                r'reg query "HKLM\Software\Google\Chrome\BLBeacon" /v version',
+                r'reg query "HKLM\Software\WOW6432Node\Google\Chrome\BLBeacon" /v version',
+            ]
+            for cmd in reg_queries:
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                        check=False,
+                    )
+                    output = f"{result.stdout}\n{result.stderr}"
+                    match = re.search(r"(\d+)\.(\d+)\.(\d+)\.(\d+)", output)
+                    if match:
+                        return int(match.group(1))
+                except Exception:
+                    continue
+
+            chrome_paths = [
+                os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "Google", "Chrome", "Application", "chrome.exe"),
+                os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), "Google", "Chrome", "Application", "chrome.exe"),
+            ]
+            for chrome_path in chrome_paths:
+                if not os.path.exists(chrome_path):
+                    continue
+                try:
+                    result = subprocess.run(
+                        [chrome_path, "--version"],
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                        check=False,
+                    )
+                    output = f"{result.stdout}\n{result.stderr}"
+                    match = re.search(r"(\d+)\.(\d+)\.(\d+)\.(\d+)", output)
+                    if match:
+                        return int(match.group(1))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
 
     def should_stop_posting(self):
         """포스팅 중지 여부를 확인하는 헬퍼 메서드"""
@@ -1250,6 +1332,7 @@ class ContentGenerator:
 
     def initialize_apis(self):
         """사용 가능한 API 초기화 (웹 모드에서는 API 초기화 생략)"""
+        global GEMINI_AVAILABLE, genai
         # API 상태 초기화
         self.api_status = {'gemini': False, 'web': True}  # Web은 항상 True로 가정(실행 시 체크)
 
@@ -1265,6 +1348,10 @@ class ContentGenerator:
             gemini_api_key = self.config_manager.data.get("api_keys", {}).get("gemini", "")
         else:
             gemini_api_key = self.config_data.get('gemini_api_key', '')
+
+        # API 모드에서만 라이브러리 로드 (웹 모드 시작 속도 개선)
+        if not GEMINI_AVAILABLE or genai is None:
+            GEMINI_AVAILABLE, genai = try_import_gemini()
 
         if GEMINI_AVAILABLE and genai is not None and gemini_api_key and gemini_api_key not in ["your_gemini_api_key", ""]:
             try:
@@ -1294,15 +1381,16 @@ class ContentGenerator:
         
         ai_provider = self.current_ai_provider.lower()
         full_prompt = f"{system_content}\n\n{prompt}" if system_content else prompt
+        response_text = None
 
         # Web AI 모드
         if ai_provider.startswith("web"):
-            return self._generate_content_with_web(full_prompt, ai_provider)
+            response_text = self._generate_content_with_web(full_prompt, ai_provider)
         
         # Gemini API 모드
         elif "gemini" in ai_provider:
             if self.api_status.get('gemini') and self.gemini_model:
-                return self.call_gemini_api(prompt, step_name, max_tokens, temperature, system_content)
+                response_text = self.call_gemini_api(prompt, step_name, max_tokens, temperature, system_content)
             else:
                 self.log("❌ Gemini API 사용 불가 (키 설정 확인)")
                 return None
@@ -1310,6 +1398,46 @@ class ContentGenerator:
         else:
             self.log(f"❌ 알 수 없는 AI 제공자: {ai_provider}")
             return None
+
+        if response_text and str(response_text).strip():
+            self._save_ai_result_file(step_name, full_prompt, str(response_text), ai_provider)
+        return response_text
+
+    def _sanitize_filename_part(self, text):
+        if not text:
+            return "unknown"
+        sanitized = re.sub(r'[\\/:*?"<>|]+', "_", str(text)).strip()
+        sanitized = re.sub(r"\s+", "_", sanitized)
+        return sanitized[:80] if sanitized else "unknown"
+
+    def _save_ai_result_file(self, step_name, prompt_text, response_text, ai_provider):
+        """AI 응답을 result 폴더 txt로 저장"""
+        try:
+            result_dir = os.path.join(get_base_path(), "result")
+            os.makedirs(result_dir, exist_ok=True)
+
+            keyword = self._sanitize_filename_part(getattr(self, "current_keyword", "keyword"))
+            date_part = datetime.now().strftime("%Y-%m-%d")
+            time_part = datetime.now().strftime("%H-%M")
+            filename = f"{date_part}, {time_part}, {keyword}.txt"
+            file_path = os.path.join(result_dir, filename)
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(response_text)
+
+            meta_filename = f"{date_part}, {time_part}, {keyword}, meta.txt"
+            meta_path = os.path.join(result_dir, meta_filename)
+            with open(meta_path, "w", encoding="utf-8") as f:
+                f.write(f"[STEP] {step_name}\n")
+                f.write(f"[PROVIDER] {ai_provider}\n")
+                f.write(f"[SITE] {self.current_site.get('name', '') if self.current_site else ''}\n")
+                f.write(f"[KEYWORD] {getattr(self, 'current_keyword', '')}\n")
+                f.write("\n[PROMPT]\n")
+                f.write(prompt_text or "")
+
+            self.log(f"🗂️ AI 응답 저장 완료: {file_path}")
+        except Exception as e:
+            self.log(f"⚠️ AI 응답 파일 저장 실패: {e}")
 
     def _generate_content_with_web(self, prompt, provider):
         """Web AI를 사용하여 콘텐츠 생성"""
@@ -1354,14 +1482,13 @@ class ContentGenerator:
         """Gemini Web 자동화"""
         if not self._ensure_gemini_tab():
             return None
-        
-        # 로그인 확인 (간단 체크)
-        if not self._find_gemini_editor(timeout=5):
-            self.log("🔐 Gemini 로그인 필요 (수동 로그인 대기 60초)")
-            # 로그인 버튼 클릭 시도 등은 생략하고 사용자에게 맡김
-            time.sleep(60) 
-            if not self._find_gemini_editor(timeout=5):
-                return None
+
+        # 로그인 버튼(로그인/Sign in) 유무 기준으로 로그인 상태 판단
+        if not self._ensure_gemini_logged_in(wait_seconds=180):
+            return None
+        if not self._find_gemini_editor(timeout=15):
+            self.log("❌ Gemini 입력창을 찾지 못했습니다.")
+            return None
 
         # 입력 및 전송
         if not self._submit_gemini_prompt(prompt):
@@ -1370,32 +1497,206 @@ class ContentGenerator:
         # 응답 대기
         return self._wait_for_gemini_response()
 
-    def _find_gemini_editor(self, timeout=5):
+    def _find_gemini_editor(self, timeout: float = 5.0):
         """Gemini 에디터 찾기"""
         if not self.driver or By is None:
             return None
-        selectors = ["div.ql-editor.textarea", "div[contenteditable='true']", "rich-textarea div.ql-editor"]
+        selectors = [
+            "div.ql-editor.textarea.new-input-ui[contenteditable='true'][aria-label='Gemini 프롬프트 입력']",
+            "div.ql-editor.textarea[contenteditable='true'][aria-label='Gemini 프롬프트 입력']",
+            "div.ql-editor.textarea[contenteditable='true']",
+            "div[contenteditable='true'][role='textbox']",
+        ]
         end_time = time.time() + timeout
         while time.time() < end_time:
             for sel in selectors:
                 try:
                     elem = self.driver.find_element(By.CSS_SELECTOR, sel)
-                    if elem.is_displayed(): return elem
-                except: pass
+                    if elem.is_displayed():
+                        return elem
+                except Exception:
+                    pass
             time.sleep(0.5)
         return None
+
+    def _has_gemini_login_button(self, timeout: float = 3.0):
+        """Gemini 페이지의 로그인 버튼 존재 여부 확인"""
+        if not self.driver or By is None:
+            return False
+        selectors = [
+            "a[aria-label='로그인'][href*='accounts.google.com/ServiceLogin']",
+            "a[aria-label='Sign in'][href*='accounts.google.com/ServiceLogin']",
+            "a.gb_Va[href*='accounts.google.com/ServiceLogin']",
+            "div.boqOnegoogleliteOgbOneGoogleBar a[href*='accounts.google.com/ServiceLogin']",
+        ]
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            for sel in selectors:
+                try:
+                    elems = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                    for elem in elems:
+                        if elem.is_displayed():
+                            return True
+                except Exception:
+                    pass
+            time.sleep(0.5)
+        return False
+
+    def _click_gemini_login_button(self, timeout=5):
+        """Gemini 상단 로그인 버튼 클릭"""
+        if not self.driver or By is None:
+            return False
+        selectors = [
+            "a[aria-label='로그인'][href*='accounts.google.com/ServiceLogin']",
+            "a[aria-label='Sign in'][href*='accounts.google.com/ServiceLogin']",
+            "a.gb_Va[href*='accounts.google.com/ServiceLogin']",
+            "div.boqOnegoogleliteOgbOneGoogleBar a[href*='accounts.google.com/ServiceLogin']",
+        ]
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            for sel in selectors:
+                try:
+                    elems = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                    for elem in elems:
+                        if elem.is_displayed():
+                            try:
+                                elem.click()
+                            except Exception:
+                                self.driver.execute_script("arguments[0].click();", elem)
+                            return True
+                except Exception:
+                    pass
+            time.sleep(0.4)
+        return False
+
+    def _get_google_login_credentials(self):
+        """Google 로그인 정보 조회 (환경변수 우선)"""
+        email = os.environ.get("AUTO_WP_GOOGLE_EMAIL", "").strip()
+        password = os.environ.get("AUTO_WP_GOOGLE_PASSWORD", "").strip()
+
+        if (not email or not password) and self.config_manager:
+            global_settings = self.config_manager.data.get("global_settings", {})
+            if not email:
+                email = str(global_settings.get("google_email", "")).strip()
+            if not password:
+                password = str(global_settings.get("google_password", "")).strip()
+        return email, password
+
+    def _auto_login_google(self, email, password, timeout=25):
+        """Google 로그인 폼 자동 입력 및 제출"""
+        if not self.driver or By is None:
+            return False
+        try:
+            end_time = time.time() + timeout
+            email_input = None
+            while time.time() < end_time:
+                try:
+                    elem = self.driver.find_element(By.CSS_SELECTOR, "input#identifierId")
+                    if elem.is_displayed():
+                        email_input = elem
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.4)
+
+            if email_input is None:
+                return False
+
+            email_input.click()
+            email_input.clear()
+            email_input.send_keys(email)
+
+            next_btn = self.driver.find_element(By.XPATH, "//button[.//span[normalize-space()='다음' or normalize-space()='Next']]")
+            next_btn.click()
+
+            pass_end = time.time() + timeout
+            pass_input = None
+            while time.time() < pass_end:
+                try:
+                    elem = self.driver.find_element(By.CSS_SELECTOR, "input[name='Passwd']")
+                    if elem.is_displayed():
+                        pass_input = elem
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.4)
+
+            if pass_input is None:
+                return False
+
+            pass_input.click()
+            pass_input.clear()
+            pass_input.send_keys(password)
+
+            next_btn2 = self.driver.find_element(By.XPATH, "//button[.//span[normalize-space()='다음' or normalize-space()='Next']]")
+            next_btn2.click()
+            time.sleep(2)
+            return True
+        except Exception as e:
+            self.log(f"⚠️ Google 자동 로그인 처리 오류: {e}")
+            return False
+
+    def _ensure_gemini_logged_in(self, wait_seconds=180):
+        """로그인 버튼 기준으로 Gemini 로그인 상태 확인/대기 (2차 인증 대기 포함)"""
+        if self._has_gemini_login_button(timeout=3):
+            self.gemini_logged_in = False
+            self.log("🔐 Gemini 로그인이 필요합니다.")
+            if self._click_gemini_login_button(timeout=5):
+                self.log("➡️ Gemini 로그인 버튼 클릭 완료")
+
+            email, password = self._get_google_login_credentials()
+            if email and password:
+                if self._auto_login_google(email, password):
+                    self.log("✅ Google 자동 로그인 제출 완료")
+                else:
+                    self.log("⚠️ 자동 로그인 실패, 수동 로그인으로 계속 진행합니다.")
+            else:
+                self.log("⚠️ Google 계정 정보가 없어 수동 로그인으로 진행합니다.")
+                self.log("ℹ️ 환경변수 AUTO_WP_GOOGLE_EMAIL / AUTO_WP_GOOGLE_PASSWORD 설정 시 자동 입력됩니다.")
+
+            # 2차 인증(OTP/앱승인 등) 처리 시간 확보
+            two_factor_wait = max(wait_seconds, 300)
+            self.log(f"⏳ 2차 인증이 필요한 경우 브라우저에서 완료해주세요. 최대 {two_factor_wait}초 대기합니다.")
+            end_time = time.time() + two_factor_wait
+            while time.time() < end_time:
+                # 프롬프트 입력창이 보이면 바로 로그인 완료로 판단
+                if self._find_gemini_editor(timeout=0.2):
+                    self.gemini_logged_in = True
+                    self.log("✅ Gemini 로그인 확인 완료 (프롬프트 입력창 감지)")
+                    return True
+                # 로그인 버튼이 사라져도 페이지 전환 중일 수 있으므로 계속 대기
+                _ = self._has_gemini_login_button(timeout=0.2)
+                time.sleep(0.5)
+            self.log("❌ Gemini 로그인/2차 인증 대기 시간이 초과되었습니다.")
+            return False
+
+        # 이미 로그인된 경우에도 입력창이 보여야 실제 진행
+        ready_end = time.time() + max(30, wait_seconds)
+        while time.time() < ready_end:
+            if self._find_gemini_editor(timeout=0.2):
+                self.gemini_logged_in = True
+                return True
+            time.sleep(0.5)
+        self.log("❌ Gemini 프롬프트 입력창을 찾지 못했습니다.")
+        return False
 
     def _submit_gemini_prompt(self, prompt):
         """Gemini 프롬프트 전송"""
         try:
             if not self.driver or Keys is None:
                 return False
-            editor = self._find_gemini_editor(timeout=10)
-            if not editor: return False
-            
-            # 텍스트 입력 (JS로 안전하게)
-            self.driver.execute_script("arguments[0].textContent = arguments[1];", editor, prompt)
-            editor.send_keys(".") # 트리거용
+            editor = self._find_gemini_editor(timeout=15)
+            if not editor:
+                return False
+
+            # 사용자 지정 선택자 기준: 입력창 클릭 후 프롬프트 입력
+            try:
+                editor.click()
+            except Exception:
+                self.driver.execute_script("arguments[0].click();", editor)
+
+            self.driver.execute_script("arguments[0].innerHTML = '<p><br></p>';", editor)
+            editor.send_keys(prompt)
             editor.send_keys(Keys.BACKSPACE)
             time.sleep(1)
             editor.send_keys(Keys.ENTER)
@@ -1409,27 +1710,46 @@ class ContentGenerator:
         try:
             if not self.driver or By is None:
                 return None
-            time.sleep(5) # 초기 대기
-            # 응답 생성 완료 대기 (로딩 인디케이터가 사라질 때까지 등)
-            # 여기서는 간단히 텍스트가 더 이상 변하지 않을 때까지 대기
-            last_text = ""
-            stable_count = 0
-            
-            for _ in range(timeout // 2):
+            time.sleep(4)
+
+            # 답변 완료 대기 후 복사 버튼 클릭으로 응답 가져오기
+            copy_selector = "copy-button button[data-test-id='copy-button']"
+            end_time = time.time() + timeout
+            while time.time() < end_time:
                 try:
-                    responses = self.driver.find_elements(By.CSS_SELECTOR, "div.markdown")
-                    if responses:
-                        current_text = responses[-1].text.strip()
-                        if current_text and current_text == last_text:
-                            stable_count += 1
-                            if stable_count >= 3: # 3번 연속 같으면 완료로 간주
-                                return current_text
-                        else:
-                            last_text = current_text
-                            stable_count = 0
-                except: pass
-                time.sleep(2)
-            return last_text
+                    buttons = self.driver.find_elements(By.CSS_SELECTOR, copy_selector)
+                    visible_btns = [b for b in buttons if b.is_displayed() and b.is_enabled()]
+                    if visible_btns:
+                        target_btn = visible_btns[-1]
+                        try:
+                            target_btn.click()
+                        except Exception:
+                            self.driver.execute_script("arguments[0].click();", target_btn)
+                        time.sleep(0.5)
+
+                        if pyperclip is not None:
+                            copied = (pyperclip.paste() or "").strip()
+                            if copied:
+                                return copied
+
+                        # 클립보드 미사용/실패 시 DOM 텍스트 폴백
+                        responses = self.driver.find_elements(By.CSS_SELECTOR, "div.markdown")
+                        if responses:
+                            fallback_text = responses[-1].text.strip()
+                            if fallback_text:
+                                return fallback_text
+                except Exception:
+                    pass
+                time.sleep(1)
+
+            # 마지막 폴백
+            try:
+                responses = self.driver.find_elements(By.CSS_SELECTOR, "div.markdown")
+                if responses:
+                    return responses[-1].text.strip()
+            except Exception:
+                pass
+            return None
         except Exception:
             return None
 
@@ -2492,8 +2812,36 @@ class ContentGenerator:
             return content
 
     def generate_approval_content(self, keyword):
-        """승인용 콘텐츠 생성 - approval1.txt, approval2.txt, approval3.txt만 사용"""
+        """승인용 콘텐츠 생성 - approval.txt 우선, 없으면 approval1~3 폴백"""
         try:
+            single_approval_path = os.path.join(get_base_path(), "setting", "prompts", "approval.txt")
+            if os.path.exists(single_approval_path):
+                try:
+                    with open(single_approval_path, 'r', encoding='utf-8-sig') as f:
+                        prompt_template = f.read()
+                except UnicodeDecodeError:
+                    with open(single_approval_path, 'r', encoding='utf-8') as f:
+                        prompt_template = f.read()
+
+                prompt = prompt_template.replace("{keyword}", keyword)
+                self.log("📝 승인용 approval.txt 프롬프트 적용")
+                response_text = self.call_ai_api(prompt, "승인용 approval", max_tokens=2000, temperature=0.7)
+                if not response_text or not response_text.strip():
+                    self.log("❌ 승인용 approval.txt 응답 없음")
+                    return None, None, None
+
+                response_text = self.validate_ai_output(response_text.strip(), keyword)
+                title = self.extract_approval_title(response_text, keyword)
+                full_content = self.final_approval_validation(response_text, keyword)
+
+                if not title:
+                    title = self.generate_approval_fallback_title(keyword) or f"{keyword}: 활용법, 주요 특징, 실무 팁"
+                    self.log(f"📝 자동 생성된 제목: {title}")
+
+                thumbnail_path = self.create_thumbnail(title, keyword)
+                self.log(f"📝 승인용 본문 생성 완료 - approval.txt ({len(full_content)}자)")
+                return title, full_content, thumbnail_path
+
             # 승인용 프롬프트 파일 로드 (3개만)
             approval_files = [
                 "approval1.txt", "approval2.txt", "approval3.txt"
@@ -2971,6 +3319,8 @@ class ContentGenerator:
         try:
             # 콘텐츠 생성 시작 - 포스팅 상태 활성화
             self.is_posting = True
+            self.current_keyword = keyword
+            self.current_content_type = content_type
 
             # 선택된 AI 모드별 사전 점검
             ai_provider = (self.current_ai_provider or "").lower()
@@ -5648,16 +5998,16 @@ class SiteWidget(QWidget):
         keyword_btn.clicked.connect(lambda: self.keywords_requested.emit(self.site_data["id"]))
         keyword_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: #C49B00;
+                background-color: #FFC400;
                 color: white;
-                border: 1px solid #9E7E00;
+                border: 1px solid #CC9D00;
                 border-radius: 6px;
                 padding: 5px 15px;
                 font-weight: 800;
                 font-size: 10pt;
             }}
             QPushButton:hover {{
-                background-color: #E7B600;
+                background-color: #FFD54F;
             }}
         """)
         keyword_row.addWidget(keyword_btn)
@@ -5978,6 +6328,13 @@ class MainWindow(QMainWindow):
 
     # 시그널 정의
     update_buttons_signal = pyqtSignal()  # 버튼 상태 업데이트용
+    AI_PROVIDER_WEB_GEMINI = "web-gemini"
+    AI_PROVIDER_API_GEMINI = "gemini"
+    TYPO_BASE_PT = 10
+    TYPO_LABEL_PT = 10
+    TYPO_BUTTON_PT = 10
+    TYPO_INPUT_PT = 10
+    TYPO_TITLE_PT = 11
 
     def __init__(self):
         super().__init__()
@@ -5993,6 +6350,7 @@ class MainWindow(QMainWindow):
         self.is_paused = False
         self.posting_thread: Optional[QThread] = None
         self.posting_worker: Optional[PostingWorker] = None  # 포스팅 워커 추가
+        self.website_login_generator = None
         self.remaining_keywords = []
         self.current_keyword = ""
         self.config_data = {}  # 설정 데이터 초기화
@@ -6008,6 +6366,7 @@ class MainWindow(QMainWindow):
         
         # 현재 포스팅 중인 사이트 추적
         self.current_posting_site = None
+        self._last_applied_wait_time: Optional[str] = None
 
         # 모니터링/설정 UI 참조 초기화
         self.ai_model_combo: Optional[QComboBox] = None
@@ -6022,6 +6381,7 @@ class MainWindow(QMainWindow):
         self.progress_action_container: Optional[QWidget] = None
 
         self.setup_ui()
+        self.apply_typography_system()
         
         try:
             self.load_sites()
@@ -6033,6 +6393,54 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(650, self.update_monitoring_settings)
 
         # 시그널 연결
+
+    def _strip_font_size_rules(self, css_text):
+        """스타일시트 내 font-size 선언 제거 (전역 타이포그래피 통일용)"""
+        if not css_text:
+            return css_text
+        cleaned = re.sub(r"font-size\s*:\s*\d+(\.\d+)?\s*(px|pt)\s*;?", "", css_text, flags=re.IGNORECASE)
+        cleaned = re.sub(r";\s*;", ";", cleaned)
+        return cleaned
+
+    def apply_typography_system(self):
+        """UI 전체 폰트 크기/높이 정규화"""
+        try:
+            default_font = QFont("맑은 고딕", self.TYPO_BASE_PT)
+            self.setFont(default_font)
+
+            all_widgets = [self] + self.findChildren(QWidget)
+            for widget in all_widgets:
+                try:
+                    css = widget.styleSheet()
+                    if css:
+                        widget.setStyleSheet(self._strip_font_size_rules(css))
+                except Exception:
+                    pass
+
+                try:
+                    if isinstance(widget, QLabel):
+                        widget.setFont(QFont("맑은 고딕", self.TYPO_LABEL_PT))
+                    elif isinstance(widget, QPushButton):
+                        widget.setFont(QFont("맑은 고딕", self.TYPO_BUTTON_PT, QFont.Weight.Bold))
+                        widget.setMinimumHeight(max(widget.minimumHeight(), 38))
+                    elif isinstance(widget, (QLineEdit, QComboBox, QSpinBox)):
+                        widget.setFont(QFont("맑은 고딕", self.TYPO_INPUT_PT))
+                        widget.setMinimumHeight(max(widget.minimumHeight(), 36))
+                    elif isinstance(widget, (QTextEdit,)):
+                        widget.setFont(QFont("맑은 고딕", self.TYPO_INPUT_PT))
+                    elif isinstance(widget, QGroupBox):
+                        widget.setFont(QFont("맑은 고딕", self.TYPO_TITLE_PT, QFont.Weight.Bold))
+                except Exception:
+                    pass
+
+            self.setStyleSheet(self.styleSheet() + """
+                QWidget { font-size: 10pt; }
+                QPushButton { min-height: 38px; padding-top: 8px; padding-bottom: 8px; }
+                QLineEdit, QComboBox, QSpinBox { min-height: 36px; padding-top: 6px; padding-bottom: 6px; }
+                QTabBar::tab { padding-top: 10px; padding-bottom: 10px; }
+            """)
+        except Exception as e:
+            print(f"타이포그래피 적용 오류: {e}")
 
     # ==================== 중앙 집중식 스타일 관리 ====================
 
@@ -6051,6 +6459,15 @@ class MainWindow(QMainWindow):
         if mode in ["승인형", "승인"]:
             return "승인용"
         return mode if mode in ["승인용", "수익용"] else "수익용"
+
+    def _get_current_ai_provider(self) -> str:
+        return self.config_manager.data.get("global_settings", {}).get("default_ai", self.AI_PROVIDER_WEB_GEMINI)
+
+    def _is_api_mode(self) -> bool:
+        return self._get_current_ai_provider() == self.AI_PROVIDER_API_GEMINI
+
+    def _is_web_mode(self) -> bool:
+        return self._get_current_ai_provider().startswith("web")
 
     def on_theme_mode_changed(self, theme_name):
         """라이트/다크 테마 전환"""
@@ -6109,16 +6526,16 @@ class MainWindow(QMainWindow):
         return {
             'max_height': 152,
             'min_height': 152,
-            'min_width': 180,
+            'min_width': 300,
             'size_policy': (QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed),
-            'contents_margins': (16, 16, 16, 16),
-            'spacing': 12,
+            'contents_margins': (18, 18, 18, 18),
+            'spacing': 14,
             'stylesheet': f"""
                 QWidget {{
                     background-color: {COLORS['surface_dark']};
                     border: 2px solid {COLORS['border']};
                     border-radius: 12px;
-                    margin: 5px;
+                    margin: 10px;
                 }}
                 QWidget:hover {{
                     border-color: {COLORS['primary']};
@@ -6173,7 +6590,7 @@ class MainWindow(QMainWindow):
         """카드 콤보박스 공통 스타일 반환"""
         return {
             'fixed_height': 60,
-            'min_width': 320,
+            'min_width': 460,
             'size_policy': (QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed),
             'stylesheet': f"""
                 QComboBox {{
@@ -6612,7 +7029,7 @@ class MainWindow(QMainWindow):
 
             card_min_h = int(132 * scale)
             card_max_h = int(164 * scale)
-            card_min_w = int(350 * scale)
+            card_min_w = int(460 * scale)
             ctl_h = int(50 * scale)
             ctl_font = max(11, int(14 * scale))
 
@@ -6633,7 +7050,7 @@ class MainWindow(QMainWindow):
 
             # 포스팅 간격 카드는 입력 요소가 많아 최소 폭을 추가 확보
             if hasattr(self, "interval_label") and self.interval_label:
-                self.interval_label.setMinimumWidth(card_min_w + 70)
+                self.interval_label.setMinimumWidth(card_min_w + 120)
 
             for btn in [
                 getattr(self, "start_btn", None),
@@ -7126,8 +7543,8 @@ class MainWindow(QMainWindow):
         self.add_site_btn.setMinimumWidth(130)
         self.add_site_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_site_btn.setStyleSheet("""
-            QPushButton { background-color: #F00014; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #C5001A; font-size: 14px; }
-            QPushButton:hover { background-color: #FF1E30; }
+            QPushButton { background-color: #FF0033; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #C70028; font-size: 14px; }
+            QPushButton:hover { background-color: #FF335C; }
         """)
         self.add_site_btn.clicked.connect(self.toggle_add_site_form)
         button_layout.addWidget(self.add_site_btn)
@@ -7137,8 +7554,8 @@ class MainWindow(QMainWindow):
         self.keywords_folder_btn.setMinimumWidth(130)
         self.keywords_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.keywords_folder_btn.setStyleSheet("""
-            QPushButton { background-color: #E38700; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #B96D00; font-size: 14px; }
-            QPushButton:hover { background-color: #FFA000; }
+            QPushButton { background-color: #FF7A00; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #CC6200; font-size: 14px; }
+            QPushButton:hover { background-color: #FF9633; }
         """)
         self.keywords_folder_btn.clicked.connect(self.open_keywords_folder)
         button_layout.addWidget(self.keywords_folder_btn)
@@ -7148,8 +7565,8 @@ class MainWindow(QMainWindow):
         self.prompts_folder_btn.setMinimumWidth(130)
         self.prompts_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.prompts_folder_btn.setStyleSheet("""
-            QPushButton { background-color: #C49B00; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #9E7E00; font-size: 14px; }
-            QPushButton:hover { background-color: #E7B600; }
+            QPushButton { background-color: #FFC400; color: white; font-weight: 900; padding: 10px 15px; border-radius: 8px; border: 1px solid #CC9D00; font-size: 14px; }
+            QPushButton:hover { background-color: #FFD54F; }
         """)
         self.prompts_folder_btn.clicked.connect(self.open_prompts_folder)
         button_layout.addWidget(self.prompts_folder_btn)
@@ -7159,8 +7576,8 @@ class MainWindow(QMainWindow):
         self.wp_settings_btn.setMinimumWidth(130)
         self.wp_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.wp_settings_btn.setStyleSheet("""
-            QPushButton { background-color: #12A34A; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #0F863D; font-size: 14px; }
-            QPushButton:hover { background-color: #18BE56; }
+            QPushButton { background-color: #00C853; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #00A845; font-size: 14px; }
+            QPushButton:hover { background-color: #1DE977; }
         """)
         self.wp_settings_btn.clicked.connect(self.open_wp_settings_dialog)
         button_layout.addWidget(self.wp_settings_btn)
@@ -7170,8 +7587,8 @@ class MainWindow(QMainWindow):
         self.gemini_api_btn.setMinimumWidth(130)
         self.gemini_api_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.gemini_api_btn.setStyleSheet("""
-            QPushButton { background-color: #0077E6; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #005FBA; font-size: 14px; }
-            QPushButton:hover { background-color: #1490FF; }
+            QPushButton { background-color: #0091FF; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #0073CC; font-size: 14px; }
+            QPushButton:hover { background-color: #33A7FF; }
         """)
         self.gemini_api_btn.clicked.connect(self.open_gemini_api_dialog)
         button_layout.addWidget(self.gemini_api_btn)
@@ -7181,10 +7598,10 @@ class MainWindow(QMainWindow):
         self.website_login_btn.setMinimumWidth(130)
         self.website_login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.website_login_btn.setStyleSheet("""
-            QPushButton { background-color: #3A63E8; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #2F52C1; font-size: 14px; }
-            QPushButton:hover { background-color: #4D76FF; }
+            QPushButton { background-color: #0B2A66; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #081F4D; font-size: 14px; }
+            QPushButton:hover { background-color: #143E8C; }
         """)
-        self.website_login_btn.clicked.connect(self.open_wp_settings_dialog)
+        self.website_login_btn.clicked.connect(self.open_website_login)
         button_layout.addWidget(self.website_login_btn)
 
         self.refresh_sites_btn = QPushButton("🔄 새로고침")
@@ -7192,11 +7609,24 @@ class MainWindow(QMainWindow):
         self.refresh_sites_btn.setMinimumWidth(110)
         self.refresh_sites_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_sites_btn.setStyleSheet("""
-            QPushButton { background-color: #7E33B0; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #652990; font-size: 14px; }
-            QPushButton:hover { background-color: #9441CC; }
+            QPushButton { background-color: #AA00FF; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #8800CC; font-size: 14px; }
+            QPushButton:hover { background-color: #BC33FF; }
         """)
         self.refresh_sites_btn.clicked.connect(self.refresh_site_list)
         button_layout.addWidget(self.refresh_sites_btn)
+
+        # 상단 7개 무지개 버튼 폰트 볼드 강제
+        rainbow_btn_font = QFont("맑은 고딕", 10, QFont.Weight.Bold)
+        for btn in [
+            self.add_site_btn,
+            self.keywords_folder_btn,
+            self.prompts_folder_btn,
+            self.wp_settings_btn,
+            self.gemini_api_btn,
+            self.website_login_btn,
+            self.refresh_sites_btn,
+        ]:
+            btn.setFont(rainbow_btn_font)
 
         # 중앙 정렬을 위해 양쪽에 stretch 추가
         final_button_layout = QHBoxLayout()
@@ -7421,8 +7851,8 @@ class MainWindow(QMainWindow):
         status_layout.setContentsMargins(24, 24, 24, 24)
 
         self.settings_grid = QGridLayout()
-        self.settings_grid.setHorizontalSpacing(24)
-        self.settings_grid.setVerticalSpacing(20)
+        self.settings_grid.setHorizontalSpacing(56)
+        self.settings_grid.setVerticalSpacing(40)
         self.settings_grid.setColumnStretch(0, 1)
         self.settings_grid.setColumnStretch(1, 1)
 
@@ -7540,7 +7970,7 @@ class MainWindow(QMainWindow):
 
         status_layout.addLayout(control_grid)
         status_group.setLayout(status_layout)
-        horizontal_layout.addWidget(status_group, 1)
+        horizontal_layout.addWidget(status_group, 14)
 
         progress_group = QGroupBox("📜 진행 상태")
         progress_group.setStyleSheet(f"""
@@ -7681,7 +8111,7 @@ class MainWindow(QMainWindow):
         self.update_progress_action_buttons_visibility()
 
         progress_group.setLayout(progress_layout)
-        horizontal_layout.addWidget(progress_group, 1)
+        horizontal_layout.addWidget(progress_group, 8)
 
         horizontal_container.setLayout(horizontal_layout)
         layout.addWidget(horizontal_container)
@@ -7705,12 +8135,12 @@ class MainWindow(QMainWindow):
                 
                 # 현재 설정 확인 (안전하게)
                 try:
-                    ai_provider = self.config_manager.data.get("global_settings", {}).get("default_ai", "web-gemini")
+                    ai_provider = self._get_current_ai_provider()
                 except:
-                    ai_provider = "web-gemini"
+                    ai_provider = self.AI_PROVIDER_WEB_GEMINI
                 
                 # 현재 모드에 맞게 선택
-                if "web" in ai_provider:
+                if self._is_web_mode():
                     self.ai_model_combo.setCurrentText("웹사이트 로그인")
                 else:
                     self.ai_model_combo.setCurrentText("API 사용")
@@ -7762,13 +8192,14 @@ class MainWindow(QMainWindow):
         try:
             # 선택에 따라 default_ai 값 변경
             if selection == "웹사이트 로그인":
-                self.config_manager.data["global_settings"]["default_ai"] = "web-gemini"
+                self.config_manager.data["global_settings"]["default_ai"] = self.AI_PROVIDER_WEB_GEMINI
                 print("✅ AI 설정이 '웹사이트 로그인'으로 변경되었습니다.")
             elif selection == "API 사용":
-                self.config_manager.data["global_settings"]["default_ai"] = "gemini"
+                self.config_manager.data["global_settings"]["default_ai"] = self.AI_PROVIDER_API_GEMINI
                 print("✅ AI 설정이 'API 사용'으로 변경되었습니다.")
             
             self.config_manager.save_config()
+            self.update_posting_status(f"🤖 AI 설정 즉시 적용: {selection}")
             
             # 설정 탭의 AI 모드 콤보박스도 업데이트
             if hasattr(self, 'ai_mode_combo'):
@@ -7788,6 +8219,7 @@ class MainWindow(QMainWindow):
             mode = self.normalize_posting_mode(mode)
             self.config_manager.data["global_settings"]["posting_mode"] = mode
             self.config_manager.save_config()
+            self.update_posting_status(f"📝 포스팅 모드 즉시 적용: {mode}")
             
             # 설정 탭의 포스팅 모드 콤보박스도 업데이트
             if hasattr(self, 'settings_posting_mode_combo'):
@@ -7805,13 +8237,14 @@ class MainWindow(QMainWindow):
         try:
             # index: 0=웹사이트 자동화, 1=API 연동
             if index == 0:
-                self.config_manager.data["global_settings"]["default_ai"] = "web-gemini"
+                self.config_manager.data["global_settings"]["default_ai"] = self.AI_PROVIDER_WEB_GEMINI
                 selection_text = "웹사이트 로그인"
             else:
-                self.config_manager.data["global_settings"]["default_ai"] = "gemini"
+                self.config_manager.data["global_settings"]["default_ai"] = self.AI_PROVIDER_API_GEMINI
                 selection_text = "API 사용"
             
             self.config_manager.save_config()
+            self.update_posting_status(f"🤖 AI 설정 즉시 적용: {selection_text}")
             
             # 모니터링 탭의 AI 설정 콤보박스도 업데이트
             if self.ai_model_combo:
@@ -7850,9 +8283,22 @@ class MainWindow(QMainWindow):
                 if not wait_time_text:
                     return
 
+            # 동일 값 재입력 시 중복 처리 방지
+            if wait_time_text == self._last_applied_wait_time:
+                return
+
             self.config_manager.data["global_settings"]["default_wait_time"] = wait_time_text
             self.config_manager.save_config()
+            self._last_applied_wait_time = wait_time_text
             print(f"포스팅 간격이 '{wait_time_text}'로 변경되었습니다.")
+
+            # 진행 상태에 실시간 반영
+            self.update_posting_status(f"⏱️ 포스팅 간격 즉시 적용: {wait_time_text}")
+
+            # 포스팅 중이면 다음 포스팅 카운트다운도 즉시 재계산
+            if getattr(self, "is_posting", False):
+                self.start_next_posting_countdown()
+                self.update_posting_status("🔄 다음 포스팅 대기 시간이 새 간격으로 갱신되었습니다.")
 
         except Exception as e:
             print(f"포스팅 간격 설정 저장 오류: {e}")
@@ -8031,6 +8477,7 @@ class MainWindow(QMainWindow):
             mode = self.normalize_posting_mode(mode)
             self.config_manager.data["global_settings"]["posting_mode"] = mode
             self.config_manager.save_config()
+            self.update_posting_status(f"📝 포스팅 모드 즉시 적용: {mode}")
             
             # 모니터링 탭의 포스팅 모드 콤보박스도 업데이트
             if self.posting_mode_combo:
@@ -8048,7 +8495,7 @@ class MainWindow(QMainWindow):
         try:
             # AI 설정 콤보박스 업데이트
             if self.ai_model_combo:
-                ai_provider = self.config_manager.data["global_settings"].get("default_ai", "web-gemini")
+                ai_provider = self._get_current_ai_provider()
                 
                 # AI 제공자에 따라 선택 항목 업데이트
                 self.ai_model_combo.blockSignals(True)
@@ -8058,7 +8505,7 @@ class MainWindow(QMainWindow):
                 self.ai_model_combo.addItems(ai_options)
                 
                 # 현재 설정에 맞게 선택
-                if "web" in ai_provider:
+                if ai_provider.startswith("web"):
                     self.ai_model_combo.setCurrentText("웹사이트 로그인")
                 else:
                     self.ai_model_combo.setCurrentText("API 사용")
@@ -8166,7 +8613,7 @@ class MainWindow(QMainWindow):
             max_text = raw
 
         value_panel = QFrame()
-        value_panel.setFixedHeight(72)
+        value_panel.setFixedHeight(78)
         value_panel.setStyleSheet(f"""
             QFrame {{
                 background-color: {COLORS['surface_light']};
@@ -8175,8 +8622,8 @@ class MainWindow(QMainWindow):
             }}
         """)
         row = QHBoxLayout(value_panel)
-        row.setContentsMargins(20, 10, 20, 10)
-        row.setSpacing(16)
+        row.setContentsMargins(26, 12, 26, 12)
+        row.setSpacing(24)
 
         box_style = f"""
             QLineEdit {{
@@ -8195,34 +8642,34 @@ class MainWindow(QMainWindow):
         self.wait_time_min_edit_monitoring = QLineEdit(min_text)
         self.wait_time_min_edit_monitoring.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.wait_time_min_edit_monitoring.setFixedHeight(44)
-        self.wait_time_min_edit_monitoring.setMinimumWidth(130)
-        self.wait_time_min_edit_monitoring.setMaximumWidth(170)
+        self.wait_time_min_edit_monitoring.setMinimumWidth(150)
+        self.wait_time_min_edit_monitoring.setMaximumWidth(220)
         self.wait_time_min_edit_monitoring.setStyleSheet(box_style)
         self.wait_time_min_edit_monitoring.textChanged.connect(self.on_interval_changed)
-        row.addStretch(1)
-        row.addWidget(self.wait_time_min_edit_monitoring, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self.wait_time_min_edit_monitoring, 1, Qt.AlignmentFlag.AlignVCenter)
 
         tilde = QLabel("~")
         tilde.setStyleSheet(f"color: {COLORS['text']}; font-size: 18px; font-weight: bold;")
         tilde.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tilde.setFixedWidth(28)
+        tilde.setFixedWidth(34)
+        tilde.setFont(QFont("맑은 고딕", 12, QFont.Weight.Bold))
         row.addWidget(tilde, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.wait_time_max_edit_monitoring = QLineEdit(max_text)
         self.wait_time_max_edit_monitoring.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.wait_time_max_edit_monitoring.setFixedHeight(44)
-        self.wait_time_max_edit_monitoring.setMinimumWidth(130)
-        self.wait_time_max_edit_monitoring.setMaximumWidth(170)
+        self.wait_time_max_edit_monitoring.setMinimumWidth(150)
+        self.wait_time_max_edit_monitoring.setMaximumWidth(220)
         self.wait_time_max_edit_monitoring.setStyleSheet(box_style)
         self.wait_time_max_edit_monitoring.textChanged.connect(self.on_interval_changed)
-        row.addWidget(self.wait_time_max_edit_monitoring, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self.wait_time_max_edit_monitoring, 1, Qt.AlignmentFlag.AlignVCenter)
 
         unit = QLabel("분")
         unit.setStyleSheet(f"color: {COLORS['text']}; font-size: 14px; font-weight: bold;")
         unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        unit.setFixedWidth(34)
+        unit.setFixedWidth(42)
+        unit.setFont(QFont("맑은 고딕", 11, QFont.Weight.Bold))
         row.addWidget(unit, 0, Qt.AlignmentFlag.AlignVCenter)
-        row.addStretch(1)
 
         layout.addWidget(value_panel)
 
@@ -8866,6 +9313,9 @@ class MainWindow(QMainWindow):
             # 키워드 부족 경고창 표시 (비차단, 백그라운드에서 표시)
             if low_keyword_sites:
                 QTimer.singleShot(500, lambda: self.show_detailed_low_keyword_warning(low_keyword_sites))
+
+            # 동적으로 생성된 사이트 위젯까지 폰트 규칙 통일
+            self.apply_typography_system()
                 
         except Exception as e:
             print(f"사이트 로드 오류: {e}")
@@ -9723,7 +10173,7 @@ class MainWindow(QMainWindow):
             gui_values = {
                 'gemini_key': self.gemini_key_edit.text().strip(),
                 'default_ai': gui_default_ai,
-                'ai_model': self.ai_model_combo.currentText() if self.ai_model_combo else "",
+                'ai_mode_text': self.ai_mode_combo.currentText() if hasattr(self, 'ai_mode_combo') else "",
                 'posting_mode': self.posting_mode_combo.currentText() if self.posting_mode_combo else "",
                 'wait_time': self.wait_time_edit.text().strip(),
                 'username': self.common_username_edit.text().strip(),
@@ -9734,7 +10184,7 @@ class MainWindow(QMainWindow):
             json_values = {
                 'gemini_key': saved_data.get('api_keys', {}).get('gemini', ''),
                 'default_ai': saved_data.get('global_settings', {}).get('default_ai', ''),
-                'ai_model': saved_data.get('global_settings', {}).get('ai_model', ''),
+                'ai_mode_text': "API 사용" if saved_data.get('global_settings', {}).get('default_ai', '') == "gemini" else "웹사이트 로그인 (권장)",
                 'posting_mode': saved_data.get('global_settings', {}).get('posting_mode', ''),
                 'wait_time': saved_data.get('global_settings', {}).get('default_wait_time', ''),
                 'username': saved_data.get('global_settings', {}).get('common_username', ''),
@@ -9818,24 +10268,17 @@ class MainWindow(QMainWindow):
             self.gemini_status_label.setStyleSheet("color: #BF616A; font-weight: bold;")
 
     def update_ai_model_options(self):
-        """AI 제공자에 따라 모델 옵션 업데이트"""
+        """모니터링 탭 AI 모드 옵션 동기화 (레거시 함수명 유지)"""
         if not self.ai_model_combo:
             return
+        self.ai_model_combo.blockSignals(True)
         self.ai_model_combo.clear()
-        ai_provider = self.config_manager.data.get("global_settings", {}).get("default_ai", "web-gemini")
-        models = ["gemini-2.5-flash-lite", "gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-pro"]
-        default_model = "gemini-2.5-flash-lite"
-        
-        self.ai_model_combo.addItems(models)
-        
-        # 저장된 모델이 있으면 선택, 없으면 기본 모델 선택
-        saved_model = self.config_manager.data["global_settings"].get("ai_model", "")
-        if saved_model in models:
-            self.ai_model_combo.setCurrentText(saved_model)
+        self.ai_model_combo.addItems(["웹사이트 로그인", "API 사용"])
+        if self._is_web_mode():
+            self.ai_model_combo.setCurrentText("웹사이트 로그인")
         else:
-            # 저장된 모델이 없거나 유효하지 않으면 기본 모델 선택
-            self.ai_model_combo.setCurrentText(default_model)
-            print(f"🔧 [AI MODEL] {ai_provider} 기본 모델 설정: {default_model}")
+            self.ai_model_combo.setCurrentText("API 사용")
+        self.ai_model_combo.blockSignals(False)
 
     def on_setting_changed(self):
         """설정 변경 시 호출되는 함수 - 모니터링 탭 실시간 업데이트"""
@@ -9895,13 +10338,20 @@ class MainWindow(QMainWindow):
                 self.update_posting_status("⚠️ 활성화된 사이트가 없습니다.")
                 return
 
-            # API 키 확인 (시작 메시지에서 이미 표시됨)
-            gemini_key = self.config_manager.data["api_keys"].get("gemini", "")
-            
-            if not gemini_key:
-                print("⚠️ Gemini API 키가 설정되지 않았습니다.")
-                self.update_posting_status("⚠️ API 키가 설정되지 않았습니다.")
-                return
+            current_ai_provider = self._get_current_ai_provider()
+
+            # API 모드일 때만 Gemini API 키 확인
+            if current_ai_provider == self.AI_PROVIDER_API_GEMINI:
+                gemini_key = self.config_manager.data["api_keys"].get("gemini", "")
+                if not gemini_key:
+                    print("⚠️ Gemini API 키가 설정되지 않았습니다.")
+                    self.update_posting_status("⚠️ API 키가 설정되지 않았습니다.")
+                    return
+
+            # 웹사이트 로그인 모드(Gemini)는 실제 콘텐츠 생성 브라우저에서
+            # 로그인/2차 인증/프롬프트 입력을 한 흐름으로 진행한다.
+            if current_ai_provider == self.AI_PROVIDER_WEB_GEMINI:
+                self.update_posting_status("🌐 웹사이트 로그인 모드: 첫 AI 호출에서 로그인 후 프롬프트 입력을 시작합니다.")
 
             # 🔒 마지막 포스팅 상태에 따라 시작 사이트 결정
             start_site_id = self.config_manager.get_start_site_id()
@@ -10580,6 +11030,120 @@ class MainWindow(QMainWindow):
         dialog.setLayout(layout)
         dialog.exec()
 
+    def _close_website_login_browser(self):
+        """웹사이트 로그인용 브라우저 종료"""
+        try:
+            if self.website_login_generator:
+                driver = getattr(self.website_login_generator, "driver", None)
+                if driver is not None:
+                    self.update_posting_status("🧪 [DEBUG] 웹사이트 로그인 브라우저 종료 호출")
+                    driver.quit()
+        except Exception:
+            pass
+        self.website_login_generator = None
+
+    def _open_website_login_browser(self):
+        """Gemini 웹 로그인 창 열기"""
+        try:
+            self.update_posting_status("🌐 Gemini 로그인 창 준비 중...")
+            if self.website_login_generator is None:
+                self.website_login_generator = ContentGenerator(self.config_manager.data, self.update_posting_status, self)
+
+            if not self.website_login_generator.setup_driver():
+                self.update_posting_status("❌ 브라우저 실행 실패")
+                return
+            if not self.website_login_generator._ensure_gemini_tab():
+                self.update_posting_status("❌ Gemini 페이지 열기 실패")
+                return
+
+            if self.website_login_generator._has_gemini_login_button(timeout=3):
+                self.update_posting_status("🔐 로그인 버튼이 보입니다. 브라우저에서 Google 로그인 후 시작 버튼을 눌러주세요.")
+            else:
+                self.update_posting_status("✅ Gemini 로그인 상태입니다.")
+        except Exception as e:
+            self.update_posting_status(f"❌ 웹사이트 로그인 창 실행 오류: {e}")
+
+    def open_website_login(self):
+        """구글 계정 입력 후 Gemini 로그인 창 열기"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("🌐 웹사이트 로그인 설정")
+        dialog.setModal(True)
+        dialog.resize(540, 220)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        guide = QLabel("Google 계정 정보를 입력하면 자동 로그인에 사용됩니다.")
+        guide.setWordWrap(True)
+        guide.setStyleSheet("font-size: 13px; color: #D8DEE9;")
+        layout.addWidget(guide)
+
+        email_edit = QLineEdit()
+        email_edit.setPlaceholderText("Google 이메일")
+        email_edit.setText(self.config_manager.data.get("global_settings", {}).get("google_email", ""))
+        layout.addWidget(email_edit)
+
+        password_edit = QLineEdit()
+        password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        password_edit.setPlaceholderText("Google 비밀번호")
+        password_edit.setText(self.config_manager.data.get("global_settings", {}).get("google_password", ""))
+        layout.addWidget(password_edit)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        open_btn = QPushButton("저장 후 로그인 창 열기")
+        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel_btn = QPushButton("취소")
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_row.addWidget(open_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        def do_open():
+            global_settings = self.config_manager.data.setdefault("global_settings", {})
+            global_settings["google_email"] = email_edit.text().strip()
+            global_settings["google_password"] = password_edit.text().strip()
+            self.config_manager.save_setting()
+            dialog.accept()
+            self._open_website_login_browser()
+
+        open_btn.clicked.connect(do_open)
+        cancel_btn.clicked.connect(dialog.reject)
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def ensure_gemini_login_before_start(self):
+        """시작 버튼 실행 전 Gemini 로그인 상태 선확인"""
+        checker = None
+        try:
+            self.update_posting_status("🧪 [DEBUG] ensure_gemini_login_before_start 시작")
+            self._close_website_login_browser()
+            self.update_posting_status("🔍 시작 전 Gemini 로그인 상태를 확인합니다...")
+            checker = ContentGenerator(self.config_manager.data, self.update_posting_status, self)
+
+            if not checker.setup_driver():
+                return False
+            if not checker._ensure_gemini_tab():
+                return False
+            if not checker._ensure_gemini_logged_in(wait_seconds=180):
+                return False
+
+            self.update_posting_status("✅ Gemini 로그인 확인 완료. 포스팅을 시작합니다.")
+            return True
+        except Exception as e:
+            self.update_posting_status(f"❌ Gemini 로그인 확인 오류: {e}")
+            return False
+        finally:
+            if checker is not None and getattr(checker, "driver", None):
+                try:
+                    driver = checker.driver
+                    if driver is not None:
+                        self.update_posting_status("🧪 [DEBUG] ensure_gemini_login_before_start checker 브라우저 종료")
+                        driver.quit()
+                except Exception:
+                    pass
+
     def open_images_folder(self):
         """images 폴더 열기"""
         try:
@@ -11023,7 +11587,7 @@ def main():
         app.setPalette(palette)
         
         # 폰트 설정
-        font = QFont("맑은 고딕", 9)
+        font = QFont("맑은 고딕", 10)
         app.setFont(font)
 
         # 아이콘 설정 (PyInstaller 리소스 경로 사용)
@@ -11049,7 +11613,7 @@ def main():
         window = MainWindow()
         # MainWindow 생성 완료
         
-        window.show()
+        window.showMaximized()
         window.raise_()  # 창을 앞으로 가져오기
         window.activateWindow()  # 창을 활성화
         # MainWindow 표시
@@ -11078,4 +11642,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
