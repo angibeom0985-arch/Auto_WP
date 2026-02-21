@@ -1,2 +1,19 @@
 # Ignore chrome profile directory
 Auto_Naver/chrome_profile/
+
+# Python/cache/build
+__pycache__/
+*.pyc
+build/
+dist/
+
+# Local runtime artifacts
+qt.conf
+setting/debug.log
+setting/result/
+setting/output/
+setting/chrome_profile/
+
+# Sensitive local settings
+setting/license.json
+setting/setting.json
