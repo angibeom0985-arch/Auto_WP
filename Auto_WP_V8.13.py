@@ -13,6 +13,8 @@ import time
 import random
 import threading
 import traceback
+import subprocess
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 import shutil
@@ -69,6 +71,13 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize, QUrl
 from PyQt6.QtGui import QFont, QPixmap, QIcon, QPalette, QColor, QTextCursor, QDesktopServices
 
+class CenteredComboDelegate(QStyledItemDelegate):
+    """콤보박스 항목 텍스트 중앙 정렬"""
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        if option is not None:
+            option.displayAlignment = Qt.AlignmentFlag.AlignCenter
+
 class PostingWorker(QThread):
     """포스팅 작업 스레드"""
     status_update = pyqtSignal(str)
@@ -110,6 +119,22 @@ class PostingWorker(QThread):
     def log(self, message):
         """로그 메시지 출력 - safe_emit_status의 별칭"""
         self.safe_emit_status(message)
+
+    def _resolve_wait_seconds(self, default_minutes: int = 3) -> int:
+        """global_settings.default_wait_time(분 단위)를 초 단위로 변환"""
+        try:
+            wait_time = str(self.config_manager.data["global_settings"].get("default_wait_time", "3~5")).strip()
+            if "~" in wait_time or "-" in wait_time:
+                separator = "~" if "~" in wait_time else "-"
+                min_val, max_val = map(int, wait_time.split(separator))
+                min_val = max(1, min_val)
+                max_val = max(min_val, max_val)
+                wait_minutes = random.randint(min_val, max_val)
+            else:
+                wait_minutes = max(1, int(wait_time))
+            return wait_minutes * 60
+        except Exception:
+            return max(1, default_minutes) * 60
         
     def run(self):
         """포스팅 작업 실행 - 모든 키워드가 소진될 때까지 반복"""
@@ -189,16 +214,7 @@ class PostingWorker(QThread):
                         
                         # 사이트 간 대기 (마지막 사이트가 아닌 경우)
                         if i < len(self.sites_data) - 1:
-                            try:
-                                wait_time = self.config_manager.data["global_settings"].get("default_wait_time", "47~50")
-                                if "~" in wait_time:
-                                    import random
-                                    min_time, max_time = map(int, wait_time.split("~"))
-                                    delay = random.randint(min_time, max_time)
-                                else:
-                                    delay = int(wait_time) if wait_time.isdigit() else 50
-                            except:
-                                delay = 50  # 기본값
+                            delay = self._resolve_wait_seconds(default_minutes=3)
                                 
                             # 대기 중에도 중지/일시정지 체크
                             for j in range(delay):
@@ -221,21 +237,7 @@ class PostingWorker(QThread):
                         self.safe_emit_status(f"🏁 라운드 {round_count} 완료 - {posted_sites_count}개 사이트 포스팅 성공")
                         
                         # 다음 라운드를 위한 일반 대기 (사이트 간 간격과 동일)
-                        try:
-                            wait_time = self.config_manager.data["global_settings"].get("default_wait_time", "47~50")
-                            
-                            # 범위 형태 처리 (예: "47~50")
-                            if "~" in wait_time or "-" in wait_time:
-                                try:
-                                    separator = "~" if "~" in wait_time else "-"
-                                    min_time, max_time = map(int, wait_time.split(separator))
-                                    delay = random.randint(min_time, max_time)
-                                except ValueError:
-                                    delay = 50  # 기본값
-                            else:
-                                delay = int(wait_time) if wait_time.isdigit() else 50
-                        except:
-                            delay = 50  # 기본값
+                        delay = self._resolve_wait_seconds(default_minutes=3)
                         
                         # 대기 (라운드 간에도 일반 포스팅 간격 사용)
                         for j in range(delay):
@@ -287,6 +289,7 @@ class PostingWorker(QThread):
             
     def process_site_posting(self, site):
         """개별 사이트 포스팅 처리 - 새로운 워크플로우 적용"""
+        content_generator = None
         try:
             site_name = site.get('name', 'Unknown')
             site_id = site.get('id')
@@ -446,6 +449,14 @@ class PostingWorker(QThread):
             # 🔒 예외 발생 시 진행 중 상태 유지 (재시작 시 같은 사이트에서 재시작)
             self.config_manager.save_posting_state(site_id, site_url, in_progress=True)
             # 예외가 발생해도 키워드를 보존하고 다음 사이트로 진행
+        finally:
+            # 사이트 1회 처리(성공/실패) 직후 브라우저를 반드시 종료
+            try:
+                if content_generator is not None:
+                    self.log(f"🧹 {site_name}: 현재 포스팅 브라우저 종료")
+                    content_generator.close_browser_session(force_tree_kill=True)
+            except Exception as close_error:
+                self.log(f"⚠️ {site_name}: 브라우저 종료 중 오류(무시): {close_error}")
 
     def check_low_keywords_after_posting(self, site):
         """포스팅 완료 후 해당 사이트의 키워드가 300개 미만이면 알림"""
@@ -1128,103 +1139,188 @@ class ContentGenerator:
                     _ = self.driver.current_url
                     return True
                 except Exception:
-                    self.log("🧪 [DEBUG] 기존 driver 접근 실패 -> driver=None 재설정")
+                    self.log("기존 driver 접근 실패 -> driver=None 재설정")
                     self.driver = None
 
             self.log("🌐 브라우저 실행 준비 중...")
-            
-            # uc(undetected-chromedriver) 사용 여부 결정
-            if uc is None:
-                self.log("⚠️ undetected-chromedriver not found. Using standard selenium.")
-            options: Any = uc.ChromeOptions() if uc is not None else webdriver.ChromeOptions()
-            
-            self.log("🔧 브라우저 옵션 설정 중...")
-            
-            # 공통 설정
-            options.add_argument("--window-size=1280,900")
-            options.add_argument("--start-maximized")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-popup-blocking")
-            # 구글 로그인 세션 유지 (한 번 로그인 시 재사용)
             chrome_profile_dir = os.path.join(get_base_path(), "setting", "chrome_profile")
             os.makedirs(chrome_profile_dir, exist_ok=True)
-            options.add_argument(f"--user-data-dir={chrome_profile_dir}")
-            options.add_argument("--profile-directory=Default")
-            
-            # 일반 Selenium일 때만 추가 우회 설정 (uc는 자동 처리됨)
-            if uc is None:
-                options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-                options.add_experimental_option('useAutomationExtension', False)
-                options.add_argument("--disable-blink-features=AutomationControlled")
 
             self.log("🚀 브라우저 시작 중...")
-            try:
-                if uc is not None:
-                    # [Fix] WinError 183 및 프로세스 충돌 방지를 위한 사전 정리
-                    try:
-                        import subprocess
-                        force_cleanup = os.environ.get("AUTO_WP_FORCE_DRIVER_CLEANUP", "0") == "1"
-                        if force_cleanup:
-                            self.log("🧪 [DEBUG] AUTO_WP_FORCE_DRIVER_CLEANUP=1, chromedriver 강제 종료 수행")
-                            subprocess.run(['taskkill', '/f', '/im', 'chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            subprocess.run(['taskkill', '/f', '/im', 'undetected_chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            time.sleep(1)
-                        else:
-                            self.log("🧪 [DEBUG] chromedriver 강제 종료 생략 (로그인 세션 보호)")
-                        
-                        # 충돌나는 파일 삭제
-                        uc_dir = os.path.join(os.environ.get('APPDATA', ''), 'undetected_chromedriver')
-                        uc_exe = os.path.join(uc_dir, 'undetected_chromedriver.exe')
-                        if os.path.exists(uc_exe):
-                            try:
-                                os.remove(uc_exe)
-                            except OSError:
-                                time.sleep(1)
-                                try:
-                                    os.remove(uc_exe)
-                                except:
-                                    pass
-                    except Exception as cleanup_error:
-                        self.log(f"⚠️ 정리 작업 중 오류 (무시됨): {cleanup_error}")
 
-                    chrome_major = self._detect_chrome_major_version()
-                    if chrome_major is not None:
-                        self.log(f"🔎 감지된 Chrome 메이저 버전: {chrome_major}")
-                        self.driver = uc.Chrome(options=options, version_main=chrome_major)
-                    else:
-                        self.log("⚠️ Chrome 버전 감지 실패, 자동 모드로 실행합니다.")
-                        self.driver = uc.Chrome(options=options)
-                else:
-                    if ChromeDriverManager is not None and Service is not None:
-                        try:
-                            driver_path = ChromeDriverManager().install()
-                            service = Service(driver_path)
-                        except Exception:
-                            service = Service()
-                    elif Service is not None:
+            # 1) UC 우선 시도 (실패 시 1회 재시도)
+            if uc is not None:
+                for attempt in range(1, 3):
+                    try:
+                        force_cleanup = (attempt == 2) or (os.environ.get("AUTO_WP_FORCE_DRIVER_CLEANUP", "0") == "1")
+                        self._cleanup_stale_driver_binaries(force_cleanup=force_cleanup)
+                        options = self._build_chrome_options(use_uc=True, chrome_profile_dir=chrome_profile_dir)
+
+                        chrome_major = self._detect_chrome_major_version()
+                        if chrome_major is not None:
+                            self.log(f"🔎 감지된 Chrome 메이저 버전: {chrome_major}")
+                            self.driver = uc.Chrome(options=options, version_main=chrome_major)
+                        else:
+                            self.log("⚠️ Chrome 버전 감지 실패, 자동 모드로 실행합니다.")
+                            self.driver = uc.Chrome(options=options)
+
+                        self._verify_driver_health()
+                        self.log("✅ 브라우저 실행 완료! (UC)")
+                        return True
+                    except Exception as uc_error:
+                        self.log(f"⚠️ UC 실행 {attempt}/2 실패: {uc_error}")
+                        self._safe_quit_driver()
+                        time.sleep(1.2)
+
+                self.log("⚠️ UC 실행 실패. 표준 Selenium으로 폴백합니다.")
+            else:
+                self.log("⚠️ undetected-chromedriver not found. Using standard selenium.")
+
+            # 2) 표준 Selenium 폴백
+            try:
+                options = self._build_chrome_options(use_uc=False, chrome_profile_dir=chrome_profile_dir)
+                if ChromeDriverManager is not None and Service is not None:
+                    try:
+                        driver_path = ChromeDriverManager().install()
+                        service = Service(driver_path)
+                    except Exception:
                         service = Service()
-                    else:
-                        self.log("⚠️ selenium Service not available.")
-                        return False
-                    assert service is not None
-                    self.driver = webdriver.Chrome(service=service, options=options)
-                
-                try:
-                    self.driver.maximize_window()
-                except Exception:
-                    pass
-            except Exception as e:
-                self.log(f"❌ 브라우저 시작 오류: {str(e)}")
+                elif Service is not None:
+                    service = Service()
+                else:
+                    self.log("⚠️ selenium Service not available.")
+                    return False
+
+                assert service is not None
+                self.driver = webdriver.Chrome(service=service, options=options)
+                self._verify_driver_health()
+                self.log("✅ 브라우저 실행 완료! (Selenium)")
+                return True
+            except Exception as selenium_error:
+                self.log(f"❌ 브라우저 시작 오류: {selenium_error}")
                 raise
-            
-            self.log("✅ 브라우저 실행 완료!")
-            return True
             
         except Exception as e:
             self.log(f"❌ 브라우저 실행 실패: {str(e)}")
             return False
+
+    def _build_chrome_options(self, use_uc: bool, chrome_profile_dir: str):
+        """Chrome 옵션 생성 (UC/표준 Selenium 공용)"""
+        if use_uc and uc is not None:
+            options: Any = uc.ChromeOptions()
+        else:
+            if webdriver is None:
+                raise RuntimeError("selenium webdriver를 사용할 수 없습니다.")
+            options = webdriver.ChromeOptions()
+        self.log("🔧 브라우저 옵션 설정 중...")
+        options.add_argument("--window-size=1280,900")
+        options.add_argument("--start-maximized")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
+        options.add_argument("--remote-debugging-port=0")
+        options.add_argument(f"--user-data-dir={chrome_profile_dir}")
+        options.add_argument("--profile-directory=Default")
+
+        if not use_uc:
+            options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+            options.add_experimental_option('useAutomationExtension', False)
+            options.add_argument("--disable-blink-features=AutomationControlled")
+        return options
+
+    def _cleanup_stale_driver_binaries(self, force_cleanup: bool = False):
+        """stale driver 바이너리 정리"""
+        try:
+            if force_cleanup:
+                self.log("stale driver 정리 수행")
+                subprocess.run(['taskkill', '/f', '/im', 'chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(['taskkill', '/f', '/im', 'undetected_chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(1)
+            else:
+                self.log("driver 강제 종료 생략 (세션 보호)")
+
+            uc_dir = os.path.join(os.environ.get('APPDATA', ''), 'undetected_chromedriver')
+            uc_exe = os.path.join(uc_dir, 'undetected_chromedriver.exe')
+            if os.path.exists(uc_exe):
+                try:
+                    os.remove(uc_exe)
+                except OSError:
+                    time.sleep(0.8)
+                    try:
+                        os.remove(uc_exe)
+                    except Exception:
+                        pass
+        except Exception as cleanup_error:
+            self.log(f"⚠️ 정리 작업 중 오류 (무시됨): {cleanup_error}")
+
+    def _verify_driver_health(self):
+        """드라이버가 실제로 Chrome과 통신 가능한지 검증"""
+        if not self.driver:
+            raise RuntimeError("driver가 초기화되지 않았습니다.")
+        try:
+            self.driver.get("about:blank")
+            _ = self.driver.current_url
+            try:
+                self.driver.maximize_window()
+            except Exception:
+                pass
+        except Exception as health_error:
+            raise RuntimeError(f"Chrome 통신 검증 실패: {health_error}")
+
+    def _safe_quit_driver(self):
+        """driver 종료 안전 처리"""
+        try:
+            if self.driver is not None:
+                self.driver.quit()
+        except Exception:
+            pass
+        finally:
+            self.driver = None
+
+    def close_browser_session(self, force_tree_kill: bool = True):
+        """현재 자동화 브라우저 세션 종료 (필요 시 프로세스 트리 강제 종료)"""
+        driver = self.driver
+        if driver is None:
+            return
+
+        service_pid = None
+        browser_pid = None
+        try:
+            service = getattr(driver, "service", None)
+            process = getattr(service, "process", None) if service is not None else None
+            service_pid = getattr(process, "pid", None) if process is not None else None
+        except Exception:
+            service_pid = None
+
+        try:
+            browser_pid = getattr(driver, "browser_pid", None)
+        except Exception:
+            browser_pid = None
+
+        try:
+            driver.quit()
+        except Exception as quit_error:
+            self.log(f"⚠️ driver.quit 실패(강제 종료 진행): {quit_error}")
+
+        if force_tree_kill and os.name == "nt":
+            for pid in (service_pid, browser_pid):
+                if isinstance(pid, int) and pid > 0:
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(pid)],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            check=False
+                        )
+                    except Exception:
+                        pass
+
+        self.driver = None
+        self.gemini_tab_handle = None
+        self.perplexity_tab_handle = None
 
     def _detect_chrome_major_version(self) -> Optional[int]:
         """설치된 Chrome 메이저 버전 감지"""
@@ -1413,7 +1509,7 @@ class ContentGenerator:
     def _save_ai_result_file(self, step_name, prompt_text, response_text, ai_provider):
         """AI 응답을 result 폴더 txt로 저장"""
         try:
-            result_dir = os.path.join(get_base_path(), "result")
+            result_dir = os.path.join(get_base_path(), "setting", "result")
             os.makedirs(result_dir, exist_ok=True)
 
             keyword = self._sanitize_filename_part(getattr(self, "current_keyword", "keyword"))
@@ -1695,10 +1791,24 @@ class ContentGenerator:
             except Exception:
                 self.driver.execute_script("arguments[0].click();", editor)
 
-            self.driver.execute_script("arguments[0].innerHTML = '<p><br></p>';", editor)
-            editor.send_keys(prompt)
+            # Trusted Types 정책으로 innerHTML 주입이 차단되므로 키보드 입력만 사용
+            editor.send_keys(Keys.CONTROL, "a")
             editor.send_keys(Keys.BACKSPACE)
-            time.sleep(1)
+            time.sleep(0.2)
+
+            pasted = False
+            if pyperclip is not None:
+                try:
+                    pyperclip.copy(prompt)
+                    editor.send_keys(Keys.CONTROL, "v")
+                    pasted = True
+                except Exception as clip_error:
+                    self.log(f"⚠️ 클립보드 붙여넣기 실패, 직접 입력으로 전환: {clip_error}")
+
+            if not pasted:
+                editor.send_keys(prompt)
+
+            time.sleep(0.4)
             editor.send_keys(Keys.ENTER)
             return True
         except Exception as e:
@@ -3528,7 +3638,10 @@ class ContentGenerator:
                 content = re.sub(pattern, replacement, content, flags=re.IGNORECASE)
             
             # 2. href URL 교체 (HTML 구조 유지)
-            href_pattern = r'href="(https?://[^"]*)"'
+            # - https://
+            # - http://
+            # - //example.com (protocol-relative)
+            href_pattern = r'href="((?:https?:)?//[^"]*)"'
             replacement_count = 0
             
             def replace_url(match):
@@ -3652,9 +3765,9 @@ class ContentGenerator:
                 self.log("✅ 불완전한 h태그 수정 (h2, h3, h4)")
             
             # 3. 유니코드 큰따옴표와 백틱만 제거 (일반 큰따옴표는 HTML 속성에 필수이므로 보존)
-            # ❌ 제거: ", ", " (유니코드 큰따옴표), ` (백틱)
-            # ✅ 보존: " (일반 큰따옴표 - HTML 속성에 필수), ' (작은따옴표 - 텍스트에 사용 가능)
-            unicode_quotes_and_backticks = ['"', '"', '"', '`']  # 유니코드 큰따옴표 + 백틱만
+            # ❌ 제거: “ ” ″ ` (유니코드 따옴표/백틱)
+            # ✅ 보존: " ' (일반 따옴표)
+            unicode_quotes_and_backticks = ['“', '”', '″', '`']
             quote_found = False
             for bad_char in unicode_quotes_and_backticks:
                 if bad_char in content:
@@ -3721,7 +3834,44 @@ class ContentGenerator:
                 
             if target_fixed:
                 self.log("✅ 외부링크 target 속성을 target=\"_self\"로 통일")
-            
+
+            # 5-2. href URL 정규화
+            # - //example.com → https://example.com
+            # - 잘못 붙은 끝 괄호/구두점 제거
+            # - 따옴표 없는 href도 href="..." 형태로 보정
+            def normalize_href_value(raw_url: str) -> str:
+                url = (raw_url or "").strip()
+                if not url:
+                    return url
+
+                # protocol-relative URL 보정
+                if url.startswith("//"):
+                    url = "https:" + url
+
+                # markdown 잔여물/문장부호 꼬리 제거
+                while url and url[-1] in [",", ";"]:
+                    url = url[:-1]
+                if url.endswith(")") and url.count("(") < url.count(")"):
+                    url = url[:-1]
+
+                # scheme 없는 www.* 는 https 보강
+                if url.startswith("www."):
+                    url = "https://" + url
+
+                return url
+
+            def replace_href_attr(match):
+                url_value = match.group(2)
+                normalized = normalize_href_value(url_value)
+                return f'href="{normalized}"'
+
+            content = re.sub(
+                r'href\s*=\s*(["\']?)([^"\'\s>]+)\1',
+                replace_href_attr,
+                content,
+                flags=re.IGNORECASE
+            )
+             
             # 6. 다운로드 버튼 복원 (수정된 버전으로)
             for i, fixed_button in enumerate(fixed_buttons):
                 content = content.replace(f"__PROTECTED_DOWNLOAD_BUTTON_{i}__", fixed_button, 1)
@@ -4189,6 +4339,10 @@ class ContentGenerator:
             content = re.sub(r'class=link3(?=\s|>)', 'class="link3"', content)
             content = re.sub(r'class=blink(?=\s|>)', 'class="blink"', content)
             self.log("✅ 본문 링크 class 속성 따옴표 복구 완료")
+
+            # 콘텐츠 최종 검증 1-1: href URL 구조 최종 정규화 (업로드 직전 안전망)
+            content = self._sanitize_anchor_hrefs(content)
+            self.log("✅ 본문 href URL 구조 최종 정규화 완료")
             
             # 콘텐츠 최종 검증 2: 다운로드 버튼 HTML 완전 복구 (AI 응답이 잘못되었을 경우 대비)
             # 키워드 추출 (제목에서)
@@ -4343,6 +4497,51 @@ class ContentGenerator:
         except Exception as e:
             self.log(f"❌ {site_name}: 워드프레스 포스팅 오류: {e}")
             return {'success': False, 'error': str(e)}
+
+    def _sanitize_anchor_hrefs(self, content):
+        """앵커 href 값을 업로드 직전에 안전하게 정규화"""
+        try:
+            def _normalize(url):
+                u = (url or "").strip()
+                if not u:
+                    return u
+                if u.startswith("//"):
+                    u = "https:" + u
+                elif u.startswith("www."):
+                    u = "https://" + u
+
+                # URL 끝에 잘못 붙은 괄호/구두점 제거
+                while u and u[-1] in [",", ";"]:
+                    u = u[:-1]
+                while u.endswith(")") and u.count("(") < u.count(")"):
+                    u = u[:-1]
+                while u.endswith("]") and u.count("[") < u.count("]"):
+                    u = u[:-1]
+                while u.endswith("}") and u.count("{") < u.count("}"):
+                    u = u[:-1]
+                return u
+
+            def _replace_quoted(match):
+                return f'{match.group(1)}"{_normalize(match.group(3))}"'
+
+            # href="...", href='...'
+            content = re.sub(
+                r'(href\s*=\s*)(["\'])([^"\']*)(\2)',
+                lambda m: _replace_quoted(m),
+                content,
+                flags=re.IGNORECASE
+            )
+
+            # href=... (따옴표 없는 경우)
+            content = re.sub(
+                r'href\s*=\s*([^\s>"\']+)',
+                lambda m: f'href="{_normalize(m.group(1))}"',
+                content,
+                flags=re.IGNORECASE
+            )
+            return content
+        except Exception:
+            return content
 
     def try_authentication_methods(self, site_name, site_url, username, password):
         """다양한 인증 방법을 시도합니다 (캐싱 포함)"""
@@ -6363,6 +6562,7 @@ class MainWindow(QMainWindow):
         self.countdown_timer = QTimer()
         self.countdown_timer.timeout.connect(self.update_next_posting_countdown)
         self.next_posting_label = None
+        self._last_countdown_logged_second: Optional[int] = None
         
         # 현재 포스팅 중인 사이트 추적
         self.current_posting_site = None
@@ -6371,9 +6571,9 @@ class MainWindow(QMainWindow):
         # 모니터링/설정 UI 참조 초기화
         self.ai_model_combo: Optional[QComboBox] = None
         self.posting_mode_combo: Optional[QComboBox] = None
-        self.wait_time_edit_monitoring: Optional[QLineEdit] = None
-        self.wait_time_min_edit_monitoring: Optional[QLineEdit] = None
-        self.wait_time_max_edit_monitoring: Optional[QLineEdit] = None
+        self.wait_time_edit_monitoring: Optional[QWidget] = None
+        self.wait_time_min_edit_monitoring: Optional[QWidget] = None
+        self.wait_time_max_edit_monitoring: Optional[QWidget] = None
         self.total_keywords_button: Optional[QPushButton] = None
         self.refresh_button: Optional[QPushButton] = None
         self.current_site_combo: Optional[QComboBox] = None
@@ -6524,20 +6724,20 @@ class MainWindow(QMainWindow):
     def get_card_container_style(self):
         """카드 컨테이너 공통 스타일 반환 - 작은 화면 지원"""
         return {
-            'max_height': 152,
-            'min_height': 152,
+            'max_height': 176,
+            'min_height': 176,
             'min_width': 300,
             'size_policy': (QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed),
             'contents_margins': (18, 18, 18, 18),
             'spacing': 14,
             'stylesheet': f"""
-                QWidget {{
+                QWidget#monitorCard {{
                     background-color: {COLORS['surface_dark']};
                     border: 2px solid {COLORS['border']};
                     border-radius: 12px;
-                    margin: 10px;
+                    margin: 0px;
                 }}
-                QWidget:hover {{
+                QWidget#monitorCard:hover {{
                     border-color: {COLORS['primary']};
                     background-color: {COLORS['surface']};
                 }}
@@ -6590,7 +6790,6 @@ class MainWindow(QMainWindow):
         """카드 콤보박스 공통 스타일 반환"""
         return {
             'fixed_height': 60,
-            'min_width': 460,
             'size_policy': (QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed),
             'stylesheet': f"""
                 QComboBox {{
@@ -6598,9 +6797,10 @@ class MainWindow(QMainWindow):
                     color: {COLORS['text']};
                     border: 2px solid {COLORS['primary']};
                     border-radius: 10px;
-                    padding: 14px 18px;
+                    padding: 14px 14px;
                     font-size: 10pt;
                     font-weight: 600;
+                    text-align: center;
                 }}
                 QComboBox:hover {{
                     background-color: {COLORS['primary']};
@@ -6645,6 +6845,7 @@ class MainWindow(QMainWindow):
         """통합된 카드 생성 함수 - 모든 카드가 동일한 스타일 사용"""
         # 컨테이너 설정
         container = QWidget()
+        container.setObjectName("monitorCard")
         container_style = self.get_card_container_style()
         
         container.setMaximumHeight(container_style['max_height'])
@@ -6657,6 +6858,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(*container_style['contents_margins'])
         layout.setSpacing(container_style['spacing'])
+        layout.addStretch(1)
 
         # 제목 라벨
         title_label = QPushButton(title)
@@ -6667,7 +6869,7 @@ class MainWindow(QMainWindow):
             title_label.clicked.connect(callback)
             title_label.setCursor(Qt.CursorShape.PointingHandCursor)
         
-        layout.addWidget(title_label)
+        layout.addWidget(title_label, 0, Qt.AlignmentFlag.AlignHCenter)
 
         # 값 위젯 (버튼, 콤보박스, 또는 라인에딕)
         if widget_type == "combobox":
@@ -6675,14 +6877,35 @@ class MainWindow(QMainWindow):
             style_config = self.get_card_combobox_style()
             
             value_widget.setFixedHeight(style_config['fixed_height'])
-            value_widget.setMinimumWidth(style_config['min_width'])
             value_widget.setSizePolicy(*style_config['size_policy'])
             value_widget.setStyleSheet(style_config['stylesheet'])
             value_widget.setCursor(Qt.CursorShape.PointingHandCursor)
-            value_widget.setEditable(False)
+            value_widget.setEditable(True)
             value_widget.setEnabled(True)
             value_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             value_widget.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+            value_widget.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+            value_widget.setItemDelegate(CenteredComboDelegate(value_widget))
+
+            line_edit = value_widget.lineEdit()
+            if line_edit:
+                line_edit.setReadOnly(True)
+                line_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                line_edit.setCursor(Qt.CursorShape.PointingHandCursor)
+                line_edit.setStyleSheet(f"""
+                    QLineEdit {{
+                        background: transparent;
+                        color: {COLORS['text']};
+                        border: none;
+                        font-size: 10pt;
+                        font-weight: 600;
+                        padding-left: 12px;
+                        padding-right: 12px;
+                    }}
+                """)
+                # 읽기 전용 lineEdit은 커서가 끝에 남아 앞글자가 잘리는 경우가 있어 매번 0으로 복구
+                value_widget.currentTextChanged.connect(lambda _t, le=line_edit: le.setCursorPosition(0))
+                line_edit.setCursorPosition(0)
             
             # 스크롤 기능 비활성화
             value_widget.wheelEvent = self._ignore_wheel_event  # type: ignore[assignment]
@@ -6726,6 +6949,13 @@ class MainWindow(QMainWindow):
             else:
                 value_widget.setEnabled(False)
 
+        if widget_type == "combobox":
+            value_widget.setMinimumWidth(340)
+            value_widget.setMaximumWidth(520)
+        elif widget_type == "button":
+            value_widget.setMinimumWidth(300)
+            value_widget.setMaximumWidth(420)
+
         if widget_type == "lineedit" and suffix:
             wrapper = QFrame()
             wrapper.setObjectName("intervalWrapper")
@@ -6761,9 +6991,11 @@ class MainWindow(QMainWindow):
             # 중앙 정렬을 위한 스페이서
             wrapper_layout.addStretch()
             
-            layout.addWidget(wrapper)
+            layout.addWidget(wrapper, 0, Qt.AlignmentFlag.AlignHCenter)
         else:
-            layout.addWidget(value_widget)
+            layout.addWidget(value_widget, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        layout.addStretch(1)
 
         # value_widget을 container의 속성으로 저장
         setattr(container, "value_button", value_widget)
@@ -7027,9 +7259,11 @@ class MainWindow(QMainWindow):
             else:
                 scale = 1.0
 
-            card_min_h = int(132 * scale)
-            card_max_h = int(164 * scale)
-            card_min_w = int(460 * scale)
+            # 카드 내부 요소 글자가 잘리지 않도록 높이를 여유 있게 확보
+            card_min_h = max(168, int(168 * scale))
+            card_max_h = max(184, int(184 * scale))
+            # 좌우 50:50 패널에서도 카드 2열이 자연스럽게 들어가도록 최소 폭을 낮춤
+            card_min_w = int(300 * scale)
             ctl_h = int(50 * scale)
             ctl_font = max(11, int(14 * scale))
 
@@ -7050,7 +7284,9 @@ class MainWindow(QMainWindow):
 
             # 포스팅 간격 카드는 입력 요소가 많아 최소 폭을 추가 확보
             if hasattr(self, "interval_label") and self.interval_label:
-                self.interval_label.setMinimumWidth(card_min_w + 120)
+                self.interval_label.setMinimumWidth(card_min_w + 40)
+                self.interval_label.setMinimumHeight(card_min_h + 8)
+                self.interval_label.setMaximumHeight(card_max_h + 8)
 
             for btn in [
                 getattr(self, "start_btn", None),
@@ -7847,12 +8083,14 @@ class MainWindow(QMainWindow):
             }}
         """)
         status_layout = QVBoxLayout()
-        status_layout.setSpacing(26)
+        status_layout.setSpacing(36)
         status_layout.setContentsMargins(24, 24, 24, 24)
 
         self.settings_grid = QGridLayout()
-        self.settings_grid.setHorizontalSpacing(56)
-        self.settings_grid.setVerticalSpacing(40)
+        # 6개 섹션은 가로보다 세로 간격을 넉넉하게
+        self.settings_grid.setHorizontalSpacing(32)
+        self.settings_grid.setVerticalSpacing(58)
+        self.settings_grid.setContentsMargins(0, 8, 0, 12)
         self.settings_grid.setColumnStretch(0, 1)
         self.settings_grid.setColumnStretch(1, 1)
 
@@ -7970,7 +8208,10 @@ class MainWindow(QMainWindow):
 
         status_layout.addLayout(control_grid)
         status_group.setLayout(status_layout)
-        horizontal_layout.addWidget(status_group, 14)
+        # 좌우 패널을 50:50으로 사용
+        status_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        status_group.setMinimumWidth(0)
+        horizontal_layout.addWidget(status_group, 1)
 
         progress_group = QGroupBox("📜 진행 상태")
         progress_group.setStyleSheet(f"""
@@ -8053,6 +8294,7 @@ class MainWindow(QMainWindow):
         gemini_key = self.config_manager.data.get('api_keys', {}).get('gemini', '')
         gemini_status = "✅" if gemini_key.startswith('AIza') else "❌"
         config_check_result = self.check_settings_sync()
+        settings_button_summary = self.get_settings_button_summary(startup_time_short)
         startup_text = f"""🚀 Auto WP - 워드프레스 자동 포스팅
 ✨ 제작자 : 데이비
 
@@ -8061,11 +8303,7 @@ class MainWindow(QMainWindow):
 [{startup_time}] 📂 기본 경로: {base_path}
 [{startup_time}] ▶️ 포스팅 시작 버튼을 눌러 자동 포스팅을 시작하세요.
 [{startup_time}] 📋 진행 상태가 이곳에 실시간으로 표시됩니다.{last_site_info}
-[{startup_time_short}] 🔧 시스템 초기화가 완료되었습니다.
-[{startup_time_short}] 🔧 마지막 포스팅 상태가 복원되었습니다.
-[{startup_time_short}] 🔧 총 {len(active_sites)}개의 활성 사이트 발견
-[{startup_time_short}] 🔧 API 키 확인 - Gemini: {gemini_status}
-[{startup_time_short}] 🔧 총 {len(self.config_manager.data.get('sites', []))}개 사이트 등록됨
+{settings_button_summary}
 {config_check_result}
 =====================================================================================
 """
@@ -8111,7 +8349,11 @@ class MainWindow(QMainWindow):
         self.update_progress_action_buttons_visibility()
 
         progress_group.setLayout(progress_layout)
-        horizontal_layout.addWidget(progress_group, 8)
+        progress_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        progress_group.setMinimumWidth(0)
+        horizontal_layout.addWidget(progress_group, 1)
+        horizontal_layout.setStretch(0, 1)
+        horizontal_layout.setStretch(1, 1)
 
         horizontal_container.setLayout(horizontal_layout)
         layout.addWidget(horizontal_container)
@@ -8264,16 +8506,20 @@ class MainWindow(QMainWindow):
             max_edit = getattr(self, "wait_time_max_edit_monitoring", None)
 
             if min_edit and max_edit:
-                min_val = (min_edit.text() or "").strip()
-                max_val = (max_edit.text() or "").strip()
+                # QSpinBox/QLineEdit 모두 지원
+                if hasattr(min_edit, "value") and hasattr(max_edit, "value"):
+                    min_num = int(min_edit.value())
+                    max_num = int(max_edit.value())
+                else:
+                    min_val = (min_edit.text() or "").strip()
+                    max_val = (max_edit.text() or "").strip()
+                    if not min_val and not max_val:
+                        return
+                    if not min_val.isdigit() or not max_val.isdigit():
+                        return
+                    min_num = int(min_val)
+                    max_num = int(max_val)
 
-                if not min_val and not max_val:
-                    return
-                if not min_val.isdigit() or not max_val.isdigit():
-                    return
-
-                min_num = int(min_val)
-                max_num = int(max_val)
                 if min_num > max_num:
                     min_num, max_num = max_num, min_num
 
@@ -8293,7 +8539,7 @@ class MainWindow(QMainWindow):
             print(f"포스팅 간격이 '{wait_time_text}'로 변경되었습니다.")
 
             # 진행 상태에 실시간 반영
-            self.update_posting_status(f"⏱️ 포스팅 간격 즉시 적용: {wait_time_text}")
+            self.update_posting_status(f"⏱️ 포스팅 간격 즉시 적용: {wait_time_text}분")
 
             # 포스팅 중이면 다음 포스팅 카운트다운도 즉시 재계산
             if getattr(self, "is_posting", False):
@@ -8544,8 +8790,12 @@ class MainWindow(QMainWindow):
                     max_val = raw
                 min_edit.blockSignals(True)
                 max_edit.blockSignals(True)
-                min_edit.setText(min_val)
-                max_edit.setText(max_val)
+                if hasattr(min_edit, "setValue") and hasattr(max_edit, "setValue"):
+                    min_edit.setValue(int(min_val))
+                    max_edit.setValue(int(max_val))
+                else:
+                    min_edit.setText(min_val)
+                    max_edit.setText(max_val)
                 min_edit.blockSignals(False)
                 max_edit.blockSignals(False)
             
@@ -8581,9 +8831,11 @@ class MainWindow(QMainWindow):
     def create_interval_range_card(self, wait_time_value):
         """포스팅 간격 카드 생성 - 최소~최대 분 입력"""
         card = QWidget()
+        card.setObjectName("monitorCard")
         container_style = self.get_card_container_style()
-        card.setMaximumHeight(container_style['max_height'])
-        card.setMinimumHeight(container_style['min_height'])
+        # 간격 카드는 입력 컨트롤 높이가 있어 기본 카드보다 여유를 조금 더 확보
+        card.setMaximumHeight(container_style['max_height'] + 8)
+        card.setMinimumHeight(container_style['min_height'] + 8)
         card.setMinimumWidth(container_style['min_width'] + 70)
         card.setSizePolicy(*container_style['size_policy'])
         card.setStyleSheet(container_style['stylesheet'])
@@ -8591,13 +8843,14 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(*container_style['contents_margins'])
         layout.setSpacing(container_style['spacing'])
+        layout.addStretch(1)
 
         title_btn = QPushButton("⏱️ 포스팅 간격")
         title_btn.setFlat(True)
         title_btn.setStyleSheet(self.get_card_title_style())
         title_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         title_btn.clicked.connect(self.goto_settings_interval)
-        layout.addWidget(title_btn)
+        layout.addWidget(title_btn, 0, Qt.AlignmentFlag.AlignHCenter)
 
         min_text = "11"
         max_text = "17"
@@ -8613,7 +8866,10 @@ class MainWindow(QMainWindow):
             max_text = raw
 
         value_panel = QFrame()
-        value_panel.setFixedHeight(78)
+        value_panel.setFixedHeight(66)
+        value_panel.setMinimumWidth(330)
+        value_panel.setMaximumWidth(420)
+        value_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         value_panel.setStyleSheet(f"""
             QFrame {{
                 background-color: {COLORS['surface_light']};
@@ -8622,56 +8878,64 @@ class MainWindow(QMainWindow):
             }}
         """)
         row = QHBoxLayout(value_panel)
-        row.setContentsMargins(26, 12, 26, 12)
-        row.setSpacing(24)
+        row.setContentsMargins(14, 10, 14, 10)
+        row.setSpacing(8)
 
-        box_style = f"""
-            QLineEdit {{
+        spin_style = f"""
+            QSpinBox {{
                 background-color: {COLORS['surface']};
                 color: {COLORS['text']};
                 border: 2px solid {COLORS['primary']};
                 border-radius: 10px;
                 font-size: 10pt;
-                padding: 8px 12px;
+                font-weight: 700;
+                padding: 4px 26px 4px 10px;
             }}
-            QLineEdit:focus {{
+            QSpinBox:focus {{
                 border-color: {COLORS['info']};
+            }}
+            QSpinBox::up-button, QSpinBox::down-button {{
+                width: 0px;
+                border: none;
+                background: transparent;
+            }}
+            QSpinBox::up-arrow, QSpinBox::down-arrow {{
+                image: none;
             }}
         """
 
-        self.wait_time_min_edit_monitoring = QLineEdit(min_text)
+        self.wait_time_min_edit_monitoring = QSpinBox()
+        self.wait_time_min_edit_monitoring.setRange(1, 999)
+        self.wait_time_min_edit_monitoring.setValue(int(min_text))
         self.wait_time_min_edit_monitoring.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.wait_time_min_edit_monitoring.setFixedHeight(44)
-        self.wait_time_min_edit_monitoring.setMinimumWidth(150)
-        self.wait_time_min_edit_monitoring.setMaximumWidth(220)
-        self.wait_time_min_edit_monitoring.setStyleSheet(box_style)
-        self.wait_time_min_edit_monitoring.textChanged.connect(self.on_interval_changed)
-        row.addWidget(self.wait_time_min_edit_monitoring, 1, Qt.AlignmentFlag.AlignVCenter)
+        self.wait_time_min_edit_monitoring.setSuffix("분")
+        self.wait_time_min_edit_monitoring.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        self.wait_time_min_edit_monitoring.setFixedHeight(34)
+        self.wait_time_min_edit_monitoring.setMinimumWidth(120)
+        self.wait_time_min_edit_monitoring.setStyleSheet(spin_style)
+        self.wait_time_min_edit_monitoring.valueChanged.connect(self.on_interval_changed)
+        row.addWidget(self.wait_time_min_edit_monitoring, 1)
 
         tilde = QLabel("~")
-        tilde.setStyleSheet(f"color: {COLORS['text']}; font-size: 18px; font-weight: bold;")
+        tilde.setStyleSheet(f"color: {COLORS['text']}; font-size: 16px; font-weight: bold;")
         tilde.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tilde.setFixedWidth(34)
-        tilde.setFont(QFont("맑은 고딕", 12, QFont.Weight.Bold))
+        tilde.setFixedWidth(18)
         row.addWidget(tilde, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        self.wait_time_max_edit_monitoring = QLineEdit(max_text)
+        self.wait_time_max_edit_monitoring = QSpinBox()
+        self.wait_time_max_edit_monitoring.setRange(1, 999)
+        self.wait_time_max_edit_monitoring.setValue(int(max_text))
         self.wait_time_max_edit_monitoring.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.wait_time_max_edit_monitoring.setFixedHeight(44)
-        self.wait_time_max_edit_monitoring.setMinimumWidth(150)
-        self.wait_time_max_edit_monitoring.setMaximumWidth(220)
-        self.wait_time_max_edit_monitoring.setStyleSheet(box_style)
-        self.wait_time_max_edit_monitoring.textChanged.connect(self.on_interval_changed)
-        row.addWidget(self.wait_time_max_edit_monitoring, 1, Qt.AlignmentFlag.AlignVCenter)
+        self.wait_time_max_edit_monitoring.setSuffix("분")
+        self.wait_time_max_edit_monitoring.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        self.wait_time_max_edit_monitoring.setFixedHeight(34)
+        self.wait_time_max_edit_monitoring.setMinimumWidth(120)
+        self.wait_time_max_edit_monitoring.setStyleSheet(spin_style)
+        self.wait_time_max_edit_monitoring.valueChanged.connect(self.on_interval_changed)
+        row.addWidget(self.wait_time_max_edit_monitoring, 1)
 
-        unit = QLabel("분")
-        unit.setStyleSheet(f"color: {COLORS['text']}; font-size: 14px; font-weight: bold;")
-        unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        unit.setFixedWidth(42)
-        unit.setFont(QFont("맑은 고딕", 11, QFont.Weight.Bold))
-        row.addWidget(unit, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        layout.addWidget(value_panel)
+        layout.addWidget(value_panel, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addStretch(1)
 
         self.wait_time_edit_monitoring = self.wait_time_min_edit_monitoring
         setattr(card, "value_widget", self.wait_time_min_edit_monitoring)
@@ -8795,6 +9059,56 @@ class MainWindow(QMainWindow):
                 
         except Exception as e:
             return f"\n[{startup_time_short}] ❌ 설정 체크 중 오류 발생: {e}"
+
+    def get_settings_button_summary(self, startup_time_short):
+        """설정 탭 7개 상단 버튼의 현재 설정 요약"""
+        try:
+            base_path = get_base_path()
+            sites = self.config_manager.data.get('sites', [])
+            active_sites = [site for site in sites if site.get('active', True)]
+            global_settings = self.config_manager.data.get("global_settings", {})
+
+            keywords_dir = os.path.join(base_path, "setting", "keywords")
+            prompts_dir = os.path.join(base_path, "setting", "prompts")
+
+            keyword_file_count = 0
+            if os.path.exists(keywords_dir):
+                keyword_file_count = len([
+                    f for f in os.listdir(keywords_dir)
+                    if f.lower().endswith(".txt")
+                ])
+
+            prompt_file_count = 0
+            if os.path.exists(prompts_dir):
+                prompt_file_count = len([
+                    f for f in os.listdir(prompts_dir)
+                    if f.lower().endswith(".txt")
+                ])
+
+            wp_user = (global_settings.get("common_username", "") or "").strip()
+            wp_pass = (global_settings.get("common_password", "") or "").strip()
+            wp_status = "완료" if (wp_user and wp_pass) else "미완료"
+
+            gemini_key = (self.config_manager.data.get("api_keys", {}).get("gemini", "") or "").strip()
+            gemini_status = "설정됨" if gemini_key else "미설정"
+
+            google_email = (global_settings.get("google_email", "") or "").strip()
+            google_password = (global_settings.get("google_password", "") or "").strip()
+            web_login_status = "완료" if (google_email and google_password) else "미완료"
+
+            lines = [
+                f"[{startup_time_short}] ⚙️ 설정 버튼 내역",
+                f"[{startup_time_short}]   1) ➕ 새 사이트 추가: 총 {len(sites)}개 (활성 {len(active_sites)}개)",
+                f"[{startup_time_short}]   2) 📂 Keywords 폴더 열기: txt 파일 {keyword_file_count}개",
+                f"[{startup_time_short}]   3) 📝 Prompt 폴더 열기: txt 파일 {prompt_file_count}개",
+                f"[{startup_time_short}]   4) 🔐 워드프레스 세팅: {wp_status}",
+                f"[{startup_time_short}]   5) 🔑 Gemini API 설정: {gemini_status}",
+                f"[{startup_time_short}]   6) 🌐 웹사이트 로그인: {web_login_status}",
+                f"[{startup_time_short}]   7) 🔄 새로고침: 사용 가능 (F5)",
+            ]
+            return "\n" + "\n".join(lines)
+        except Exception as e:
+            return f"\n[{startup_time_short}] ⚠️ 설정 버튼 내역 조회 실패: {e}"
 
     def refresh_all_status(self):
         """F5 새로고침: 모든 설정값을 파일에서 다시 로드하고 UI 갱신"""
@@ -9433,7 +9747,7 @@ class MainWindow(QMainWindow):
 
     def delete_site(self, site_id):
         """사이트 삭제"""
-        print(f"🗑️ [GUI DEBUG] delete_site 호출됨 - ID: {site_id}")
+        print(f"🗑️ delete_site 호출됨 - ID: {site_id}")
         log_to_file(f"GUI delete_site 호출됨 - ID: {site_id}")
         
         site_data = self.config_manager.get_site(site_id)
@@ -9486,13 +9800,53 @@ class MainWindow(QMainWindow):
         # 스크롤 영역 생성
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background-color: #3B4252;
+                width: 12px;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #5E81AC;
+                border-radius: 6px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #81A1C1;
+            }
+        """)
 
         widget = QWidget()
         widget.setStyleSheet(f"""
             QWidget {{
-                background-color: {COLORS['surface']};
+                background-color: {COLORS['background']};
             }}
         """)
+        group_box_style = f"""
+            QGroupBox {{
+                font-weight: 600;
+                font-size: 14px;
+                color: {COLORS['text']};
+                border: 2px solid {COLORS['border']};
+                border-radius: 15px;
+                margin-top: 12px;
+                padding-top: 16px;
+                background-color: {COLORS['surface']};
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 8px;
+                color: {COLORS['primary']};
+                font-weight: 700;
+                background-color: {COLORS['surface']};
+            }}
+        """
         layout = QVBoxLayout()
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(20)
@@ -9507,12 +9861,12 @@ class MainWindow(QMainWindow):
         usage_period_layout = QHBoxLayout()
         usage_period_layout.addStretch()
         usage_period_label = QLabel(f"📅 사용 기간: {expire_date}")
-        # 🔥 배경색과 글자색 모두 적용하여 강조
-        usage_period_label.setStyleSheet("""
-            color: #1565C0; 
-            font-weight: bold; 
+        usage_period_label.setStyleSheet(f"""
+            color: {COLORS['primary']};
+            font-weight: 700;
             font-size: 14px;
-            background-color: #E3F2FD;
+            background-color: {COLORS['surface_light']};
+            border: 1px solid {COLORS['border']};
             padding: 10px 20px;
             border-radius: 8px;
         """)
@@ -9528,6 +9882,7 @@ class MainWindow(QMainWindow):
         # 1. 포스팅 모드 섹션
         posting_mode_group = QGroupBox("📝 포스팅 모드")
         posting_mode_group.setMinimumHeight(250)
+        posting_mode_group.setStyleSheet(group_box_style)
         posting_mode_layout = QVBoxLayout()
         posting_mode_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
@@ -9538,7 +9893,7 @@ class MainWindow(QMainWindow):
         
         mode_label = QLabel("포스팅 모드:")
         mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        mode_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #81A1C1;")
+        mode_label.setStyleSheet(f"font-weight: bold; font-size: 14px; color: {COLORS['primary']};")
         posting_mode_form.addWidget(mode_label)
         
         self.settings_posting_mode_combo = QComboBox()
@@ -9549,7 +9904,7 @@ class MainWindow(QMainWindow):
         self.settings_posting_mode_combo.setMinimumWidth(200)
         self.settings_posting_mode_combo.setStyleSheet(f"""
             QComboBox {{
-                background-color: {COLORS['surface']};
+                background-color: {COLORS['surface_light']};
                 color: white;
                 border: 2px solid {COLORS['primary']};
                 border-radius: 10px;
@@ -9575,7 +9930,7 @@ class MainWindow(QMainWindow):
                 margin-right: 10px;
             }}
             QComboBox QAbstractItemView {{
-                background-color: {COLORS['surface']};
+                background-color: {COLORS['surface_light']};
                 color: white;
                 selection-background-color: {COLORS['primary']};
                 selection-color: white;
@@ -9604,6 +9959,7 @@ class MainWindow(QMainWindow):
         # 2. 포스팅 간격 섹션
         interval_group = QGroupBox("⏱️ 포스팅 간격")
         interval_group.setMinimumHeight(250)
+        interval_group.setStyleSheet(group_box_style)
         interval_layout = QVBoxLayout()
         interval_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
@@ -9612,9 +9968,9 @@ class MainWindow(QMainWindow):
         interval_form = QVBoxLayout()
         interval_form.setSpacing(15)
         
-        interval_label = QLabel("포스팅 간격(초):")
+        interval_label = QLabel("포스팅 간격(분):")
         interval_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        interval_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #81A1C1;")
+        interval_label.setStyleSheet(f"font-weight: bold; font-size: 14px; color: {COLORS['primary']};")
         interval_form.addWidget(interval_label)
         
         self.wait_time_edit = QLineEdit()
@@ -9624,7 +9980,7 @@ class MainWindow(QMainWindow):
         self.wait_time_edit.setMinimumWidth(200)
         self.wait_time_edit.setStyleSheet(f"""
             QLineEdit {{
-                background-color: {COLORS['surface']};
+                background-color: {COLORS['surface_light']};
                 color: white;
                 border: 2px solid {COLORS['primary']};
                 border-radius: 10px;
@@ -9656,6 +10012,7 @@ class MainWindow(QMainWindow):
 
         # 3. AI 설정 그룹 (웹사이트 권장)
         ai_group = QGroupBox("🤖 AI 설정")
+        ai_group.setStyleSheet(group_box_style)
         ai_layout = QVBoxLayout()
 
         # AI 모드 선택 (웹사이트 우선) - 중앙 정렬
@@ -9665,7 +10022,7 @@ class MainWindow(QMainWindow):
         
         mode_label = QLabel("글 작성 방식:")
         mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        mode_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #81A1C1;")
+        mode_label.setStyleSheet(f"font-weight: bold; font-size: 14px; color: {COLORS['primary']};")
         mode_layout.addWidget(mode_label)
         
         self.ai_mode_combo = QComboBox()
@@ -9673,7 +10030,7 @@ class MainWindow(QMainWindow):
         self.ai_mode_combo.setMinimumWidth(250)
         self.ai_mode_combo.setStyleSheet(f"""
             QComboBox {{
-                background-color: {COLORS['surface']};
+                background-color: {COLORS['surface_light']};
                 color: white;
                 border: 2px solid {COLORS['primary']};
                 border-radius: 10px;
@@ -9699,7 +10056,7 @@ class MainWindow(QMainWindow):
                 margin-right: 10px;
             }}
             QComboBox QAbstractItemView {{
-                background-color: {COLORS['surface']};
+                background-color: {COLORS['surface_light']};
                 color: white;
                 selection-background-color: {COLORS['primary']};
                 selection-color: white;
@@ -9743,7 +10100,13 @@ class MainWindow(QMainWindow):
             "Google 계정 로그인이 필요할 수 있습니다."
         )
         web_info_label.setWordWrap(True)
-        web_info_label.setStyleSheet("background-color: #E3F2FD; padding: 15px; border-radius: 8px; color: #0D47A1;")
+        web_info_label.setStyleSheet(f"""
+            background-color: {COLORS['surface_light']};
+            border: 1px solid {COLORS['border']};
+            padding: 15px;
+            border-radius: 8px;
+            color: {COLORS['text']};
+        """)
         web_layout_inner.addWidget(web_info_label)
         
         # 웹 모델 선택 (GPT 제거)
@@ -9857,6 +10220,7 @@ class MainWindow(QMainWindow):
         # 4. 워드프레스 세팅 섹션 (사용자명/응용프로그램비밀번호)
         credentials_group = QGroupBox("🔐 워드프레스 세팅")
         credentials_group.setMinimumHeight(250)
+        credentials_group.setStyleSheet(group_box_style)
         credentials_layout = QVBoxLayout()
         credentials_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
@@ -9868,7 +10232,7 @@ class MainWindow(QMainWindow):
         # 사용자명 필드
         username_label = QLabel("사용자명:")
         username_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        username_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #81A1C1;")
+        username_label.setStyleSheet(f"font-weight: bold; font-size: 14px; color: {COLORS['primary']};")
         credentials_form.addWidget(username_label)
         
         self.common_username_edit = QLineEdit()
@@ -9877,7 +10241,7 @@ class MainWindow(QMainWindow):
         self.common_username_edit.setMinimumWidth(250)
         self.common_username_edit.setStyleSheet(f"""
             QLineEdit {{
-                background-color: {COLORS['surface']};
+                background-color: {COLORS['surface_light']};
                 color: white;
                 border: 2px solid {COLORS['primary']};
                 border-radius: 10px;
@@ -9895,7 +10259,7 @@ class MainWindow(QMainWindow):
         # 응용프로그램 비밀번호 필드
         password_label = QLabel("응용프로그램 비밀번호:")
         password_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        password_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #81A1C1; margin-top: 10px;")
+        password_label.setStyleSheet(f"font-weight: bold; font-size: 14px; color: {COLORS['primary']}; margin-top: 10px;")
         credentials_form.addWidget(password_label)
         
         password_row = QHBoxLayout()
@@ -9908,7 +10272,7 @@ class MainWindow(QMainWindow):
         self.common_password_edit.setMinimumWidth(200)
         self.common_password_edit.setStyleSheet(f"""
             QLineEdit {{
-                background-color: {COLORS['surface']};
+                background-color: {COLORS['surface_light']};
                 color: white;
                 border: 2px solid {COLORS['primary']};
                 border-radius: 10px;
@@ -9928,7 +10292,7 @@ class MainWindow(QMainWindow):
         self.password_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.password_toggle_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: {COLORS['surface']};
+                background-color: {COLORS['surface_light']};
                 border: 2px solid {COLORS['primary']};
                 border-radius: 10px;
                 font-size: 16px;
@@ -10249,7 +10613,7 @@ class MainWindow(QMainWindow):
             refresh_fn = getattr(self, "refresh_site_list", None)
             if callable(refresh_fn):
                 refresh_fn()
-                print(f"🔄 [DEBUG] 사이트 관리 탭 UI 새로고침 완료")
+                print(f"🔄 사이트 관리 탭 UI 새로고침 완료")
                 
         except Exception as e:
             print(f"❌ [ERROR] 사이트 인증 정보 업데이트 실패: {e}")
@@ -10311,15 +10675,8 @@ class MainWindow(QMainWindow):
             import sys
             import traceback
             
-            debug_msg = "🚀 [DEBUG] start_posting 함수가 호출되었습니다."
-            print("=" * 80, flush=True)
-            print(debug_msg, flush=True)
-            print(f"🚀 [DEBUG] self.is_posting = {self.is_posting}", flush=True)
-            print("=" * 80, flush=True)
-            
-            # EXE 실행 시 로그 파일에도 기록
-            log_to_file(debug_msg)
-            log_to_file(f"start_posting 호출됨 - is_posting: {self.is_posting}")
+            # EXE 실행 시 시작 로그 기록
+            log_to_file("start_posting 호출됨")
             
             if self.is_posting:
                 msg = "⚠️ 이미 포스팅이 진행 중입니다."
@@ -10425,11 +10782,6 @@ class MainWindow(QMainWindow):
         try:
             # 현재 포스팅 중인 사이트 정보 파싱 및 업데이트
             self.parse_and_update_current_site(message)
-            
-            # "포스트 업로드 성공" 메시지 감지 시 카운트다운 시작
-            if "포스트 업로드 성공" in message:
-                self.set_next_posting_time()
-            
             
             # GUI 업데이트는 항상 메인 스레드에서 실행
             if hasattr(self, 'progress_text') and self.progress_text is not None:
@@ -10565,10 +10917,7 @@ class MainWindow(QMainWindow):
             except:
                 pass
             self.posting_worker = None
-        
-        # 다음 포스팅까지 대기 시간 계산 및 카운트다운 시작
-        self.start_next_posting_countdown()
-        
+
         self._safe_update_button_states()
         print("🎉 모든 포스팅이 완료되었습니다!")
         
@@ -10621,13 +10970,27 @@ class MainWindow(QMainWindow):
             
         self.stop_posting()
 
+    def _resolve_wait_seconds_from_settings(self, default_minutes: int = 3) -> int:
+        """global_settings.default_wait_time(분 단위)를 초 단위로 변환"""
+        try:
+            wait_time_setting = str(
+                self.config_manager.data.get("global_settings", {}).get("default_wait_time", "3~5")
+            ).strip()
+            if "~" in wait_time_setting or "-" in wait_time_setting:
+                separator = "~" if "~" in wait_time_setting else "-"
+                min_wait, max_wait = map(int, wait_time_setting.split(separator))
+                min_wait = max(1, min_wait)
+                max_wait = max(min_wait, max_wait)
+                wait_minutes = random.randint(min_wait, max_wait)
+            else:
+                wait_minutes = max(1, int(wait_time_setting))
+            return wait_minutes * 60
+        except Exception:
+            return max(1, default_minutes) * 60
+
     def pause_posting(self):
         """포스팅 일시정지/재개"""
         try:
-            # EXE 환경 디버깅
-            print("⏸️ [DEBUG] pause_posting 함수 호출됨", flush=True)
-            print(f"⏸️ [DEBUG] is_posting={self.is_posting}, is_paused={self.is_paused}", flush=True)
-            
             if not self.is_posting:
                 print("⚠️ 포스팅이 진행 중이 아닙니다.")
                 return
@@ -10667,9 +11030,6 @@ class MainWindow(QMainWindow):
     def resume_posting(self):
         """포스팅 재개"""
         try:
-            # EXE 환경 디버깅
-            print("▶️ [DEBUG] resume_posting 함수 호출됨", flush=True)
-            
             if not self.is_posting:
                 print("⚠️ 포스팅이 시작되지 않았습니다. 먼저 시작 버튼을 누르세요.")
                 return
@@ -10697,9 +11057,6 @@ class MainWindow(QMainWindow):
     def stop_posting(self):
         """포스팅 중지"""
         try:
-            # EXE 환경 디버깅
-            print("🛑 [DEBUG] stop_posting 함수 호출됨", flush=True)
-            
             if not self.is_posting:
                 print("⚠️ 포스팅이 진행 중이 아닙니다.")
                 return
@@ -10865,16 +11222,8 @@ class MainWindow(QMainWindow):
     def set_next_posting_time(self):
         """다음 포스팅 시간 설정 및 카운트다운 시작"""
         try:
-            # 포스팅 간격 가져오기 (올바른 키 사용)
-            posting_interval = self.config_manager.data.get("global_settings", {}).get("default_wait_time", "47~50")
-            
-            if "~" in posting_interval or "-" in posting_interval:
-                # ~ 또는 - 구분자 처리
-                separator = "~" if "~" in posting_interval else "-"
-                min_val, max_val = map(int, posting_interval.split(separator))
-                self.posting_interval_seconds = random.randint(min_val, max_val)
-            else:
-                self.posting_interval_seconds = int(posting_interval)
+            # 포스팅 간격(분 단위 설정)을 초 단위로 변환
+            self.posting_interval_seconds = self._resolve_wait_seconds_from_settings(default_minutes=3)
                 
             # 다음 포스팅 시간 계산
             from datetime import datetime, timedelta
@@ -10966,6 +11315,15 @@ class MainWindow(QMainWindow):
             
             display_text = f"{time_str}{next_site}"
             self._set_card_value_text(self.next_posting_label, display_text)
+
+            # 진행 상태에 1초 단위 실시간 카운트다운 표시
+            if self._last_countdown_logged_second != total_seconds:
+                self._last_countdown_logged_second = total_seconds
+                if hours > 0:
+                    progress_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                else:
+                    progress_time = f"{minutes:02d}:{seconds:02d}"
+                self.update_posting_status(f"⏳ 다음 포스팅까지 남은 시간: {progress_time}")
             
         except Exception as e:
             print(f"카운트다운 업데이트 오류: {e}")
@@ -11036,7 +11394,7 @@ class MainWindow(QMainWindow):
             if self.website_login_generator:
                 driver = getattr(self.website_login_generator, "driver", None)
                 if driver is not None:
-                    self.update_posting_status("🧪 [DEBUG] 웹사이트 로그인 브라우저 종료 호출")
+                    self.update_posting_status("웹사이트 로그인 브라우저 종료 호출")
                     driver.quit()
         except Exception:
             pass
@@ -11117,7 +11475,7 @@ class MainWindow(QMainWindow):
         """시작 버튼 실행 전 Gemini 로그인 상태 선확인"""
         checker = None
         try:
-            self.update_posting_status("🧪 [DEBUG] ensure_gemini_login_before_start 시작")
+            self.update_posting_status("ensure_gemini_login_before_start 시작")
             self._close_website_login_browser()
             self.update_posting_status("🔍 시작 전 Gemini 로그인 상태를 확인합니다...")
             checker = ContentGenerator(self.config_manager.data, self.update_posting_status, self)
@@ -11139,7 +11497,7 @@ class MainWindow(QMainWindow):
                 try:
                     driver = checker.driver
                     if driver is not None:
-                        self.update_posting_status("🧪 [DEBUG] ensure_gemini_login_before_start checker 브라우저 종료")
+                        self.update_posting_status("ensure_gemini_login_before_start checker 브라우저 종료")
                         driver.quit()
                 except Exception:
                     pass
@@ -11179,21 +11537,14 @@ class MainWindow(QMainWindow):
     def start_next_posting_countdown(self):
         """다음 포스팅까지 카운트다운 시작"""
         try:
-            # 대기 시간 설정 가져오기 (초 단위)
-            wait_time_setting = self.config_manager.data.get("global_settings", {}).get("default_wait_time", "47~50")
-            
-            # 대기 시간 파싱 (초 단위)
-            if "~" in wait_time_setting:
-                min_wait, max_wait = map(int, wait_time_setting.split("~"))
-                import random
-                wait_seconds = random.randint(min_wait, max_wait)
-            else:
-                wait_seconds = int(wait_time_setting)
+            # 대기 시간 설정(분 단위)을 초 단위로 변환
+            wait_seconds = self._resolve_wait_seconds_from_settings(default_minutes=3)
             
             # 다음 포스팅 시간 계산
             from datetime import datetime, timedelta
             self.next_posting_time = datetime.now() + timedelta(seconds=wait_seconds)
             self.posting_interval_seconds = wait_seconds
+            self._last_countdown_logged_second = None
             
             # 초기 카운트다운 표시
             value_button = self._get_card_value_button(self.next_posting_label)
@@ -11244,6 +11595,7 @@ class MainWindow(QMainWindow):
             
         # 다음 포스팅 시간 초기화
         self.next_posting_time = None
+        self._last_countdown_logged_second = None
 
     def check_and_update_api_status(self):
         """API 키 상태를 확인하고 UI 업데이트"""
