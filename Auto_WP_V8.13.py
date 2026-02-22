@@ -4510,6 +4510,14 @@ class ContentGenerator:
                 elif u.startswith("www."):
                     u = "https://" + u
 
+                # naver 검색 URL에서 쿼리 구분자/연결자가 인코딩된 경우 복구
+                # 예: /search.naver%3Fquery%3D... -> /search.naver?query=...
+                if re.search(r"search\.naver\.com/search\.naver%3f", u, flags=re.IGNORECASE):
+                    u = re.sub(r"%3[fF]", "?", u, count=1)
+                    u = re.sub(r"%3[dD]", "=", u)
+                    u = re.sub(r"%26", "&", u, flags=re.IGNORECASE)
+                    u = re.sub(r"%2[bB]", "+", u)
+
                 # URL 끝에 잘못 붙은 괄호/구두점 제거
                 while u and u[-1] in [",", ";"]:
                     u = u[:-1]
