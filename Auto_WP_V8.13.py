@@ -10799,12 +10799,26 @@ class MainWindow(QMainWindow):
                 from datetime import datetime
                 timestamp = datetime.now().strftime("%H:%M:%S")
                 simple_message = f"[{timestamp}] {message}"
+                countdown_prefix = "⏳ 다음 포스팅까지 남은 시간:"
                 
                 try:
                     current_text = self.progress_text.toPlainText()
                     
-                    # 새 메시지 추가
-                    if current_text.strip():
+                    # 카운트다운 메시지는 한 줄만 유지하고 시간만 갱신
+                    if message.startswith(countdown_prefix) and current_text.strip():
+                        lines = current_text.splitlines()
+                        replaced = False
+                        for idx in range(len(lines) - 1, -1, -1):
+                            if countdown_prefix in lines[idx]:
+                                lines[idx] = simple_message
+                                replaced = True
+                                break
+                        if replaced:
+                            new_text = "\n".join(lines)
+                        else:
+                            new_text = current_text + "\n" + simple_message
+                    # 일반 메시지는 기존처럼 새 줄 추가
+                    elif current_text.strip():
                         new_text = current_text + "\n" + simple_message
                     else:
                         new_text = simple_message
