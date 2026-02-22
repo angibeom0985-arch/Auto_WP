@@ -6883,7 +6883,8 @@ class MainWindow(QMainWindow):
             value_widget.setEditable(True)
             value_widget.setEnabled(True)
             value_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            value_widget.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+            value_widget.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            value_widget.setMinimumContentsLength(20)
             value_widget.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
             value_widget.setItemDelegate(CenteredComboDelegate(value_widget))
 
@@ -6891,7 +6892,9 @@ class MainWindow(QMainWindow):
             if line_edit:
                 line_edit.setReadOnly(True)
                 line_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                line_edit.setCursor(Qt.CursorShape.PointingHandCursor)
+                line_edit.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                line_edit.setCursor(Qt.CursorShape.ArrowCursor)
+                line_edit.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
                 line_edit.setStyleSheet(f"""
                     QLineEdit {{
                         background: transparent;
@@ -6903,9 +6906,17 @@ class MainWindow(QMainWindow):
                         padding-right: 12px;
                     }}
                 """)
-                # 읽기 전용 lineEdit은 커서가 끝에 남아 앞글자가 잘리는 경우가 있어 매번 0으로 복구
-                value_widget.currentTextChanged.connect(lambda _t, le=line_edit: le.setCursorPosition(0))
-                line_edit.setCursorPosition(0)
+
+                def _reset_combo_text_pos():
+                    try:
+                        line_edit.setCursorPosition(0)
+                        line_edit.deselect()
+                    except Exception:
+                        pass
+
+                value_widget.currentTextChanged.connect(lambda _t: QTimer.singleShot(0, _reset_combo_text_pos))
+                value_widget.currentIndexChanged.connect(lambda _i: QTimer.singleShot(0, _reset_combo_text_pos))
+                QTimer.singleShot(0, _reset_combo_text_pos)
             
             # 스크롤 기능 비활성화
             value_widget.wheelEvent = self._ignore_wheel_event  # type: ignore[assignment]
@@ -6950,8 +6961,8 @@ class MainWindow(QMainWindow):
                 value_widget.setEnabled(False)
 
         if widget_type == "combobox":
-            value_widget.setMinimumWidth(340)
-            value_widget.setMaximumWidth(520)
+            value_widget.setMinimumWidth(420)
+            value_widget.setMaximumWidth(16777215)
         elif widget_type == "button":
             value_widget.setMinimumWidth(300)
             value_widget.setMaximumWidth(420)
