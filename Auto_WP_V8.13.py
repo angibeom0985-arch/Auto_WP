@@ -672,6 +672,13 @@ def get_resource_path(relative_path):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, relative_path)
 
+def get_preferred_resource_path(relative_path):
+    """외부 설정 파일 우선, 없으면 번들 리소스 경로 사용"""
+    external_path = os.path.join(get_base_path(), relative_path)
+    if os.path.exists(external_path):
+        return external_path
+    return get_resource_path(relative_path)
+
 def log_to_file(message):
     """EXE 실행 시 로그 파일에 기록"""
     try:
@@ -7360,7 +7367,7 @@ class MainWindow(QMainWindow):
         # 🔥 프로그램 아이콘 설정 (임베디드 방식)
         try:
             # 아이콘 파일 경로 (PyInstaller 리소스 경로 사용)
-            icon_path = get_resource_path(os.path.join("setting", "etc", "auto_wp.ico"))
+            icon_path = get_preferred_resource_path(os.path.join("setting", "etc", "auto_wp.ico"))
             
             # 아이콘 파일이 있으면 로드
             if os.path.exists(icon_path):
@@ -11777,7 +11784,7 @@ def main():
             machine_id = license_manager.get_machine_id()
             is_expired = ("만료" in (message or "")) or ("expire" in (message or "").lower())
             dialog = QDialog()
-            icon_path = get_resource_path(os.path.join("setting", "etc", "auto_wp.ico"))
+            icon_path = get_preferred_resource_path(os.path.join("setting", "etc", "auto_wp.ico"))
             if os.path.exists(icon_path):
                 dialog.setWindowIcon(QIcon(icon_path))
             dialog.setWindowTitle("프로그램 사용 권한")
@@ -11976,7 +11983,7 @@ def main():
         app.setFont(font)
 
         # 아이콘 설정 (PyInstaller 리소스 경로 사용)
-        icon_path = get_resource_path(os.path.join("setting", "etc", "auto_wp.ico"))
+        icon_path = get_preferred_resource_path(os.path.join("setting", "etc", "auto_wp.ico"))
         if os.path.exists(icon_path):
             app.setWindowIcon(QIcon(icon_path))
             print(f"✅ 애플리케이션 아이콘 설정 완료: {icon_path}")
