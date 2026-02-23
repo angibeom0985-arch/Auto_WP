@@ -9065,6 +9065,7 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(value_panel)
         row.setContentsMargins(14, 10, 14, 10)
         row.setSpacing(8)
+        row.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         spin_style = f"""
             QSpinBox {{
@@ -9096,10 +9097,11 @@ class MainWindow(QMainWindow):
         self.wait_time_min_edit_monitoring.setSuffix("분")
         self.wait_time_min_edit_monitoring.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self.wait_time_min_edit_monitoring.setFixedHeight(34)
-        self.wait_time_min_edit_monitoring.setMinimumWidth(120)
+        self.wait_time_min_edit_monitoring.setFixedWidth(160)
         self.wait_time_min_edit_monitoring.setStyleSheet(spin_style)
         self.wait_time_min_edit_monitoring.valueChanged.connect(self.on_interval_changed)
-        row.addWidget(self.wait_time_min_edit_monitoring, 1)
+        row.addStretch(1)
+        row.addWidget(self.wait_time_min_edit_monitoring, 0, Qt.AlignmentFlag.AlignVCenter)
 
         tilde = QLabel("~")
         tilde.setStyleSheet(f"color: {COLORS['text']}; font-size: 16px; font-weight: bold;")
@@ -9114,10 +9116,11 @@ class MainWindow(QMainWindow):
         self.wait_time_max_edit_monitoring.setSuffix("분")
         self.wait_time_max_edit_monitoring.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self.wait_time_max_edit_monitoring.setFixedHeight(34)
-        self.wait_time_max_edit_monitoring.setMinimumWidth(120)
+        self.wait_time_max_edit_monitoring.setFixedWidth(160)
         self.wait_time_max_edit_monitoring.setStyleSheet(spin_style)
         self.wait_time_max_edit_monitoring.valueChanged.connect(self.on_interval_changed)
-        row.addWidget(self.wait_time_max_edit_monitoring, 1)
+        row.addWidget(self.wait_time_max_edit_monitoring, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addStretch(1)
 
         layout.addWidget(value_panel, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch(1)
