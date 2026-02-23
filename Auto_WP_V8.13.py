@@ -8734,6 +8734,7 @@ class MainWindow(QMainWindow):
             }}
         """)
         self.copy_error_btn.clicked.connect(self.copy_latest_error_for_creator)
+        self.copy_error_btn.hide()
         progress_layout.addWidget(self.progress_text)
         progress_layout.addWidget(self.copy_error_btn, 0, Qt.AlignmentFlag.AlignRight)
 
@@ -11114,6 +11115,10 @@ class MainWindow(QMainWindow):
                 self.update_posting_status(msg)
                 return
 
+            # 새 포스팅 시작 시 이전 오류 상태 초기화
+            self._latest_error_message = ""
+            self.update_copy_error_button_visibility()
+
             # 활성 사이트 확인
             # sites 데이터 직접 접근
             sites_data = self.config_manager.data.get("sites", [])
@@ -11213,6 +11218,7 @@ class MainWindow(QMainWindow):
                 msg_text = message.strip()
                 if msg_text.startswith("❌") or ("오류" in msg_text):
                     self._latest_error_message = msg_text
+                    self.update_copy_error_button_visibility()
 
             # 현재 포스팅 중인 사이트 정보 파싱 및 업데이트
             self.parse_and_update_current_site(message)
@@ -11311,6 +11317,17 @@ class MainWindow(QMainWindow):
             self.copy_error_for_creator(latest, source="진행 상태 로그")
             self.update_posting_status("📋 오류 내용이 '제작자에게 전달' 형식으로 복사되었습니다.")
 
+    def update_copy_error_button_visibility(self):
+        """최근 오류 존재 여부에 따라 복사 버튼 표시/숨김"""
+        try:
+            btn = getattr(self, "copy_error_btn", None)
+            if btn is None:
+                return
+            latest = str(getattr(self, "_latest_error_message", "") or "").strip()
+            btn.setVisible(bool(latest))
+        except Exception:
+            pass
+
     def update_keyword_count(self):
         """키워드 사용 후 실시간으로 키워드 개수 업데이트"""
         try:
@@ -11386,6 +11403,8 @@ class MainWindow(QMainWindow):
         self.is_posting = False
         self.is_paused = False
         self.stop_next_posting_timer()
+        self._latest_error_message = ""
+        self.update_copy_error_button_visibility()
         
         # 워커 정리
         if hasattr(self, 'posting_worker') and self.posting_worker:
@@ -11408,6 +11427,7 @@ class MainWindow(QMainWindow):
         """포스팅 오류 처리 및 키워드 부족 알림"""
         print(f"❌ 포스팅 중 오류 발생: {error_message}")
         self._latest_error_message = str(error_message)
+        self.update_copy_error_button_visibility()
         
         # 키워드 부족 메시지인지 확인
         if error_message.startswith("키워드 부족|"):
