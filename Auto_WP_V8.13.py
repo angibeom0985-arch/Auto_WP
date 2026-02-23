@@ -11067,19 +11067,17 @@ class MainWindow(QMainWindow):
                 try:
                     current_text = self.progress_text.toPlainText()
                     
-                    # 카운트다운 메시지는 한 줄만 유지하고 시간만 갱신
-                    if (countdown_prefix in message) and current_text.strip():
-                        lines = current_text.splitlines()
-                        replaced = False
-                        for idx in range(len(lines) - 1, -1, -1):
-                            if countdown_prefix in lines[idx]:
-                                lines[idx] = simple_message
-                                replaced = True
-                                break
-                        if replaced:
-                            new_text = "\n".join(lines)
+                    # 카운트다운 메시지는 항상 "한 줄"만 유지
+                    if countdown_prefix in message:
+                        lines = current_text.splitlines() if current_text else []
+                        if lines and countdown_prefix in lines[-1]:
+                            # 직전 줄이 카운트다운이면 마지막 줄만 교체
+                            lines[-1] = simple_message
                         else:
-                            new_text = current_text + "\n" + simple_message
+                            # 기존 카운트다운 줄이 중간에 남아있으면 제거 후 마지막에 추가
+                            lines = [line for line in lines if countdown_prefix not in line]
+                            lines.append(simple_message)
+                        new_text = "\n".join(lines)
                     # 일반 메시지는 기존처럼 새 줄 추가
                     elif current_text.strip():
                         new_text = current_text + "\n" + simple_message
