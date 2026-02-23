@@ -1602,6 +1602,7 @@ class ContentGenerator:
         self.log("🌐 Gemini 웹 작업을 시작합니다")
         if not self._ensure_gemini_tab():
             return None
+        self._handle_gemini_blocking_dialogs()
 
         # 로그인 버튼(로그인/Sign in) 유무 기준으로 로그인 상태 판단
         self.log("🔐 Gemini 로그인 상태 확인 중...")
@@ -1638,6 +1639,7 @@ class ContentGenerator:
         ]
         end_time = time.time() + timeout
         while time.time() < end_time:
+            # 1) 일반 셀렉터 탐색
             for sel in selectors:
                 try:
                     elem = self.driver.find_element(By.CSS_SELECTOR, sel)
@@ -1645,8 +1647,91 @@ class ContentGenerator:
                         return elem
                 except Exception:
                     pass
+            # 2) 범용 콘텐츠 입력창 폴백
+            try:
+                candidates = self.driver.find_elements(By.XPATH, "//textarea | //*[@contenteditable='true']")
+                for elem in candidates:
+                    try:
+                        if elem.is_displayed() and elem.is_enabled():
+                            txt = (elem.get_attribute("aria-label") or "") + " " + (elem.get_attribute("placeholder") or "")
+                            txt = txt.lower()
+                            if ("prompt" in txt) or ("프롬프트" in txt) or ("무엇을" in txt) or ("gemini" in txt):
+                                return elem
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # 3) Shadow DOM 포함 JS 탐색 폴백
+            js_elem = self._find_editor_via_js()
+            if js_elem is not None:
+                return js_elem
             time.sleep(0.5)
         return None
+
+    def _find_editor_via_js(self):
+        """Shadow DOM 포함 입력창 탐색"""
+        if not self.driver:
+            return None
+        script = """
+        const isVisible = (el) => {
+          if (!el) return false;
+          const style = window.getComputedStyle(el);
+          if (!style || style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') < 0.1) return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 140 && r.height > 24;
+        };
+        const score = (el) => {
+          let s = 0;
+          const label = ((el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('placeholder') || '') + ' ' + (el.innerText || '')).toLowerCase();
+          if (label.includes('prompt') || label.includes('프롬프트') || label.includes('gemini') || label.includes('무엇을')) s += 6;
+          if (el.getAttribute('contenteditable') === 'true') s += 4;
+          if (el.tagName === 'TEXTAREA') s += 3;
+          const r = el.getBoundingClientRect();
+          s += Math.min(6, Math.floor((r.width * r.height) / 50000));
+          return s;
+        };
+        const out = [];
+        const walk = (root) => {
+          if (!root) return;
+          const nodes = root.querySelectorAll("textarea, [contenteditable='true'], div[role='textbox']");
+          nodes.forEach((n) => { if (isVisible(n)) out.push(n); });
+          const all = root.querySelectorAll('*');
+          all.forEach((n) => { if (n.shadowRoot) walk(n.shadowRoot); });
+        };
+        walk(document);
+        if (!out.length) return null;
+        out.sort((a,b) => score(b) - score(a));
+        return out[0];
+        """
+        try:
+            elem = self.driver.execute_script(script)
+            return elem
+        except Exception:
+            return None
+
+    def _handle_gemini_blocking_dialogs(self):
+        """Gemini 진입 시 가끔 뜨는 동의/계속 버튼 처리"""
+        if not self.driver or By is None:
+            return
+        targets = [
+            "동의", "I agree", "Accept all", "Agree", "확인", "계속", "Continue"
+        ]
+        xpath = " | ".join([f"//button[contains(normalize-space(.), '{t}')]" for t in targets] +
+                           [f"//span[contains(normalize-space(.), '{t}')]/ancestor::button[1]" for t in targets])
+        try:
+            elems = self.driver.find_elements(By.XPATH, xpath)
+            for elem in elems[:5]:
+                try:
+                    if elem.is_displayed() and elem.is_enabled():
+                        try:
+                            elem.click()
+                        except Exception:
+                            self.driver.execute_script("arguments[0].click();", elem)
+                        time.sleep(0.2)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _has_gemini_login_button(self, timeout: float = 3.0):
         """Gemini 페이지의 로그인 버튼 존재 여부 확인"""
@@ -1803,13 +1888,25 @@ class ContentGenerator:
         ready_end = time.time() + max(30, wait_seconds)
         last_notice = 0
         while time.time() < ready_end:
+            self._handle_gemini_blocking_dialogs()
             if self._find_gemini_editor(timeout=0.2):
                 self.gemini_logged_in = True
                 return True
             now_sec = int(time.time())
             if now_sec - last_notice >= 10:
                 remaining = int(max(0, ready_end - time.time()))
-                self.log(f"⌛ Gemini 입력창 탐색 중... ({remaining}초 남음)")
+                try:
+                    current_url = self.driver.current_url
+                    title = self.driver.title
+                except Exception:
+                    current_url, title = "", ""
+                self.log(f"⌛ Gemini 입력창 탐색 중... ({remaining}초 남음) | {title} | {current_url}")
+                # 혹시 다른 페이지로 이탈한 경우 Gemini 페이지로 복귀
+                if "gemini.google.com" not in (current_url or "").lower():
+                    try:
+                        self.driver.get("https://gemini.google.com/app?hl=ko")
+                    except Exception:
+                        pass
                 last_notice = now_sec
             time.sleep(0.5)
         self.log("❌ Gemini 프롬프트 입력창을 찾지 못했습니다.")
@@ -1822,7 +1919,13 @@ class ContentGenerator:
                 return False
             editor = self._find_gemini_editor(timeout=15)
             if not editor:
-                return False
+                # 최종 폴백: 현재 활성 요소 사용 시도
+                try:
+                    editor = self.driver.switch_to.active_element
+                except Exception:
+                    editor = None
+                if not editor:
+                    return False
 
             # 사용자 지정 선택자 기준: 입력창 클릭 후 프롬프트 입력
             try:
