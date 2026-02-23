@@ -1179,23 +1179,29 @@ class ContentGenerator:
                     self._clear_chrome_profile_locks(chrome_profile_dir)
                     force_cleanup = (attempt == 2)
                     self._cleanup_stale_driver_binaries(force_cleanup=force_cleanup)
-                    options = self._build_chrome_options(use_uc=False, chrome_profile_dir=chrome_profile_dir)
+                    use_profile_directory = (attempt == 1)
+                    options = self._build_chrome_options(
+                        use_uc=False,
+                        chrome_profile_dir=chrome_profile_dir,
+                        use_profile_directory=use_profile_directory
+                    )
 
+                    service = None
                     if ChromeDriverManager is not None and Service is not None:
                         try:
                             driver_path = ChromeDriverManager().install()
                             service = Service(driver_path)
                         except Exception:
-                            service = Service()
+                            service = None
                     elif Service is not None:
-                        service = Service()
-                    else:
-                        self.log("⚠️ selenium Service not available.")
-                        return False
+                        service = None
 
-                    assert service is not None
                     try:
-                        self.driver = webdriver.Chrome(service=service, options=options)
+                        if service is not None:
+                            self.driver = webdriver.Chrome(service=service, options=options)
+                        else:
+                            # Selenium Manager 폴백 (드라이버 자동 탐색)
+                            self.driver = webdriver.Chrome(options=options)
                         self._verify_driver_health()
                         self.log("✅ 브라우저 실행 완료")
                         return True
@@ -1217,7 +1223,10 @@ class ContentGenerator:
         if attempt <= 1:
             profile_dir = profile_root
         else:
-            profile_dir = os.path.join(profile_root, "runtime_fallback")
+            profile_dir = os.path.join(
+                profile_root,
+                f"runtime_fallback_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+            )
         os.makedirs(profile_dir, exist_ok=True)
         return profile_dir
 
@@ -1250,7 +1259,7 @@ class ContentGenerator:
         text = text.replace("\r", " ").replace("\n", " ")
         return re.sub(r"\s+", " ", text)
 
-    def _build_chrome_options(self, use_uc: bool, chrome_profile_dir: str):
+    def _build_chrome_options(self, use_uc: bool, chrome_profile_dir: str, use_profile_directory: bool = True):
         """Chrome 옵션 생성 (표준 Selenium)"""
         if webdriver is None:
             raise RuntimeError("selenium webdriver를 사용할 수 없습니다.")
@@ -1266,7 +1275,9 @@ class ContentGenerator:
         options.add_argument("--no-default-browser-check")
         options.add_argument("--remote-debugging-port=0")
         options.add_argument(f"--user-data-dir={chrome_profile_dir}")
-        options.add_argument("--profile-directory=Default")
+        if use_profile_directory:
+            options.add_argument("--profile-directory=Default")
+        options.add_argument("--disable-extensions")
         return options
 
     def _cleanup_stale_driver_binaries(self, force_cleanup: bool = False):
