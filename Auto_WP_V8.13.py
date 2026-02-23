@@ -1535,7 +1535,7 @@ class ContentGenerator:
                 f.write("\n[PROMPT]\n")
                 f.write(prompt_text or "")
 
-            self.log(f"🗂️ AI 응답 저장 완료: {file_path}")
+            self.log("🗂️ AI 응답 저장 완료")
         except Exception as e:
             self.log(f"⚠️ AI 응답 파일 저장 실패: {e}")
 
