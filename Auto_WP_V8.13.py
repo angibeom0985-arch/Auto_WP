@@ -11071,6 +11071,12 @@ class MainWindow(QMainWindow):
     def update_posting_status(self, message):
         """포스팅 상태 업데이트"""
         try:
+            # 오류/실패 메시지는 즉시 "제작자에게 전달" 포맷으로 클립보드 복사
+            if isinstance(message, str):
+                msg_text = message.strip()
+                if msg_text.startswith("❌") or ("오류" in msg_text):
+                    self.copy_error_for_creator(msg_text, source="진행 상태 로그")
+
             # 현재 포스팅 중인 사이트 정보 파싱 및 업데이트
             self.parse_and_update_current_site(message)
             
@@ -11136,6 +11142,30 @@ class MainWindow(QMainWindow):
             print(f"❌ update_posting_status 전체 오류: {e}")
             import traceback
             traceback.print_exc()
+
+    def copy_error_for_creator(self, error_message, source=""):
+        """오류 메시지를 제작자 전달용 포맷으로 클립보드에 복사"""
+        try:
+            text = str(error_message or "").strip()
+            if not text:
+                return
+
+            from datetime import datetime
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            header = "제작자에게 전달:"
+            source_line = f"\n출처: {source}" if source else ""
+            payload = f"{header}\n[{ts}]{source_line}\n오류 내용: {text}"
+
+            # 동일한 에러 문구 연속 복사는 방지
+            if getattr(self, "_last_creator_copy_payload", "") == payload:
+                return
+
+            cb = QApplication.clipboard()
+            if cb is not None:
+                cb.setText(payload)
+                self._last_creator_copy_payload = payload
+        except Exception:
+            pass
 
     def update_keyword_count(self):
         """키워드 사용 후 실시간으로 키워드 개수 업데이트"""
@@ -11233,6 +11263,7 @@ class MainWindow(QMainWindow):
     def on_posting_error(self, error_message):
         """포스팅 오류 처리 및 키워드 부족 알림"""
         print(f"❌ 포스팅 중 오류 발생: {error_message}")
+        self.copy_error_for_creator(error_message, source="포스팅 워커")
         
         # 키워드 부족 메시지인지 확인
         if error_message.startswith("키워드 부족|"):
