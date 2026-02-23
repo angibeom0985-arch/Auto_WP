@@ -4673,8 +4673,7 @@ class ContentGenerator:
                 # 썸네일 업로드
                 if thumbnail_path and os.path.exists(thumbnail_path):
                     media_id = self.upload_featured_image(site_url, headers, thumbnail_path, post_id)
-                    if media_id:
-                    else:
+                    if not media_id:
                         self.log(f"⚠️ {site_name}: 썸네일 업로드 실패 (포스트는 성공)")
                 
                 # HTML 콘텐츠를 output 폴더에 저장
