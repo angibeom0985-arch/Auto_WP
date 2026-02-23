@@ -1168,8 +1168,8 @@ class ContentGenerator:
                     self.driver = None
 
             self.log("🌐 브라우저 실행 준비 중...")
-            chrome_profile_dir = os.path.join(get_base_path(), "setting", "chrome_profile")
-            os.makedirs(chrome_profile_dir, exist_ok=True)
+            chrome_profile_root = os.path.join(get_base_path(), "setting", "chrome_profile")
+            os.makedirs(chrome_profile_root, exist_ok=True)
 
             self.log("🚀 브라우저 시작 중...")
 
@@ -1177,6 +1177,8 @@ class ContentGenerator:
             if uc is not None:
                 for attempt in range(1, 3):
                     try:
+                        chrome_profile_dir = self._select_chrome_profile_dir(chrome_profile_root, attempt)
+                        self._clear_chrome_profile_locks(chrome_profile_dir)
                         force_cleanup = (attempt == 2) or (os.environ.get("AUTO_WP_FORCE_DRIVER_CLEANUP", "0") == "1")
                         self._cleanup_stale_driver_binaries(force_cleanup=force_cleanup)
                         options = self._build_chrome_options(use_uc=True, chrome_profile_dir=chrome_profile_dir)
@@ -1192,7 +1194,7 @@ class ContentGenerator:
                         self.log("✅ 브라우저 실행 완료! (UC)")
                         return True
                     except Exception as uc_error:
-                        self.log(f"⚠️ UC 실행 {attempt}/2 실패: {uc_error}")
+                        self.log(f"⚠️ UC 실행 {attempt}/2 실패: {self._compact_error(uc_error)}")
                         self._safe_quit_driver()
                         time.sleep(1.2)
 
@@ -1202,31 +1204,78 @@ class ContentGenerator:
 
             # 2) 표준 Selenium 폴백
             try:
-                options = self._build_chrome_options(use_uc=False, chrome_profile_dir=chrome_profile_dir)
-                if ChromeDriverManager is not None and Service is not None:
-                    try:
-                        driver_path = ChromeDriverManager().install()
-                        service = Service(driver_path)
-                    except Exception:
+                for attempt in range(1, 3):
+                    chrome_profile_dir = self._select_chrome_profile_dir(chrome_profile_root, attempt)
+                    self._clear_chrome_profile_locks(chrome_profile_dir)
+                    options = self._build_chrome_options(use_uc=False, chrome_profile_dir=chrome_profile_dir)
+                    if ChromeDriverManager is not None and Service is not None:
+                        try:
+                            driver_path = ChromeDriverManager().install()
+                            service = Service(driver_path)
+                        except Exception:
+                            service = Service()
+                    elif Service is not None:
                         service = Service()
-                elif Service is not None:
-                    service = Service()
-                else:
-                    self.log("⚠️ selenium Service not available.")
-                    return False
+                    else:
+                        self.log("⚠️ selenium Service not available.")
+                        return False
 
-                assert service is not None
-                self.driver = webdriver.Chrome(service=service, options=options)
-                self._verify_driver_health()
-                self.log("✅ 브라우저 실행 완료! (Selenium)")
-                return True
+                    assert service is not None
+                    try:
+                        self.driver = webdriver.Chrome(service=service, options=options)
+                        self._verify_driver_health()
+                        self.log("✅ 브라우저 실행 완료! (Selenium)")
+                        return True
+                    except Exception as selenium_error:
+                        self.log(f"⚠️ Selenium 실행 {attempt}/2 실패: {self._compact_error(selenium_error)}")
+                        self._safe_quit_driver()
+                        time.sleep(1.0)
+                raise RuntimeError("Selenium 폴백 2회 실패")
             except Exception as selenium_error:
-                self.log(f"❌ 브라우저 시작 오류: {selenium_error}")
+                self.log(f"❌ 브라우저 시작 오류: {self._compact_error(selenium_error)}")
                 raise
             
         except Exception as e:
-            self.log(f"❌ 브라우저 실행 실패: {str(e)}")
+            self.log(f"❌ 브라우저 실행 실패: {self._compact_error(e)}")
             return False
+
+    def _select_chrome_profile_dir(self, profile_root: str, attempt: int) -> str:
+        """브라우저 시작 시도별 프로필 경로 선택"""
+        if attempt <= 1:
+            profile_dir = profile_root
+        else:
+            profile_dir = os.path.join(profile_root, "runtime_fallback")
+        os.makedirs(profile_dir, exist_ok=True)
+        return profile_dir
+
+    def _clear_chrome_profile_locks(self, profile_dir: str):
+        """Chrome 프로필 잠금/포트 파일 제거 (비정상 종료 잔재 복구)"""
+        try:
+            lock_files = [
+                "SingletonLock",
+                "SingletonCookie",
+                "SingletonSocket",
+                "DevToolsActivePort",
+            ]
+            for name in lock_files:
+                path = os.path.join(profile_dir, name)
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _compact_error(self, exc: Exception) -> str:
+        """장문 stacktrace가 포함된 예외 메시지를 한 줄로 압축"""
+        text = str(exc or "").strip()
+        if not text:
+            return "알 수 없는 오류"
+        if "Stacktrace:" in text:
+            text = text.split("Stacktrace:", 1)[0].strip()
+        text = text.replace("\r", " ").replace("\n", " ")
+        return re.sub(r"\s+", " ", text)
 
     def _build_chrome_options(self, use_uc: bool, chrome_profile_dir: str):
         """Chrome 옵션 생성 (UC/표준 Selenium 공용)"""
