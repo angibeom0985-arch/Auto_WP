@@ -1170,6 +1170,8 @@ class ContentGenerator:
             self.log("🌐 브라우저 실행 준비 중...")
             chrome_profile_root = os.path.join(get_base_path(), "setting", "chrome_profile")
             os.makedirs(chrome_profile_root, exist_ok=True)
+            # 첫 시도 전에 stale driver를 선제 정리해 1회차 실패를 줄임
+            self._cleanup_stale_driver_binaries(force_cleanup=True)
 
             self.log("🚀 브라우저 시작 중...")
             # 표준 Selenium만 사용 (차단 회피 로직 제거)
@@ -1177,7 +1179,7 @@ class ContentGenerator:
                 for attempt in range(1, 3):
                     chrome_profile_dir = self._select_chrome_profile_dir(chrome_profile_root, attempt)
                     self._clear_chrome_profile_locks(chrome_profile_dir)
-                    force_cleanup = (attempt == 2)
+                    force_cleanup = True
                     self._cleanup_stale_driver_binaries(force_cleanup=force_cleanup)
                     use_profile_directory = (attempt == 1)
                     options = self._build_chrome_options(
@@ -1221,7 +1223,7 @@ class ContentGenerator:
     def _select_chrome_profile_dir(self, profile_root: str, attempt: int) -> str:
         """브라우저 시작 시도별 프로필 경로 선택"""
         if attempt <= 1:
-            profile_dir = profile_root
+            profile_dir = os.path.join(profile_root, "runtime_main")
         else:
             profile_dir = os.path.join(
                 profile_root,
