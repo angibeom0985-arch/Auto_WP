@@ -16,7 +16,7 @@ class LicenseManager:
 
     SPREADSHEET_ID = "19X7umIeRL6HLPVPvSmBy6gl2U8sx9MqwX9fTXhuMVB0"
     SHEET_NAME = "시트1"
-    MACHINE_ID_PREFIX = "WP"
+    MACHINE_ID_PREFIX = "WP-"
 
     def __init__(self):
         self.license_file = os.path.join("setting", "license.json")
@@ -57,9 +57,12 @@ class LicenseManager:
     def _canonical_machine_id(self, machine_id):
         """머신 ID를 비교용 코어값으로 정규화 (WP 접두어 유무 모두 허용)"""
         mid = self._normalize_text(machine_id).lower()
-        prefix = self.MACHINE_ID_PREFIX.lower()
-        if mid.startswith(prefix):
-            mid = mid[len(prefix):]
+        # 신규 포맷: WP-xxxxxxxx...
+        if mid.startswith("wp-"):
+            mid = mid[3:]
+        # 구포맷 호환: WPxxxxxxxx...
+        elif mid.startswith("wp"):
+            mid = mid[2:]
         return mid.strip()
 
     def _format_machine_id(self, machine_id_core):
