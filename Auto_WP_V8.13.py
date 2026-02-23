@@ -3703,7 +3703,8 @@ class ContentGenerator:
                 self.is_posting = False
                 return None, None, None
 
-            self.log(f"👍 콘텐츠 타입: {content_type} (AI 제공자 자동 선택)")
+            mode_text = "승인용" if content_type == "approval" else "수익용"
+            self.log(f"👍 포스팅 모드: {mode_text}")
 
             # 콘텐츠 타입에 따른 생성 방식 선택
             if content_type == "approval":
