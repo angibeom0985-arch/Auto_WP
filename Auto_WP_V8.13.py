@@ -1970,12 +1970,67 @@ class ContentGenerator:
                 editor.send_keys(prompt)
 
             time.sleep(0.4)
-            editor.send_keys(Keys.ENTER)
+            enter_sent = False
+            try:
+                editor.send_keys(Keys.ENTER)
+                enter_sent = True
+            except Exception:
+                enter_sent = False
+
+            # Enter 전송이 실패하거나 UI 상태로 무시될 수 있어, 전송 버튼 클릭 폴백 적용
+            clicked_send = self._click_gemini_send_button(timeout=2.0)
+            if not enter_sent and not clicked_send:
+                self.log("⚠️ Gemini 전송 트리거 실패 (Enter/버튼)")
+                return False
             self.log("✅ Gemini 프롬프트 전송 완료")
             return True
         except Exception as e:
             self.log(f"⚠️ Gemini 입력 실패: {e}")
             return False
+
+    def _click_gemini_send_button(self, timeout: float = 2.0) -> bool:
+        """Gemini 전송 버튼(메시지 보내기) 클릭"""
+        if not self.driver or By is None:
+            return False
+        selectors = [
+            "button.send-button.submit",
+            "button[aria-label='메시지 보내기']",
+            "button[aria-label='Send message']",
+            "button[aria-label*='보내기']",
+            "button[aria-label*='send']",
+            "mat-icon[fonticon='send']",
+        ]
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            for sel in selectors:
+                try:
+                    elems = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                    for elem in elems:
+                        target = elem
+                        try:
+                            # mat-icon을 찾은 경우 상위 버튼으로 승격
+                            if elem.tag_name.lower() != "button":
+                                target = elem.find_element(By.XPATH, "./ancestor::button[1]")
+                        except Exception:
+                            target = elem
+
+                        try:
+                            disabled_attr = (target.get_attribute("aria-disabled") or "").lower()
+                            enabled = target.is_displayed() and target.is_enabled() and disabled_attr != "true"
+                        except Exception:
+                            enabled = False
+                        if not enabled:
+                            continue
+
+                        try:
+                            target.click()
+                        except Exception:
+                            self.driver.execute_script("arguments[0].click();", target)
+                        return True
+                except Exception:
+                    pass
+            time.sleep(0.15)
+        return False
 
     def _wait_for_gemini_response(self, timeout=120):
         """Gemini 응답 대기 및 추출"""
@@ -1989,6 +2044,7 @@ class ContentGenerator:
             copy_selector = "copy-button button[data-test-id='copy-button']"
             end_time = time.time() + timeout
             last_notice = 0
+            resend_attempted = False
             while time.time() < end_time:
                 try:
                     buttons = self.driver.find_elements(By.CSS_SELECTOR, copy_selector)
@@ -2019,6 +2075,11 @@ class ContentGenerator:
                     remaining = int(max(0, end_time - time.time()))
                     self.log(f"⌛ Gemini 응답 대기 중... ({remaining}초 남음)")
                     last_notice = now_sec
+                # 전송이 누락된 케이스 보정: 초반에 1회 전송 버튼 재시도
+                if not resend_attempted and (end_time - time.time()) <= (timeout - 8):
+                    resend_attempted = True
+                    if self._click_gemini_send_button(timeout=1.0):
+                        self.log("↪️ Gemini 전송 버튼 재시도 클릭")
                 time.sleep(1)
 
             # 마지막 폴백
