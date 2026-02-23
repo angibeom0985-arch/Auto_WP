@@ -1305,9 +1305,11 @@ class ContentGenerator:
             options.add_argument("--profile-directory=Default")
         options.add_argument("--disable-extensions")
         # Google 로그인 차단 가능성을 낮추기 위한 최소한의 자동화 흔적 완화
-        options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-        options.add_experimental_option("useAutomationExtension", False)
-        options.add_argument("--disable-blink-features=AutomationControlled")
+        # (UC에서는 excludeSwitches가 invalid argument를 유발할 수 있어 Selenium에만 적용)
+        if not use_uc:
+            options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+            options.add_experimental_option("useAutomationExtension", False)
+            options.add_argument("--disable-blink-features=AutomationControlled")
         return options
 
     def _cleanup_stale_driver_binaries(self, force_cleanup: bool = False):
