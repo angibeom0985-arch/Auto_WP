@@ -11192,8 +11192,6 @@ class MainWindow(QMainWindow):
         if latest:
             self.copy_error_for_creator(latest, source="진행 상태 로그")
             self.update_posting_status("📋 오류 내용이 '제작자에게 전달' 형식으로 복사되었습니다.")
-        else:
-            self.update_posting_status("ℹ️ 복사할 오류가 아직 없습니다.")
 
     def update_keyword_count(self):
         """키워드 사용 후 실시간으로 키워드 개수 업데이트"""
