@@ -1221,14 +1221,10 @@ class ContentGenerator:
             return False
 
     def _select_chrome_profile_dir(self, profile_root: str, attempt: int) -> str:
-        """브라우저 시작 시도별 프로필 경로 선택"""
-        if attempt <= 1:
-            profile_dir = os.path.join(profile_root, "runtime_main")
-        else:
-            profile_dir = os.path.join(
-                profile_root,
-                f"runtime_fallback_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
-            )
+        """브라우저 시작 시도별 프로필 경로 선택 (로그인 세션 유지 우선)"""
+        # 사용자 요구사항: 한 번 로그인하면 이후 재사용
+        # 재시도 시에도 동일 프로필을 사용해 로그인 세션을 보존한다.
+        profile_dir = os.path.join(profile_root, "runtime_main")
         os.makedirs(profile_dir, exist_ok=True)
         return profile_dir
 
