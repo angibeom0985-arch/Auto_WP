@@ -11068,7 +11068,7 @@ class MainWindow(QMainWindow):
                     current_text = self.progress_text.toPlainText()
                     
                     # 카운트다운 메시지는 한 줄만 유지하고 시간만 갱신
-                    if message.startswith(countdown_prefix) and current_text.strip():
+                    if (countdown_prefix in message) and current_text.strip():
                         lines = current_text.splitlines()
                         replaced = False
                         for idx in range(len(lines) - 1, -1, -1):
