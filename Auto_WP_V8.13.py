@@ -3861,9 +3861,6 @@ class ContentGenerator:
             # 전체 내용 결합
             full_content = "\n\n".join(all_content_parts)
             
-            # 체크리스트 감지 및 리스트 코드 추가
-            full_content = self.add_checklist_if_needed(full_content, keyword)
-            
             # 가짜 URL 교체
             full_content = self.replace_fake_urls(full_content, keyword)
             
@@ -4367,64 +4364,6 @@ class ContentGenerator:
             
         except Exception as e:
             self.log(f"링크 구조 복구 중 오류: {e}")
-            return content
-
-    def add_checklist_if_needed(self, content, keyword):
-        """체크리스트 키워드 감지 시 리스트 코드 추가"""
-        try:
-            # 체크리스트 관련 키워드들
-            checklist_keywords = [
-                '체크리스트', '체크 리스트', 'checklist', '확인 사항', '확인사항',
-                '점검 리스트', '점검리스트', '확인 목록', '확인목록', '점검 항목',
-                '필수 사항', '필수사항', '준비 사항', '준비사항', '체크 항목'
-            ]
-            
-            # 키워드나 본문에서 체크리스트 관련 키워드 확인
-            keyword_lower = keyword.lower()
-            content_lower = content.lower()
-            
-            has_checklist_keyword = any(check_word in keyword_lower for check_word in checklist_keywords)
-            has_checklist_content = any(check_word in content_lower for check_word in checklist_keywords)
-            
-            if has_checklist_keyword or has_checklist_content:
-                self.log(f"체크리스트 관련 내용 감지: 리스트 코드 추가")
-                
-                # 체크리스트 HTML 생성
-                checklist_html = f"""
-<h3><strong>{keyword} 체크리스트</strong></h3>
-<p>{keyword}과 관련된 중요한 체크사항들을 정리해보겠습니다. 아래 항목들을 차례대로 확인해보세요.</p>
-<ul>
-<li>기본 정보 확인하기</li>
-<li>필요한 준비사항 점검하기</li>
-<li>관련 문서 및 자료 준비하기</li>
-<li>일정 및 시간 계획 세우기</li>
-<li>최종 확인 및 검토하기</li>
-</ul>
-"""
-                
-                # 첫 번째 h2 태그 이후에 체크리스트 추가
-                h2_matches = list(re.finditer(r'<h2[^>]*>.*?</h2>', content, re.IGNORECASE | re.DOTALL))
-                
-                if h2_matches:
-                    first_h2_end = h2_matches[0].end()
-                    content = (content[:first_h2_end] + 
-                             f"\n\n{checklist_html}\n\n" + 
-                             content[first_h2_end:])
-                else:
-                    # h2 태그가 없으면 본문 앞부분에 추가
-                    first_p_match = re.search(r'</p>', content)
-                    if first_p_match:
-                        insert_position = first_p_match.end()
-                        content = (content[:insert_position] + 
-                                 f"\n\n{checklist_html}\n\n" + 
-                                 content[insert_position:])
-                
-                self.log("✅ 체크리스트를 본문에 성공적으로 추가했습니다.")
-            
-            return content
-            
-        except Exception as e:
-            self.log(f"체크리스트 추가 중 오류: {e}")
             return content
 
     def create_thumbnail(self, title, keyword):
