@@ -1152,7 +1152,7 @@ class ContentGenerator:
         self.current_site = None
 
     def setup_driver(self):
-        """크롬 드라이버 설정 (표준 Selenium)"""
+        """크롬 드라이버 설정 (UC 우선 + Selenium 폴백)"""
         try:
             if webdriver is None:
                 self.log("⚠️ selenium not found. Please install selenium and webdriver-manager.")
@@ -1174,7 +1174,32 @@ class ContentGenerator:
             self._cleanup_stale_driver_binaries(force_cleanup=True)
 
             self.log("🚀 브라우저 시작 중...")
-            # 표준 Selenium만 사용 (차단 회피 로직 제거)
+            # 1) UC 우선
+            if uc is not None:
+                for attempt in range(1, 3):
+                    chrome_profile_dir = self._select_chrome_profile_dir(chrome_profile_root, attempt)
+                    self._clear_chrome_profile_locks(chrome_profile_dir)
+                    self._cleanup_stale_driver_binaries(force_cleanup=True)
+                    options = self._build_chrome_options(
+                        use_uc=True,
+                        chrome_profile_dir=chrome_profile_dir,
+                        use_profile_directory=True
+                    )
+                    try:
+                        chrome_major = self._detect_chrome_major_version()
+                        if chrome_major is not None:
+                            self.driver = uc.Chrome(options=options, version_main=chrome_major)
+                        else:
+                            self.driver = uc.Chrome(options=options)
+                        self._verify_driver_health()
+                        self.log("✅ 브라우저 실행 완료")
+                        return True
+                    except Exception as uc_error:
+                        self.log(f"⚠️ 브라우저 실행 {attempt}/2 실패: {self._compact_error(uc_error)}")
+                        self._safe_quit_driver()
+                        time.sleep(1.0)
+
+            # 2) Selenium 폴백
             try:
                 for attempt in range(1, 3):
                     chrome_profile_dir = self._select_chrome_profile_dir(chrome_profile_root, attempt)
@@ -1258,10 +1283,13 @@ class ContentGenerator:
         return re.sub(r"\s+", " ", text)
 
     def _build_chrome_options(self, use_uc: bool, chrome_profile_dir: str, use_profile_directory: bool = True):
-        """Chrome 옵션 생성 (표준 Selenium)"""
-        if webdriver is None:
-            raise RuntimeError("selenium webdriver를 사용할 수 없습니다.")
-        options = webdriver.ChromeOptions()
+        """Chrome 옵션 생성 (UC/표준 Selenium 공용)"""
+        if use_uc and uc is not None:
+            options: Any = uc.ChromeOptions()
+        else:
+            if webdriver is None:
+                raise RuntimeError("selenium webdriver를 사용할 수 없습니다.")
+            options = webdriver.ChromeOptions()
         self.log("🔧 브라우저 옵션 설정 중...")
         options.add_argument("--window-size=1280,900")
         options.add_argument("--start-maximized")
@@ -1276,6 +1304,10 @@ class ContentGenerator:
         if use_profile_directory:
             options.add_argument("--profile-directory=Default")
         options.add_argument("--disable-extensions")
+        # Google 로그인 차단 가능성을 낮추기 위한 최소한의 자동화 흔적 완화
+        options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+        options.add_experimental_option("useAutomationExtension", False)
+        options.add_argument("--disable-blink-features=AutomationControlled")
         return options
 
     def _cleanup_stale_driver_binaries(self, force_cleanup: bool = False):
