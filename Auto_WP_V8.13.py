@@ -1668,12 +1668,25 @@ class ContentGenerator:
             return None
         self._handle_gemini_blocking_dialogs()
 
-        # 로그인 버튼(로그인/Sign in) 유무 기준으로 로그인 상태 판단
-        self.log("🔐 Gemini 로그인 상태 확인 중...")
-        if not self._ensure_gemini_logged_in(wait_seconds=180):
-            return None
+        editor = None
+        # 로그인은 최초 1회만 강하게 확인하고 이후에는 세션 재사용
+        if self.gemini_logged_in:
+            self.log("🔐 Gemini 로그인 세션 재사용")
+            editor = self._find_gemini_editor(timeout=5)
+            if not editor:
+                self.gemini_logged_in = False
+                self.log("⚠️ Gemini 세션 재확인이 필요합니다.")
+
+        if not self.gemini_logged_in:
+            self.log("🔐 Gemini 로그인 상태 확인 중...")
+            if not self._ensure_gemini_logged_in(wait_seconds=180):
+                return None
+            editor = self._find_gemini_editor(timeout=15)
+
         self.log("⌨️ Gemini 프롬프트 입력창 확인 중...")
-        if not self._find_gemini_editor(timeout=15):
+        if not editor:
+            editor = self._find_gemini_editor(timeout=15)
+        if not editor:
             self.log("❌ Gemini 입력창을 찾지 못했습니다.")
             return None
 
