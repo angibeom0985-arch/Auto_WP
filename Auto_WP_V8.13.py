@@ -3396,6 +3396,12 @@ class ContentGenerator:
             if 'link"' in str(link_classes) or '"link"' in content:
                 issues_found.append("❌ class=\"link\"에서 숫자가 빠짐 (link1, link2, link3 중 하나여야 함)")
                 self.log("⚠️ class=\"link\"는 숫자가 필요함")
+
+            # 규칙 5: href URL 구조 정규화 강제 적용
+            normalized_content = self._sanitize_anchor_hrefs(content)
+            if normalized_content != content:
+                content = normalized_content
+                fixes_applied.append("✅ href URL 구조 정규화 적용")
             
             # 검증 결과 로깅
             if issues_found:
@@ -4041,6 +4047,9 @@ class ContentGenerator:
                 content,
                 flags=re.IGNORECASE
             )
+
+            # href 정규화 추가 보정 (protocol-relative, 끝 꼬리 괄호 등)
+            content = self._sanitize_anchor_hrefs(content)
              
             # 6. 다운로드 버튼 복원 (수정된 버전으로)
             for i, fixed_button in enumerate(fixed_buttons):
