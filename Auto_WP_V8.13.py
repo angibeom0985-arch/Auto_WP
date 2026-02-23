@@ -1567,15 +1567,31 @@ class ContentGenerator:
             if not self.driver:
                 return False
             assert self.driver is not None
+            self.log("🌍 Gemini 탭 확인 중...")
+            gemini_url = "https://gemini.google.com/app?hl=ko"
+
             if self.gemini_tab_handle and self.gemini_tab_handle in self.driver.window_handles:
                 self.driver.switch_to.window(self.gemini_tab_handle)
+                try:
+                    current_url = (self.driver.current_url or "").lower()
+                except Exception:
+                    current_url = ""
+                if "gemini.google.com" not in current_url:
+                    self.log("↪️ Gemini 탭으로 이동합니다...")
+                    self.driver.get(gemini_url)
                 return True
             
             # 새 탭 생성
-            self.driver.execute_script("window.open('https://gemini.google.com/app?hl=ko', '_blank');")
+            self.log("🆕 Gemini 탭을 새로 엽니다...")
+            self.driver.execute_script(f"window.open('{gemini_url}', '_blank');")
             self.driver.switch_to.window(self.driver.window_handles[-1])
             self.gemini_tab_handle = self.driver.current_window_handle
             time.sleep(2)
+            try:
+                self.driver.get(gemini_url)
+            except Exception:
+                pass
+            self.log("✅ Gemini 탭 준비 완료")
             return True
         except Exception as e:
             self.log(f"⚠️ Gemini 탭 오류: {e}")
@@ -1583,21 +1599,26 @@ class ContentGenerator:
 
     def _generate_content_with_gemini_web(self, prompt):
         """Gemini Web 자동화"""
+        self.log("🌐 Gemini 웹 작업을 시작합니다")
         if not self._ensure_gemini_tab():
             return None
 
         # 로그인 버튼(로그인/Sign in) 유무 기준으로 로그인 상태 판단
+        self.log("🔐 Gemini 로그인 상태 확인 중...")
         if not self._ensure_gemini_logged_in(wait_seconds=180):
             return None
+        self.log("⌨️ Gemini 프롬프트 입력창 확인 중...")
         if not self._find_gemini_editor(timeout=15):
             self.log("❌ Gemini 입력창을 찾지 못했습니다.")
             return None
 
         # 입력 및 전송
+        self.log("📝 프롬프트 입력 및 전송 중...")
         if not self._submit_gemini_prompt(prompt):
             return None
         
         # 응답 대기
+        self.log("⏳ Gemini 응답 생성 대기 중...")
         return self._wait_for_gemini_response()
 
     def _find_gemini_editor(self, timeout: float = 5.0):
@@ -1609,6 +1630,11 @@ class ContentGenerator:
             "div.ql-editor.textarea[contenteditable='true'][aria-label='Gemini 프롬프트 입력']",
             "div.ql-editor.textarea[contenteditable='true']",
             "div[contenteditable='true'][role='textbox']",
+            "rich-textarea div[contenteditable='true']",
+            "div[contenteditable='true'][aria-label*='프롬프트']",
+            "div[contenteditable='true'][aria-label*='prompt']",
+            "textarea[aria-label*='프롬프트']",
+            "textarea[aria-label*='prompt']",
         ]
         end_time = time.time() + timeout
         while time.time() < end_time:
@@ -1775,10 +1801,16 @@ class ContentGenerator:
 
         # 이미 로그인된 경우에도 입력창이 보여야 실제 진행
         ready_end = time.time() + max(30, wait_seconds)
+        last_notice = 0
         while time.time() < ready_end:
             if self._find_gemini_editor(timeout=0.2):
                 self.gemini_logged_in = True
                 return True
+            now_sec = int(time.time())
+            if now_sec - last_notice >= 10:
+                remaining = int(max(0, ready_end - time.time()))
+                self.log(f"⌛ Gemini 입력창 탐색 중... ({remaining}초 남음)")
+                last_notice = now_sec
             time.sleep(0.5)
         self.log("❌ Gemini 프롬프트 입력창을 찾지 못했습니다.")
         return False
@@ -1817,6 +1849,7 @@ class ContentGenerator:
 
             time.sleep(0.4)
             editor.send_keys(Keys.ENTER)
+            self.log("✅ Gemini 프롬프트 전송 완료")
             return True
         except Exception as e:
             self.log(f"⚠️ Gemini 입력 실패: {e}")
@@ -1827,11 +1860,13 @@ class ContentGenerator:
         try:
             if not self.driver or By is None:
                 return None
+            self.log(f"⏱️ Gemini 응답을 최대 {timeout}초 동안 기다립니다...")
             time.sleep(4)
 
             # 답변 완료 대기 후 복사 버튼 클릭으로 응답 가져오기
             copy_selector = "copy-button button[data-test-id='copy-button']"
             end_time = time.time() + timeout
+            last_notice = 0
             while time.time() < end_time:
                 try:
                     buttons = self.driver.find_elements(By.CSS_SELECTOR, copy_selector)
@@ -1857,6 +1892,11 @@ class ContentGenerator:
                                 return fallback_text
                 except Exception:
                     pass
+                now_sec = int(time.time())
+                if now_sec - last_notice >= 10:
+                    remaining = int(max(0, end_time - time.time()))
+                    self.log(f"⌛ Gemini 응답 대기 중... ({remaining}초 남음)")
+                    last_notice = now_sec
                 time.sleep(1)
 
             # 마지막 폴백
@@ -1866,6 +1906,7 @@ class ContentGenerator:
                     return responses[-1].text.strip()
             except Exception:
                 pass
+            self.log("❌ Gemini 응답 대기 시간 초과")
             return None
         except Exception:
             return None
