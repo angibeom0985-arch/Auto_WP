@@ -1883,8 +1883,106 @@ class ContentGenerator:
 
     def _auto_login_google(self, email, password, timeout=25):
         """Google 로그인 폼 자동 입력 및 제출"""
-        # Google 정책 상 자동화 브라우저 로그인 차단 빈도가 높아 자동 입력은 비활성화
-        return False
+        if not self.driver or By is None:
+            return False
+        try:
+            # 차단 페이지면 자동 입력 시도하지 않음
+            if self._is_google_unsafe_login_page():
+                return False
+
+            end_time = time.time() + timeout
+            email_input = None
+            while time.time() < end_time:
+                try:
+                    candidates = self.driver.find_elements(By.CSS_SELECTOR, "input#identifierId, input[type='email']")
+                    for elem in candidates:
+                        if elem.is_displayed() and elem.is_enabled():
+                            email_input = elem
+                            break
+                    if email_input is not None:
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.3)
+
+            if email_input is None:
+                return False
+
+            try:
+                email_input.click()
+            except Exception:
+                self.driver.execute_script("arguments[0].click();", email_input)
+            email_input.clear()
+            email_input.send_keys(email)
+
+            next_clicked = False
+            next_selectors = [
+                "//button[.//span[normalize-space()='다음' or normalize-space()='Next']]",
+                "//div[@role='button'][.//span[normalize-space()='다음' or normalize-space()='Next']]",
+            ]
+            for xp in next_selectors:
+                try:
+                    btn = self.driver.find_element(By.XPATH, xp)
+                    if btn.is_displayed():
+                        try:
+                            btn.click()
+                        except Exception:
+                            self.driver.execute_script("arguments[0].click();", btn)
+                        next_clicked = True
+                        break
+                except Exception:
+                    pass
+            if not next_clicked:
+                email_input.send_keys(Keys.ENTER if Keys is not None else "\n")
+
+            pass_end = time.time() + timeout
+            pass_input = None
+            while time.time() < pass_end:
+                if self._is_google_unsafe_login_page():
+                    return False
+                try:
+                    candidates = self.driver.find_elements(By.CSS_SELECTOR, "input[name='Passwd'], input[type='password']")
+                    for elem in candidates:
+                        if elem.is_displayed() and elem.is_enabled():
+                            pass_input = elem
+                            break
+                    if pass_input is not None:
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.3)
+
+            if pass_input is None:
+                return False
+
+            try:
+                pass_input.click()
+            except Exception:
+                self.driver.execute_script("arguments[0].click();", pass_input)
+            pass_input.clear()
+            pass_input.send_keys(password)
+
+            next2_clicked = False
+            for xp in next_selectors:
+                try:
+                    btn = self.driver.find_element(By.XPATH, xp)
+                    if btn.is_displayed():
+                        try:
+                            btn.click()
+                        except Exception:
+                            self.driver.execute_script("arguments[0].click();", btn)
+                        next2_clicked = True
+                        break
+                except Exception:
+                    pass
+            if not next2_clicked:
+                pass_input.send_keys(Keys.ENTER if Keys is not None else "\n")
+
+            time.sleep(2)
+            return True
+        except Exception as e:
+            self.log(f"⚠️ Google 자동 로그인 처리 오류: {self._compact_error(e)}")
+            return False
 
     def _is_google_unsafe_login_page(self) -> bool:
         """Google '안전하지 않은 브라우저' 차단 페이지 감지"""
@@ -1925,6 +2023,16 @@ class ContentGenerator:
                 self.log("❌ Google 로그인 차단: '안전하지 않은 브라우저' 페이지가 감지되었습니다.")
                 self.log("ℹ️ 일반 Chrome에서 같은 프로필로 먼저 로그인한 뒤 다시 시작해주세요.")
                 return False
+
+            # 계정 정보가 있으면 자동 로그인 시도
+            email, password = self._get_google_login_credentials()
+            if email and password:
+                if self._auto_login_google(email, password):
+                    self.log("✅ Google 자동 로그인 제출 완료")
+                else:
+                    self.log("⚠️ 자동 로그인 실패, 수동 로그인으로 계속 진행합니다.")
+            else:
+                self.log("⚠️ Google 계정 정보가 없어 수동 로그인으로 진행합니다.")
 
             # 수동 로그인 대기 (과도한 장기 대기 제거)
             two_factor_wait = max(60, wait_seconds)
