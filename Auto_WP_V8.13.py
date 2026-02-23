@@ -8597,7 +8597,27 @@ class MainWindow(QMainWindow):
 """
         self.progress_text.setPlainText(startup_text)
         self.progress_text.repaint()
+        # 오류 전달용 복사 버튼 (수동)
+        self.copy_error_btn = QPushButton("복사")
+        self.copy_error_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.copy_error_btn.setMinimumHeight(34)
+        self.copy_error_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['surface_light']};
+                color: {COLORS['text']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 8px;
+                padding: 6px 12px;
+                font-weight: 700;
+            }}
+            QPushButton:hover {{
+                border-color: {COLORS['primary']};
+                color: {COLORS['primary']};
+            }}
+        """)
+        self.copy_error_btn.clicked.connect(self.copy_latest_error_for_creator)
         progress_layout.addWidget(self.progress_text)
+        progress_layout.addWidget(self.copy_error_btn, 0, Qt.AlignmentFlag.AlignRight)
 
         self.progress_action_container = QWidget()
         bottom_actions = QHBoxLayout(self.progress_action_container)
@@ -11071,11 +11091,10 @@ class MainWindow(QMainWindow):
     def update_posting_status(self, message):
         """포스팅 상태 업데이트"""
         try:
-            # 오류/실패 메시지는 즉시 "제작자에게 전달" 포맷으로 클립보드 복사
             if isinstance(message, str):
                 msg_text = message.strip()
                 if msg_text.startswith("❌") or ("오류" in msg_text):
-                    self.copy_error_for_creator(msg_text, source="진행 상태 로그")
+                    self._latest_error_message = msg_text
 
             # 현재 포스팅 중인 사이트 정보 파싱 및 업데이트
             self.parse_and_update_current_site(message)
@@ -11166,6 +11185,15 @@ class MainWindow(QMainWindow):
                 self._last_creator_copy_payload = payload
         except Exception:
             pass
+
+    def copy_latest_error_for_creator(self):
+        """최근 오류를 제작자 전달 포맷으로 복사"""
+        latest = getattr(self, "_latest_error_message", "").strip()
+        if latest:
+            self.copy_error_for_creator(latest, source="진행 상태 로그")
+            self.update_posting_status("📋 오류 내용이 '제작자에게 전달' 형식으로 복사되었습니다.")
+        else:
+            self.update_posting_status("ℹ️ 복사할 오류가 아직 없습니다.")
 
     def update_keyword_count(self):
         """키워드 사용 후 실시간으로 키워드 개수 업데이트"""
@@ -11263,7 +11291,7 @@ class MainWindow(QMainWindow):
     def on_posting_error(self, error_message):
         """포스팅 오류 처리 및 키워드 부족 알림"""
         print(f"❌ 포스팅 중 오류 발생: {error_message}")
-        self.copy_error_for_creator(error_message, source="포스팅 워커")
+        self._latest_error_message = str(error_message)
         
         # 키워드 부족 메시지인지 확인
         if error_message.startswith("키워드 부족|"):
