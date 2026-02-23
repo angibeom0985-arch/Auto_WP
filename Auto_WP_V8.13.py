@@ -4671,6 +4671,10 @@ class ContentGenerator:
                 u = (url or "").strip()
                 if not u:
                     return u
+                # HTML 엔티티가 들어온 경우 먼저 복원
+                u = u.replace("&quot;", '"').replace("&#34;", '"').replace("&amp;", "&")
+                # 따옴표가 URL 값에 섞여 들어온 경우 제거
+                u = u.strip('"').strip("'")
                 if u.startswith("//"):
                     u = "https:" + u
                 elif u.startswith("www."):
@@ -4710,6 +4714,14 @@ class ContentGenerator:
             content = re.sub(
                 r'href\s*=\s*([^\s>"\']+)',
                 lambda m: f'href="{_normalize(m.group(1))}"',
+                content,
+                flags=re.IGNORECASE
+            )
+
+            # 케이스 보강: protocol-relative + 닫는 괄호 꼬리 패턴 강제 정리
+            content = re.sub(
+                r'href\s*=\s*(["\'])\s*//([^"\']*?)\)\1',
+                lambda m: f'href="{_normalize("//" + m.group(2))}"',
                 content,
                 flags=re.IGNORECASE
             )
