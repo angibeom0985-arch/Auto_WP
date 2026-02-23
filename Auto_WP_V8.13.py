@@ -1165,7 +1165,6 @@ class ContentGenerator:
 
                         chrome_major = self._detect_chrome_major_version()
                         if chrome_major is not None:
-                            self.log(f"🔎 감지된 Chrome 메이저 버전: {chrome_major}")
                             self.driver = uc.Chrome(options=options, version_main=chrome_major)
                         else:
                             self.log("⚠️ Chrome 버전 감지 실패, 자동 모드로 실행합니다.")
@@ -1246,8 +1245,6 @@ class ContentGenerator:
                 subprocess.run(['taskkill', '/f', '/im', 'chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 subprocess.run(['taskkill', '/f', '/im', 'undetected_chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 time.sleep(1)
-            else:
-                self.log("driver 강제 종료 생략 (세션 보호)")
 
             uc_dir = os.path.join(os.environ.get('APPDATA', ''), 'undetected_chromedriver')
             uc_exe = os.path.join(uc_dir, 'undetected_chromedriver.exe')
