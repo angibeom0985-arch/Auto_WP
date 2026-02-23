@@ -4570,7 +4570,6 @@ class ContentGenerator:
             title = re.sub(r'^[\s\-_=]+', '', title)
             title = re.sub(r'[\s\-_=]+$', '', title)
             title = title.strip()
-            self.log(f"📝 최종 정리된 제목: {title}")
             
             # 콘텐츠 최종 검증 1: 링크 class 속성 따옴표 추가
             # class=link1 → class="link1", class=link2 → class="link2", class=link3 → class="link3"
@@ -4578,11 +4577,9 @@ class ContentGenerator:
             content = re.sub(r'class=link2(?=\s|>)', 'class="link2"', content)
             content = re.sub(r'class=link3(?=\s|>)', 'class="link3"', content)
             content = re.sub(r'class=blink(?=\s|>)', 'class="blink"', content)
-            self.log("✅ 본문 링크 class 속성 따옴표 복구 완료")
 
             # 콘텐츠 최종 검증 1-1: href URL 구조 최종 정규화 (업로드 직전 안전망)
             content = self._sanitize_anchor_hrefs(content)
-            self.log("✅ 본문 href URL 구조 최종 정규화 완료")
             
             # 콘텐츠 최종 검증 2: 다운로드 버튼 HTML 완전 복구 (AI 응답이 잘못되었을 경우 대비)
             # 키워드 추출 (제목에서)
@@ -4659,8 +4656,6 @@ class ContentGenerator:
                 self.log(f"❌ {site_name}: 콘텐츠가 너무 짧습니다 (최소 100자 필요): {len(content.strip())}자")
                 return {'success': False, 'error': '콘텐츠가 너무 짧습니다'}
             
-            self.log(f"✅ 제목 검증 완료: '{title}' ({len(title)}자)")
-            self.log(f"✅ 콘텐츠 검증 완료: {len(content)}자")
 
             post_data = {
                 'title': title,
@@ -4674,13 +4669,11 @@ class ContentGenerator:
             if response.status_code == 201:
                 post_info = response.json()
                 post_id = post_info['id']
-                self.log(f"📤 포스트 업로드 성공 {site_name}")
 
                 # 썸네일 업로드
                 if thumbnail_path and os.path.exists(thumbnail_path):
                     media_id = self.upload_featured_image(site_url, headers, thumbnail_path, post_id)
                     if media_id:
-                        self.log(f"🖼️ 썸네일 업로드 완료 {site_name}")
                     else:
                         self.log(f"⚠️ {site_name}: 썸네일 업로드 실패 (포스트는 성공)")
                 
@@ -11857,16 +11850,6 @@ class MainWindow(QMainWindow):
             
             # 카운트다운 시작 (1초마다 업데이트)
             self.countdown_timer.start(1000)
-            
-            # 분과 초로 표시 (로그용)
-            wait_minutes = wait_seconds // 60
-            wait_secs = wait_seconds % 60
-            if wait_minutes > 0:
-                print(f"⏰ 다음 포스팅까지 {wait_minutes}분 {wait_secs}초 대기 중")
-                self.update_posting_status(f"⏰ 다음 포스팅까지 {wait_minutes}분 {wait_secs}초 대기 중")
-            else:
-                print(f"⏰ 다음 포스팅까지 {wait_secs}초 대기 중")
-                self.update_posting_status(f"⏰ 다음 포스팅까지 {wait_secs}초 대기 중")
             
         except Exception as e:
             print(f"카운트다운 시작 오류: {e}")
