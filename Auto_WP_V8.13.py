@@ -1906,16 +1906,20 @@ class ContentGenerator:
             now_sec = int(time.time())
             if now_sec - last_notice >= 10:
                 remaining = int(max(0, ready_end - time.time()))
+                driver = self.driver
+                if driver is None:
+                    self.log("❌ 브라우저 세션이 종료되어 Gemini 입력창 탐색을 중단합니다.")
+                    return False
                 try:
-                    current_url = self.driver.current_url
-                    title = self.driver.title
+                    current_url = driver.current_url
+                    title = driver.title
                 except Exception:
                     current_url, title = "", ""
                 self.log(f"⌛ Gemini 입력창 탐색 중... ({remaining}초 남음) | {title} | {current_url}")
                 # 혹시 다른 페이지로 이탈한 경우 Gemini 페이지로 복귀
                 if "gemini.google.com" not in (current_url or "").lower():
                     try:
-                        self.driver.get("https://gemini.google.com/app?hl=ko")
+                        driver.get("https://gemini.google.com/app?hl=ko")
                     except Exception:
                         pass
                 last_notice = now_sec
