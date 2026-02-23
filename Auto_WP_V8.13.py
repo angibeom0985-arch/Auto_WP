@@ -1316,7 +1316,6 @@ class ContentGenerator:
         """stale driver 바이너리 정리"""
         try:
             if force_cleanup:
-                self.log("stale driver 정리 수행")
                 subprocess.run(['taskkill', '/f', '/im', 'chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 subprocess.run(['taskkill', '/f', '/im', 'undetected_chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 time.sleep(1)
