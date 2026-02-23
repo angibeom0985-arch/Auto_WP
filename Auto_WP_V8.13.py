@@ -147,6 +147,28 @@ class PostingWorker(QThread):
         if minutes > 0:
             return f"{minutes}분 {seconds}초"
         return f"{seconds}초"
+
+    def _wait_with_countdown(self, delay_seconds: int) -> bool:
+        """중지/일시정지를 고려한 대기 + 진행 상태 카운트다운 출력"""
+        delay_seconds = max(0, int(delay_seconds))
+        for remaining in range(delay_seconds, 0, -1):
+            if not self.is_running or self._force_stop:
+                return False
+            while self.is_paused and self.is_running and not self._force_stop:
+                self.msleep(1000)
+            if not self.is_running or self._force_stop:
+                return False
+
+            hours = remaining // 3600
+            minutes = (remaining % 3600) // 60
+            seconds = remaining % 60
+            if hours > 0:
+                progress_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            else:
+                progress_time = f"{minutes:02d}:{seconds:02d}"
+            self.safe_emit_status(f"⏳ 다음 포스팅까지 남은 시간: {progress_time}")
+            self.msleep(1000)
+        return True
         
     def run(self):
         """포스팅 작업 실행 - 모든 키워드가 소진될 때까지 반복"""
@@ -228,17 +250,8 @@ class PostingWorker(QThread):
                         if i < len(self.sites_data) - 1:
                             delay = self._resolve_wait_seconds(default_minutes=3)
                             self.safe_emit_status(f"⏰ 포스팅 간격 대기 시작: {self._format_wait_text(delay)}")
-                                
-                            # 대기 중에도 중지/일시정지 체크
-                            for j in range(delay):
-                                if not self.is_running:
-                                    return
-                                while self.is_paused and self.is_running:
-                                    self.msleep(1000)
-                                if not self.is_running:
-                                    return
-                                    
-                                self.msleep(1000)
+                            if not self._wait_with_countdown(delay):
+                                return
                     
                     # 이번 라운드 완료 후 체크
                     if posted_sites_count == 0:
@@ -252,17 +265,8 @@ class PostingWorker(QThread):
                         # 다음 라운드를 위한 일반 대기 (사이트 간 간격과 동일)
                         delay = self._resolve_wait_seconds(default_minutes=3)
                         self.safe_emit_status(f"⏰ 포스팅 간격 대기 시작: {self._format_wait_text(delay)}")
-                        
-                        # 대기 (라운드 간에도 일반 포스팅 간격 사용)
-                        for j in range(delay):
-                            if not self.is_running:
-                                return
-                            while self.is_paused and self.is_running:
-                                self.msleep(1000)
-                            if not self.is_running:
-                                return
-                                
-                            self.msleep(1000)
+                        if not self._wait_with_countdown(delay):
+                            return
                         
                 except Exception as round_error:
                     self.safe_emit_status(f"❌ 라운드 {round_count} 오류 - 다음 라운드 진행")
