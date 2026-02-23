@@ -135,6 +135,18 @@ class PostingWorker(QThread):
             return wait_minutes * 60
         except Exception:
             return max(1, default_minutes) * 60
+
+    def _format_wait_text(self, total_seconds: int) -> str:
+        """초를 사람이 읽기 쉬운 시간 문자열로 변환"""
+        total_seconds = max(0, int(total_seconds))
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        if hours > 0:
+            return f"{hours}시간 {minutes}분 {seconds}초"
+        if minutes > 0:
+            return f"{minutes}분 {seconds}초"
+        return f"{seconds}초"
         
     def run(self):
         """포스팅 작업 실행 - 모든 키워드가 소진될 때까지 반복"""
@@ -215,6 +227,7 @@ class PostingWorker(QThread):
                         # 사이트 간 대기 (마지막 사이트가 아닌 경우)
                         if i < len(self.sites_data) - 1:
                             delay = self._resolve_wait_seconds(default_minutes=3)
+                            self.safe_emit_status(f"⏰ 포스팅 간격 대기 시작: {self._format_wait_text(delay)}")
                                 
                             # 대기 중에도 중지/일시정지 체크
                             for j in range(delay):
@@ -238,6 +251,7 @@ class PostingWorker(QThread):
                         
                         # 다음 라운드를 위한 일반 대기 (사이트 간 간격과 동일)
                         delay = self._resolve_wait_seconds(default_minutes=3)
+                        self.safe_emit_status(f"⏰ 포스팅 간격 대기 시작: {self._format_wait_text(delay)}")
                         
                         # 대기 (라운드 간에도 일반 포스팅 간격 사용)
                         for j in range(delay):
