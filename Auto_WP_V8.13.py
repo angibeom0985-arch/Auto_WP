@@ -1974,6 +1974,8 @@ class ContentGenerator:
         try:
             if not self.driver or Keys is None:
                 return False
+            # 이전 답변과 구분하기 위한 전송 전 마커 저장
+            self._gemini_turn_marker = self._capture_gemini_turn_marker()
             editor = self._find_gemini_editor(timeout=15)
             if not editor:
                 # 최종 폴백: 현재 활성 요소 사용 시도
@@ -2025,6 +2027,46 @@ class ContentGenerator:
         except Exception as e:
             self.log(f"⚠️ Gemini 입력 실패: {e}")
             return False
+
+    def _capture_gemini_turn_marker(self):
+        """현재 Gemini 대화 상태를 식별하기 위한 마커"""
+        if not self.driver or By is None:
+            return {"copy_count": 0, "response_count": 0}
+        try:
+            copy_buttons = self.driver.find_elements(By.CSS_SELECTOR, "copy-button button[data-test-id='copy-button']")
+        except Exception:
+            copy_buttons = []
+        response_count = 0
+        response_selectors = [
+            "div.markdown",
+            "model-response",
+            "message-content",
+        ]
+        for sel in response_selectors:
+            try:
+                elems = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                response_count = max(response_count, len(elems))
+            except Exception:
+                pass
+        return {"copy_count": len(copy_buttons), "response_count": response_count}
+
+    def _is_gemini_generating(self) -> bool:
+        """Gemini가 현재 답변 생성 중인지 추정"""
+        if not self.driver or By is None:
+            return False
+        selectors = [
+            "button[aria-label*='중지']",
+            "button[aria-label*='Stop']",
+            "button[aria-label*='stop']",
+        ]
+        for sel in selectors:
+            try:
+                for btn in self.driver.find_elements(By.CSS_SELECTOR, sel):
+                    if btn.is_displayed():
+                        return True
+            except Exception:
+                pass
+        return False
 
     def _click_gemini_send_button(self, timeout: float = 2.0) -> bool:
         """Gemini 전송 버튼(메시지 보내기) 클릭"""
@@ -2082,12 +2124,24 @@ class ContentGenerator:
             copy_selector = "copy-button button[data-test-id='copy-button']"
             end_time = time.time() + timeout
             last_notice = 0
-            resend_attempted = False
+            turn_marker = getattr(self, "_gemini_turn_marker", None) or {}
+            base_copy_count = int(turn_marker.get("copy_count", 0))
+            base_resp_count = int(turn_marker.get("response_count", 0))
             while time.time() < end_time:
                 try:
                     buttons = self.driver.find_elements(By.CSS_SELECTOR, copy_selector)
                     visible_btns = [b for b in buttons if b.is_displayed() and b.is_enabled()]
-                    if visible_btns:
+                    current_copy_count = len(buttons)
+                    current_resp_count = 0
+                    for sel in ["div.markdown", "model-response", "message-content"]:
+                        try:
+                            current_resp_count = max(current_resp_count, len(self.driver.find_elements(By.CSS_SELECTOR, sel)))
+                        except Exception:
+                            pass
+
+                    # 새 턴 응답이 생기기 전에는 기존 복사 버튼을 누르지 않음
+                    turn_ready = (current_copy_count > base_copy_count) or (current_resp_count > base_resp_count)
+                    if visible_btns and turn_ready and (not self._is_gemini_generating()):
                         target_btn = visible_btns[-1]
                         try:
                             target_btn.click()
@@ -2113,11 +2167,6 @@ class ContentGenerator:
                     remaining = int(max(0, end_time - time.time()))
                     self.log(f"⌛ Gemini 응답 대기 중... ({remaining}초 남음)")
                     last_notice = now_sec
-                # 전송이 누락된 케이스 보정: 초반에 1회 전송 버튼 재시도
-                if not resend_attempted and (end_time - time.time()) <= (timeout - 8):
-                    resend_attempted = True
-                    if self._click_gemini_send_button(timeout=1.0):
-                        self.log("↪️ Gemini 전송 버튼 재시도 클릭")
                 time.sleep(1)
 
             # 마지막 폴백
