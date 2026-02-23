@@ -1849,56 +1849,33 @@ class ContentGenerator:
 
     def _auto_login_google(self, email, password, timeout=25):
         """Google 로그인 폼 자동 입력 및 제출"""
-        if not self.driver or By is None:
+        # Google 정책 상 자동화 브라우저 로그인 차단 빈도가 높아 자동 입력은 비활성화
+        return False
+
+    def _is_google_unsafe_login_page(self) -> bool:
+        """Google '안전하지 않은 브라우저' 차단 페이지 감지"""
+        if not self.driver:
             return False
         try:
-            end_time = time.time() + timeout
-            email_input = None
-            while time.time() < end_time:
-                try:
-                    elem = self.driver.find_element(By.CSS_SELECTOR, "input#identifierId")
-                    if elem.is_displayed():
-                        email_input = elem
-                        break
-                except Exception:
-                    pass
-                time.sleep(0.4)
+            page_text = ""
+            try:
+                page_text = (self.driver.page_source or "").lower()
+            except Exception:
+                page_text = ""
+            try:
+                title_text = (self.driver.title or "").lower()
+            except Exception:
+                title_text = ""
 
-            if email_input is None:
-                return False
-
-            email_input.click()
-            email_input.clear()
-            email_input.send_keys(email)
-
-            next_btn = self.driver.find_element(By.XPATH, "//button[.//span[normalize-space()='다음' or normalize-space()='Next']]")
-            next_btn.click()
-
-            pass_end = time.time() + timeout
-            pass_input = None
-            while time.time() < pass_end:
-                try:
-                    elem = self.driver.find_element(By.CSS_SELECTOR, "input[name='Passwd']")
-                    if elem.is_displayed():
-                        pass_input = elem
-                        break
-                except Exception:
-                    pass
-                time.sleep(0.4)
-
-            if pass_input is None:
-                return False
-
-            pass_input.click()
-            pass_input.clear()
-            pass_input.send_keys(password)
-
-            next_btn2 = self.driver.find_element(By.XPATH, "//button[.//span[normalize-space()='다음' or normalize-space()='Next']]")
-            next_btn2.click()
-            time.sleep(2)
-            return True
-        except Exception as e:
-            self.log(f"⚠️ Google 자동 로그인 처리 오류: {e}")
+            blocked_markers = [
+                "로그인할 수 없음",
+                "브라우저 또는 앱이 안전하지 않을 수 있습니다",
+                "this browser or app may not be secure",
+                "couldn’t sign you in",
+            ]
+            merged = f"{title_text}\n{page_text}"
+            return any(marker.lower() in merged for marker in blocked_markers)
+        except Exception:
             return False
 
     def _ensure_gemini_logged_in(self, wait_seconds=180):
@@ -1909,21 +1886,21 @@ class ContentGenerator:
             if self._click_gemini_login_button(timeout=5):
                 self.log("➡️ Gemini 로그인 버튼 클릭 완료")
 
-            email, password = self._get_google_login_credentials()
-            if email and password:
-                if self._auto_login_google(email, password):
-                    self.log("✅ Google 자동 로그인 제출 완료")
-                else:
-                    self.log("⚠️ 자동 로그인 실패, 수동 로그인으로 계속 진행합니다.")
-            else:
-                self.log("⚠️ Google 계정 정보가 없어 수동 로그인으로 진행합니다.")
-                self.log("ℹ️ 환경변수 AUTO_WP_GOOGLE_EMAIL / AUTO_WP_GOOGLE_PASSWORD 설정 시 자동 입력됩니다.")
+            # 자동화 브라우저 차단 페이지 조기 감지
+            if self._is_google_unsafe_login_page():
+                self.log("❌ Google 로그인 차단: '안전하지 않은 브라우저' 페이지가 감지되었습니다.")
+                self.log("ℹ️ 일반 Chrome에서 같은 프로필로 먼저 로그인한 뒤 다시 시작해주세요.")
+                return False
 
-            # 2차 인증(OTP/앱승인 등) 처리 시간 확보
-            two_factor_wait = max(wait_seconds, 300)
-            self.log(f"⏳ 2차 인증이 필요한 경우 브라우저에서 완료해주세요. 최대 {two_factor_wait}초 대기합니다.")
+            # 수동 로그인 대기 (과도한 장기 대기 제거)
+            two_factor_wait = max(60, wait_seconds)
+            self.log(f"⏳ 브라우저에서 로그인/인증을 완료해주세요. 최대 {two_factor_wait}초 대기합니다.")
             end_time = time.time() + two_factor_wait
             while time.time() < end_time:
+                if self._is_google_unsafe_login_page():
+                    self.log("❌ Google 로그인 차단: '안전하지 않은 브라우저' 페이지가 감지되었습니다.")
+                    self.log("ℹ️ 일반 Chrome에서 같은 프로필로 먼저 로그인한 뒤 다시 시작해주세요.")
+                    return False
                 # 프롬프트 입력창이 보이면 바로 로그인 완료로 판단
                 if self._find_gemini_editor(timeout=0.2):
                     self.gemini_logged_in = True
