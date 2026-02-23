@@ -16,6 +16,7 @@ class LicenseManager:
 
     SPREADSHEET_ID = "19X7umIeRL6HLPVPvSmBy6gl2U8sx9MqwX9fTXhuMVB0"
     SHEET_NAME = "시트1"
+    MACHINE_ID_PREFIX = "WP"
 
     def __init__(self):
         self.license_file = os.path.join("setting", "license.json")
@@ -52,6 +53,21 @@ class LicenseManager:
                 continue
             return v
         return ""
+
+    def _canonical_machine_id(self, machine_id):
+        """머신 ID를 비교용 코어값으로 정규화 (WP 접두어 유무 모두 허용)"""
+        mid = self._normalize_text(machine_id).lower()
+        prefix = self.MACHINE_ID_PREFIX.lower()
+        if mid.startswith(prefix):
+            mid = mid[len(prefix):]
+        return mid.strip()
+
+    def _format_machine_id(self, machine_id_core):
+        """표시/저장용 머신 ID 포맷"""
+        core = self._canonical_machine_id(machine_id_core)
+        if not core:
+            return ""
+        return f"{self.MACHINE_ID_PREFIX}{core}"
 
     def get_local_ip(self):
         """로컬 IP (참고용)"""
@@ -123,7 +139,7 @@ class LicenseManager:
         fingerprint_parts = [f"uuid:{win_id}", f"mac:{mac}"] + hw_parts
         fingerprint = "|".join([p for p in fingerprint_parts if p and not p.endswith(":")])
         machine_id = hashlib.sha256(fingerprint.encode("utf-8", errors="ignore")).hexdigest()[:32].lower()
-        return machine_id
+        return self._format_machine_id(machine_id)
 
     def load_license(self):
         """라이선스 파일 로드"""
@@ -177,15 +193,20 @@ class LicenseManager:
                         continue
                     name = parts[0].strip()
                     email = parts[1].strip()
-                    machine_id = parts[2].strip().lower()
+                    machine_id_raw = parts[2].strip()
+                    machine_id_core = self._canonical_machine_id(machine_id_raw)
+                    machine_id = self._format_machine_id(machine_id_core)
                     expire_date = parts[3].strip()
-                    if machine_id and name:
-                        buyers[machine_id] = {
+                    if machine_id_core and name:
+                        buyer_entry = {
                             "name": name,
                             "email": email,
                             "machine_id": machine_id,
                             "expire_date": expire_date,
                         }
+                        # 신규 포맷(WP...)과 기존 포맷(무접두어) 모두 인식
+                        buyers[machine_id] = buyer_entry
+                        buyers[machine_id_core] = buyer_entry
                 except Exception:
                     continue
             return buyers
@@ -199,9 +220,12 @@ class LicenseManager:
         if not buyers:
             return False, "구매자 정보를 불러오지 못했습니다. 네트워크 연결을 확인하세요."
 
-        current_machine_id = (current_machine_id or "").strip().lower()
-        if current_machine_id in buyers:
-            buyer_info = buyers[current_machine_id]
+        current_core = self._canonical_machine_id(current_machine_id)
+        current_prefixed = self._format_machine_id(current_core)
+        lookup_keys = [current_prefixed, current_core]
+        matched_key = next((k for k in lookup_keys if k in buyers), None)
+        if matched_key:
+            buyer_info = buyers[matched_key]
             expire_date = buyer_info.get("expire_date", "")
             try:
                 if expire_date:
@@ -210,9 +234,9 @@ class LicenseManager:
                         return False, f"라이선스가 만료되었습니다. 구매자: {buyer_info['name']} / 만료일: {expire_date}"
             except Exception:
                 pass
-            return True, f"인증 성공 / 구매자: {buyer_info['name']} / 머신 ID: {current_machine_id[:16]}..."
+            return True, f"인증 성공 / 구매자: {buyer_info['name']} / 머신 ID: {current_prefixed[:16]}..."
 
-        return False, f"등록되지 않은 컴퓨터입니다. 현재 머신 ID: {current_machine_id}"
+        return False, f"등록되지 않은 컴퓨터입니다. 현재 머신 ID: {current_prefixed}"
 
     def verify_license(self):
         """라이선스 검증"""
@@ -231,8 +255,11 @@ class LicenseManager:
         current_machine_id = self.get_machine_id()
         buyers = self.fetch_buyers_from_sheet()
 
-        if current_machine_id in buyers:
-            buyer = buyers[current_machine_id]
+        current_core = self._canonical_machine_id(current_machine_id)
+        lookup_keys = [current_machine_id, current_core]
+        matched_key = next((k for k in lookup_keys if k in buyers), None)
+        if matched_key:
+            buyer = buyers[matched_key]
             return {
                 "status": "등록됨",
                 "name": buyer.get("name", "N/A"),
