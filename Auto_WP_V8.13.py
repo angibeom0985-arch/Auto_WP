@@ -129,7 +129,9 @@ class PostingWorker(QThread):
                 min_val, max_val = map(int, wait_time.split(separator))
                 min_val = max(1, min_val)
                 max_val = max(min_val, max_val)
-                wait_minutes = random.randint(min_val, max_val)
+                min_seconds = min_val * 60
+                max_seconds = max_val * 60
+                return random.randint(min_seconds, max_seconds)
             else:
                 wait_minutes = max(1, int(wait_time))
             return wait_minutes * 60
@@ -1168,8 +1170,17 @@ class ContentGenerator:
                     self.driver = None
 
             self.log("🌐 브라우저 실행 준비 중...")
-            chrome_profile_root = os.path.join(get_base_path(), "setting", "chrome_profile")
+            chrome_profile_root = os.path.join(get_base_path(), "setting", "etc", "chrome_profile")
             os.makedirs(chrome_profile_root, exist_ok=True)
+            # 기존 경로(setting/chrome_profile) 사용 이력이 있으면 1회 마이그레이션
+            legacy_profile_root = os.path.join(get_base_path(), "setting", "chrome_profile")
+            if os.path.isdir(legacy_profile_root):
+                try:
+                    if not os.listdir(chrome_profile_root):
+                        shutil.copytree(legacy_profile_root, chrome_profile_root, dirs_exist_ok=True)
+                        self.log("ℹ️ Chrome 프로필 경로를 setting/etc/chrome_profile로 마이그레이션했습니다.")
+                except Exception as migrate_error:
+                    self.log(f"⚠️ Chrome 프로필 마이그레이션 실패(계속 진행): {self._compact_error(migrate_error)}")
             # 첫 시도 전에 stale driver를 선제 정리해 1회차 실패를 줄임
             self._cleanup_stale_driver_binaries(force_cleanup=True)
 
@@ -1335,18 +1346,42 @@ class ContentGenerator:
             self.log(f"⚠️ 정리 작업 중 오류 (무시됨): {cleanup_error}")
 
     def _verify_driver_health(self):
-        """드라이버가 실제로 Chrome과 통신 가능한지 검증"""
+        """드라이버가 실제로 Chrome과 통신 가능한지 검증 (초기 기동 레이스 완화)"""
         if not self.driver:
             raise RuntimeError("driver가 초기화되지 않았습니다.")
-        try:
-            self.driver.get("about:blank")
-            _ = self.driver.current_url
+
+        last_error = None
+        for attempt in range(1, 5):
             try:
-                self.driver.maximize_window()
-            except Exception:
-                pass
-        except Exception as health_error:
-            raise RuntimeError(f"Chrome 통신 검증 실패: {health_error}")
+                handles = []
+                try:
+                    handles = self.driver.window_handles
+                except Exception:
+                    handles = []
+
+                # Chrome 기동 직후에는 창 핸들이 아직 준비되지 않을 수 있음
+                if not handles:
+                    time.sleep(0.35 * attempt)
+                    continue
+
+                self.driver.switch_to.window(handles[-1])
+                self.driver.get("about:blank")
+                _ = self.driver.current_url
+                try:
+                    self.driver.maximize_window()
+                except Exception:
+                    pass
+                return
+            except Exception as health_error:
+                last_error = health_error
+                error_text = str(health_error).lower()
+                # 첫 기동 순간 발생하는 no such window는 짧게 재시도
+                if ("no such window" in error_text) or ("target window already closed" in error_text):
+                    time.sleep(0.35 * attempt)
+                    continue
+                raise RuntimeError(f"Chrome 통신 검증 실패: {health_error}")
+
+        raise RuntimeError(f"Chrome 통신 검증 실패: {last_error}")
 
     def _safe_quit_driver(self):
         """driver 종료 안전 처리"""
@@ -1573,8 +1608,6 @@ class ContentGenerator:
             self.log(f"❌ 알 수 없는 AI 제공자: {ai_provider}")
             return None
 
-        if response_text and str(response_text).strip():
-            self._save_ai_result_file(step_name, full_prompt, str(response_text), ai_provider)
         return response_text
 
     def _sanitize_filename_part(self, text):
@@ -1612,6 +1645,28 @@ class ContentGenerator:
             self.log("🗂️ AI 응답 저장 완료")
         except Exception as e:
             self.log(f"⚠️ AI 응답 파일 저장 실패: {e}")
+
+    def _save_posting_html_file(self, title, html_content, content_type=""):
+        """포스팅 1건당 최종 HTML 결과를 txt 1개로 저장"""
+        try:
+            if not html_content or not str(html_content).strip():
+                return
+            result_dir = os.path.join(get_base_path(), "setting", "result")
+            os.makedirs(result_dir, exist_ok=True)
+
+            keyword = self._sanitize_filename_part(getattr(self, "current_keyword", "keyword"))
+            mode = self._sanitize_filename_part(content_type or getattr(self, "current_content_type", "content"))
+            timestamp = datetime.now().strftime("%Y-%m-%d, %H-%M-%S")
+            filename = f"{timestamp}, {keyword}, {mode}, final_html.txt"
+            file_path = os.path.join(result_dir, filename)
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                if title:
+                    f.write(f"[TITLE] {title}\n\n")
+                f.write(str(html_content))
+            self.log(f"🗂️ 최종 HTML 저장 완료: {filename}")
+        except Exception as e:
+            self.log(f"⚠️ 최종 HTML 저장 실패: {e}")
 
     def _generate_content_with_web(self, prompt, provider):
         """Web AI를 사용하여 콘텐츠 생성"""
@@ -1704,7 +1759,20 @@ class ContentGenerator:
         
         # 응답 대기
         self.log("⏳ Gemini 응답 생성 대기 중...")
-        return self._wait_for_gemini_response()
+        response = self._wait_for_gemini_response()
+        if response and str(response).strip():
+            return response
+
+        # Gemini UI 간헐 이슈: '대답이 중지되었습니다' 노출 시 1회 자동 재시도
+        if self._is_gemini_response_stopped():
+            self.log("⚠️ Gemini 응답 중지 감지: 동일 프롬프트로 1회 자동 재시도합니다.")
+            time.sleep(1.0)
+            if self._submit_gemini_prompt(prompt):
+                self.log("⏳ Gemini 재시도 응답 생성 대기 중...")
+                retry_response = self._wait_for_gemini_response()
+                if retry_response and str(retry_response).strip():
+                    return retry_response
+        return response
 
     def _find_gemini_editor(self, timeout: float = 5.0):
         """Gemini 에디터 찾기"""
@@ -2126,17 +2194,11 @@ class ContentGenerator:
                 editor.send_keys(prompt)
 
             time.sleep(0.4)
-            enter_sent = False
-            try:
-                editor.send_keys(Keys.ENTER)
-                enter_sent = True
-            except Exception:
-                enter_sent = False
 
-            # Enter 전송이 실패하거나 UI 상태로 무시될 수 있어, 전송 버튼 클릭 폴백 적용
+            # 사용자 요청: Enter 전송 사용하지 않고 버튼 클릭으로만 전송
             clicked_send = self._click_gemini_send_button(timeout=2.0)
-            if not enter_sent and not clicked_send:
-                self.log("⚠️ Gemini 전송 트리거 실패 (Enter/버튼)")
+            if not clicked_send:
+                self.log("⚠️ Gemini 전송 트리거 실패 (버튼)")
                 return False
             self.log("✅ Gemini 프롬프트 전송 완료")
             return True
@@ -2183,6 +2245,25 @@ class ContentGenerator:
             except Exception:
                 pass
         return False
+
+    def _is_gemini_response_stopped(self) -> bool:
+        """Gemini 응답이 '중지됨' 상태인지 감지"""
+        if not self.driver:
+            return False
+        try:
+            page_text = ""
+            try:
+                page_text = (self.driver.page_source or "").lower()
+            except Exception:
+                page_text = ""
+            markers = [
+                "대답이 중지되었습니다",
+                "response stopped",
+                "answer stopped",
+            ]
+            return any(marker in page_text for marker in markers)
+        except Exception:
+            return False
 
     def _click_gemini_send_button(self, timeout: float = 2.0) -> bool:
         """Gemini 전송 버튼(메시지 보내기) 클릭"""
@@ -3384,6 +3465,7 @@ class ContentGenerator:
 
                 thumbnail_path = self.create_thumbnail(title, keyword)
                 self.log(f"📝 승인용 본문 생성 완료 - approval.txt ({len(full_content)}자)")
+                self._save_posting_html_file(title, full_content, content_type="approval")
                 return title, full_content, thumbnail_path
 
             # 승인용 프롬프트 파일 로드 (3개만)
@@ -3470,6 +3552,7 @@ class ContentGenerator:
             # 제목이 있으면 썸네일에 제목 추가
             thumbnail_path = self.create_thumbnail(title, keyword)
 
+            self._save_posting_html_file(title, full_content, content_type="approval")
             return title, full_content, thumbnail_path
 
         except Exception as e:
@@ -4047,6 +4130,7 @@ class ContentGenerator:
             # 썸네일 생성
             thumbnail_path = self.create_thumbnail(title, keyword) if title else None
             
+            self._save_posting_html_file(title, full_content, content_type="revenue")
             self.log("✅ 수익용 콘텐츠 생성 완료")
             return title, full_content, thumbnail_path
             
@@ -4082,12 +4166,76 @@ class ContentGenerator:
             href_pattern = r'href="((?:https?:)?//[^"]*)"'
             replacement_count = 0
             
+            def _unwrap_search_redirect(url: str) -> str:
+                """검색 리다이렉트 URL이면 실제 목적지 URL을 복원"""
+                u = (url or "").strip()
+                if not u:
+                    return u
+                if u.startswith("//"):
+                    u = "https:" + u
+                elif u.startswith("www."):
+                    u = "https://" + u
+                try:
+                    parsed = urllib.parse.urlparse(u)
+                    host = (parsed.netloc or "").lower()
+                    if host in ["google.com", "www.google.com", "m.google.com"]:
+                        qs = urllib.parse.parse_qs(parsed.query or "")
+                        for key in ["q", "url"]:
+                            candidate = (qs.get(key, [""])[0] or "").strip()
+                            if candidate.startswith("//"):
+                                candidate = "https:" + candidate
+                            elif candidate.startswith("www."):
+                                candidate = "https://" + candidate
+                            if candidate.startswith("http://") or candidate.startswith("https://"):
+                                return candidate
+                except Exception:
+                    pass
+                return u
+
+            def _is_placeholder_or_invalid(url: str) -> bool:
+                """실제 링크가 아닌 placeholder/깨진 URL인지 판단"""
+                u = (url or "").strip()
+                if not u:
+                    return True
+                lowered = u.lower()
+                placeholder_markers = [
+                    "example.com",
+                    "url 입력",
+                    "url입력",
+                    "placeholder",
+                    "[실제 유용한 url]",
+                ]
+                if any(marker in lowered for marker in placeholder_markers):
+                    return True
+                if any(token in u for token in ["[", "]", "{", "}"]):
+                    return True
+                if lowered.startswith(("javascript:", "data:", "about:blank", "#")):
+                    return True
+                try:
+                    parsed = urllib.parse.urlparse(u)
+                    if parsed.scheme not in ["http", "https"]:
+                        return True
+                    if not parsed.netloc:
+                        return True
+                    if parsed.netloc.lower() in ["localhost", "127.0.0.1"]:
+                        return True
+                except Exception:
+                    return True
+                return False
+
             def replace_url(match):
                 nonlocal replacement_count
                 original_url = match.group(1)
-                # 이미 신뢰할 수 있는 URL인지 확인
-                if self.is_trusted_url(original_url, trusted_urls):
-                    return match.group(0)  # 원본 그대로 반환
+                normalized_url = _unwrap_search_redirect(original_url)
+
+                # 실제 접속 가능한 외부 URL은 화이트리스트 밖이어도 보존
+                if not _is_placeholder_or_invalid(normalized_url):
+                    if normalized_url != original_url:
+                        self.log(f"🔗 URL 복원: {original_url} → {normalized_url}")
+                    return f'href="{normalized_url}"'
+                # 기존 신뢰 URL도 보존
+                if self.is_trusted_url(normalized_url, trusted_urls):
+                    return f'href="{normalized_url}"'
                     
                 # 콘텐츠 맥락과 키워드를 분석하여 적절한 URL 선택
                 replacement_url = self.select_contextual_url(original_url, keyword, content, trusted_urls)
@@ -4884,6 +5032,26 @@ class ContentGenerator:
                 u = u.replace("&quot;", '"').replace("&#34;", '"').replace("&amp;", "&")
                 # 따옴표가 URL 값에 섞여 들어온 경우 제거
                 u = u.strip('"').strip("'")
+
+                # href 값에 마크다운 링크가 들어온 경우: [text](url) -> url
+                md_match = re.match(r'^\[([^\]]+)\]\(([^)]+)\)$', u)
+                if md_match:
+                    left = (md_match.group(1) or "").strip()
+                    right = (md_match.group(2) or "").strip()
+                    if re.match(r'^(https?:)?//', right, flags=re.IGNORECASE):
+                        u = right
+                    elif re.match(r'^(https?:)?//', left, flags=re.IGNORECASE):
+                        u = left
+                    else:
+                        u = right or left
+                elif "](" in u and "[" in u:
+                    # 비정형 마크다운 링크가 섞인 경우 URL 토큰만 추출
+                    candidates = re.findall(r'(?:https?:)?//[^\s\]>)"\'`]+', u, flags=re.IGNORECASE)
+                    if candidates:
+                        u = candidates[-1]
+
+                # URL 내부에 섞인 공백/개행 제거
+                u = re.sub(r"\s+", "", u)
                 if u.startswith("//"):
                     u = "https:" + u
                 elif u.startswith("www."):
@@ -5301,6 +5469,8 @@ class ContentGenerator:
         # 14. 최종 정리
         content = re.sub(r'\n\s*\n', '\n', content)  # 연속된 빈 줄 제거
         content = content.strip()
+        # href URL 구조 최종 보정 (예: href="//www.epeople.go.kr)")
+        content = self._sanitize_anchor_hrefs(content)
         
         return content
         
@@ -8968,8 +9138,8 @@ class MainWindow(QMainWindow):
             # 진행 상태에 실시간 반영
             self.update_posting_status(f"⏱️ 포스팅 간격 즉시 적용: {wait_time_text}분")
 
-            # 포스팅 중이면 다음 포스팅 카운트다운도 즉시 재계산
-            if getattr(self, "is_posting", False):
+            # UI 카운트다운이 이미 활성화된 경우에만 재계산
+            if getattr(self, "is_posting", False) and getattr(self, "next_posting_time", None):
                 self.start_next_posting_countdown()
                 self.update_posting_status("🔄 다음 포스팅 대기 시간이 새 간격으로 갱신되었습니다.")
 
@@ -11418,10 +11588,12 @@ class MainWindow(QMainWindow):
         print("🎉 모든 포스팅이 완료되었습니다!")
         
     def on_single_posting_complete(self):
-        """개별 포스팅 완료 후 카운트다운 시작"""
-        # 아직 포스팅이 진행 중이라면 (다른 사이트들이 남아있음) 카운트다운 시작
+        """개별 포스팅 완료 이벤트 처리 (대기는 워커가 단일 책임으로 수행)"""
+        # 중복 카운트다운 방지:
+        # 실제 대기/카운트다운 로그는 PostingWorker에서만 수행한다.
+        # UI 타이머는 여기서 시작하지 않는다.
         if self.is_posting:
-            self.start_next_posting_countdown()
+            self.stop_next_posting_timer()
         
     def on_posting_error(self, error_message):
         """포스팅 오류 처리 및 키워드 부족 알림"""
@@ -11479,7 +11651,9 @@ class MainWindow(QMainWindow):
                 min_wait, max_wait = map(int, wait_time_setting.split(separator))
                 min_wait = max(1, min_wait)
                 max_wait = max(min_wait, max_wait)
-                wait_minutes = random.randint(min_wait, max_wait)
+                min_seconds = min_wait * 60
+                max_seconds = max_wait * 60
+                return random.randint(min_seconds, max_seconds)
             else:
                 wait_minutes = max(1, int(wait_time_setting))
             return wait_minutes * 60
