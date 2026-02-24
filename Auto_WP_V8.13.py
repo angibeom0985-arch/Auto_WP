@@ -65,11 +65,11 @@ from PyQt6.QtWidgets import (
     QTabWidget, QLabel, QPushButton, QLineEdit, QTextEdit, QScrollArea,
     QGroupBox, QGridLayout, QSpinBox, QComboBox, QCheckBox, QListWidget,
     QFileDialog, QMessageBox, QProgressBar, QSplitter, QFrame,
-    QListWidgetItem, QDialog, QDialogButtonBox, QFormLayout, QProgressDialog,
+    QListWidgetItem, QDialog, QDialogButtonBox, QFormLayout, QProgressDialog, QSplashScreen,
     QSizePolicy, QStackedWidget, QStyledItemDelegate, QRadioButton, QButtonGroup
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize, QUrl
-from PyQt6.QtGui import QFont, QPixmap, QIcon, QPalette, QColor, QTextCursor, QDesktopServices
+from PyQt6.QtGui import QFont, QPixmap, QIcon, QPalette, QColor, QTextCursor, QDesktopServices, QFontDatabase
 
 class CenteredComboDelegate(QStyledItemDelegate):
     """콤보박스 항목 텍스트 중앙 정렬"""
@@ -624,7 +624,7 @@ def install_package(package_name):
         
         result = subprocess.run([
             sys.executable, "-m", "pip", "install", package_name, "--user", "--quiet"
-        ], capture_output=True, text=True, timeout=120, check=False)
+        ], capture_output=True, text=True, timeout=120, check=False, **_get_windows_hidden_subprocess_kwargs())
         
         if result.returncode == 0:
             print(f"✅ {package_name} 설치 성공!")
@@ -667,12 +667,6 @@ def try_import_gemini():
 GEMINI_AVAILABLE = False
 genai = None
 
-# WordPress API
-try:
-    import pandas as pd
-except ImportError:
-    pd = None
-
 def get_base_path():
     """실행 파일의 기본 경로 반환 (EXE/PY 모두 지원)"""
     if getattr(sys, 'frozen', False):  # PyInstaller로 빌드된 EXE인 경우
@@ -700,17 +694,12 @@ def get_preferred_resource_path(relative_path):
     return get_resource_path(relative_path)
 
 def log_to_file(message):
-    """EXE 실행 시 로그 파일에 기록"""
+    """EXE 실행 시 파일 로그 비활성화 (요청사항: app/debug 파일 미생성)"""
     try:
-        if getattr(sys, 'frozen', False):  # EXE 실행 시에만
-            log_file = os.path.join(get_base_path(), "debug.log")
-            with open(log_file, "a", encoding="utf-8") as f:
-                from datetime import datetime
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                f.write(f"[{timestamp}] {message}\n")
-                f.flush()
+        if getattr(sys, 'frozen', False):  # EXE 실행 시 파일 로그 생성 안 함
+            return
     except Exception:
-        pass  # 로그 실패 시 무시
+        pass
 
 def get_requests_session():
     """최적화된 requests 세션 생성"""
@@ -725,11 +714,29 @@ def get_requests_session():
     })
     return session
 
+def _get_windows_hidden_subprocess_kwargs():
+    """Windows에서 subprocess 실행 시 콘솔창 숨김 옵션 반환"""
+    if os.name != "nt":
+        return {}
+    kwargs = {}
+    try:
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    except Exception:
+        pass
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        kwargs["startupinfo"] = startupinfo
+    except Exception:
+        pass
+    return kwargs
+
 # 설정 파일 경로
-SETTING_FILE = os.path.join(get_base_path(), "setting", "setting.json")
+SETTING_FILE = os.path.join(get_base_path(), "setting", "etc", "setting.json")
 
 # 기본 디렉토리 생성 (setting 폴더 내부로 변경)
-for directory in ['keywords', 'thumbnails', 'fonts', 'prompts', 'output', 'images']:
+for directory in ['etc', 'keywords', 'thumbnails', 'fonts', 'prompts', 'output', 'images']:
     dir_path = os.path.join(get_base_path(), "setting", directory)
     os.makedirs(dir_path, exist_ok=True)
 
@@ -1203,6 +1210,7 @@ class ContentGenerator:
                         else:
                             self.driver = uc.Chrome(options=options)
                         self._verify_driver_health()
+                        self._wait_for_manual_recovery_login(attempt)
                         self.log("✅ 브라우저 실행 완료")
                         return True
                     except Exception as uc_error:
@@ -1241,6 +1249,7 @@ class ContentGenerator:
                             # Selenium Manager 폴백 (드라이버 자동 탐색)
                             self.driver = webdriver.Chrome(options=options)
                         self._verify_driver_health()
+                        self._wait_for_manual_recovery_login(attempt)
                         self.log("✅ 브라우저 실행 완료")
                         return True
                     except Exception as selenium_error:
@@ -1257,10 +1266,26 @@ class ContentGenerator:
             return False
 
     def _select_chrome_profile_dir(self, profile_root: str, attempt: int) -> str:
-        """브라우저 시작 시도별 프로필 경로 선택 (로그인 세션 유지 우선)"""
-        # 사용자 요구사항: 한 번 로그인하면 이후 재사용
-        # 재시도 시에도 동일 프로필을 사용해 로그인 세션을 보존한다.
-        profile_dir = os.path.join(profile_root, "runtime_main")
+        """브라우저 시작 시도별 프로필 경로 선택 (1회차 유지, 2회차 복구)"""
+        # 1회차: 로그인 세션이 보존되는 메인 프로필 사용
+        # 2회차 이상: 프로필 손상/잠금 이슈를 우회하기 위해 복구용 격리 프로필 사용
+        if attempt <= 1:
+            profile_dir = os.path.join(profile_root, "runtime_main")
+        else:
+            profile_dir = os.path.join(profile_root, "runtime_recovery")
+            if os.path.isdir(profile_dir):
+                try:
+                    for name in os.listdir(profile_dir):
+                        path = os.path.join(profile_dir, name)
+                        if os.path.isdir(path):
+                            shutil.rmtree(path, ignore_errors=True)
+                        else:
+                            try:
+                                os.remove(path)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
         os.makedirs(profile_dir, exist_ok=True)
         return profile_dir
 
@@ -1327,8 +1352,18 @@ class ContentGenerator:
         """stale driver 바이너리 정리"""
         try:
             if force_cleanup:
-                subprocess.run(['taskkill', '/f', '/im', 'chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                subprocess.run(['taskkill', '/f', '/im', 'undetected_chromedriver.exe'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(
+                    ['taskkill', '/f', '/im', 'chromedriver.exe'],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    **_get_windows_hidden_subprocess_kwargs()
+                )
+                subprocess.run(
+                    ['taskkill', '/f', '/im', 'undetected_chromedriver.exe'],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    **_get_windows_hidden_subprocess_kwargs()
+                )
                 time.sleep(1)
 
             uc_dir = os.path.join(os.environ.get('APPDATA', ''), 'undetected_chromedriver')
@@ -1383,6 +1418,58 @@ class ContentGenerator:
 
         raise RuntimeError(f"Chrome 통신 검증 실패: {last_error}")
 
+    def _wait_for_manual_recovery_login(self, attempt: int, max_wait_seconds: int = 120):
+        """2회차 복구 시도에서 수동 로그인 시간을 제공"""
+        if attempt < 2 or not self.driver:
+            return
+
+        recovery_url = self._get_recovery_login_url()
+        if recovery_url:
+            try:
+                self.driver.get(recovery_url)
+                self.log(f"🌍 2회차 복구 모드: 로그인 페이지로 이동했습니다. ({recovery_url})")
+            except Exception as nav_error:
+                self.log(f"⚠️ 복구 로그인 페이지 이동 실패: {self._compact_error(nav_error)}")
+
+        self.log(f"🧑‍💻 2회차 복구 모드: 브라우저에서 수동 로그인 후 페이지를 열어주세요. 최대 {max_wait_seconds}초 대기합니다.")
+        checkpoints = {max_wait_seconds, 90, 60, 30, 10, 5, 1}
+        start_time = time.time()
+
+        while (time.time() - start_time) < max_wait_seconds:
+            elapsed = int(time.time() - start_time)
+            remaining = max_wait_seconds - elapsed
+            try:
+                handles = self.driver.window_handles
+                if not handles:
+                    raise RuntimeError("열린 브라우저 창이 없습니다.")
+                self.driver.switch_to.window(handles[-1])
+                current_url = (self.driver.current_url or "").strip().lower()
+            except Exception as wait_error:
+                raise RuntimeError(f"수동 로그인 대기 중 브라우저 연결이 끊겼습니다: {wait_error}")
+
+            if current_url and not current_url.startswith("about:blank"):
+                self.log("✅ 수동 로그인 감지: 브라우저 페이지 전환 확인, 자동 진행합니다.")
+                return
+
+            if remaining in checkpoints:
+                self.log(f"⏳ 수동 로그인 대기 중... 남은 시간 {remaining}초")
+            try:
+                QApplication.processEvents()
+            except Exception:
+                pass
+            time.sleep(1.0)
+
+        self.log("⏭️ 수동 로그인 대기 시간이 종료되어 자동 흐름으로 진행합니다.")
+
+    def _get_recovery_login_url(self) -> Optional[str]:
+        """2회차 복구 모드에서 우선 진입할 로그인 URL"""
+        provider = (self.current_ai_provider or "").lower().strip()
+        if provider == "web-gemini":
+            return "https://gemini.google.com/app?hl=ko"
+        if provider == "web-perplexity":
+            return "https://www.perplexity.ai/"
+        return None
+
     def _safe_quit_driver(self):
         """driver 종료 안전 처리"""
         try:
@@ -1426,7 +1513,8 @@ class ContentGenerator:
                             ["taskkill", "/F", "/T", "/PID", str(pid)],
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
-                            check=False
+                            check=False,
+                            **_get_windows_hidden_subprocess_kwargs()
                         )
                     except Exception:
                         pass
@@ -1452,6 +1540,7 @@ class ContentGenerator:
                         text=True,
                         timeout=3,
                         check=False,
+                        **_get_windows_hidden_subprocess_kwargs()
                     )
                     output = f"{result.stdout}\n{result.stderr}"
                     match = re.search(r"(\d+)\.(\d+)\.(\d+)\.(\d+)", output)
@@ -1474,6 +1563,7 @@ class ContentGenerator:
                         text=True,
                         timeout=3,
                         check=False,
+                        **_get_windows_hidden_subprocess_kwargs()
                     )
                     output = f"{result.stdout}\n{result.stderr}"
                     match = re.search(r"(\d+)\.(\d+)\.(\d+)\.(\d+)", output)
@@ -3017,6 +3107,11 @@ class ContentGenerator:
             import re
             
             self.log("🔍 승인용 글 최종 검증 시작...")
+
+            # 승인용 규칙: <h1>은 본문에 남기지 않음 (제목 칸 전용)
+            content = re.sub(r'<h1[^>]*>.*?</h1>', '', content, flags=re.IGNORECASE | re.DOTALL)
+            content = re.sub(r'<h1[^>]*>', '', content, flags=re.IGNORECASE)
+            content = re.sub(r'</h1>', '', content, flags=re.IGNORECASE)
             
             # 마크다운 문법 검사
             markdown_found = False
@@ -3091,6 +3186,28 @@ class ContentGenerator:
             import re
             
             self.log("🔍 원본 응답에서 제목 추출 시작...")
+
+            # <h1>이 있으면 제목 칸에 우선 사용
+            h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', raw_content, flags=re.IGNORECASE | re.DOTALL)
+            if h1_match:
+                h1_title = re.sub(r'<[^>]+>', '', h1_match.group(1)).strip()
+                h1_title = h1_title.replace('"', '').replace("'", '').replace('`', '')
+                h1_title = h1_title.replace('#', '').replace('*', '').replace('**', '')
+                h1_title = re.sub(r'^[\s\-_=]+', '', h1_title)
+                h1_title = re.sub(r'[\s\-_=]+$', '', h1_title).strip()
+                if 5 <= len(h1_title) <= 100:
+                    self.log(f"📌 <h1> 제목 추출 성공: {h1_title}")
+                    return h1_title
+
+            # <h2>가 있으면 첫 번째 소제목을 제목 후보로 사용
+            h2_match = re.search(r'<h2[^>]*>(.*?)</h2>', raw_content, flags=re.IGNORECASE | re.DOTALL)
+            if h2_match:
+                h2_title = re.sub(r'<[^>]+>', '', h2_match.group(1)).strip()
+                h2_title = re.sub(r'^[\s\-_=]+', '', h2_title)
+                h2_title = re.sub(r'[\s\-_=]+$', '', h2_title).strip()
+                if 5 <= len(h2_title) <= 100:
+                    self.log(f"📌 <h2> 제목 추출 성공: {h2_title}")
+                    return h2_title
             
             lines = raw_content.split('\n')
             for i, line in enumerate(lines[:5]):  # 처음 5줄만 확인
@@ -3108,13 +3225,23 @@ class ContentGenerator:
                 clean_line = re.sub(r'[\s\-_=]+$', '', clean_line)
                 clean_line = clean_line.strip()
                 
-                # 제목 패턴 확인: 콜론이 있고, 적절한 길이이고, HTML 태그로 시작하지 않음
-                if ':' in clean_line and 15 <= len(clean_line) <= 70 and not line.startswith('<'):
+                # 제목 패턴 확인: 콜론이 있고, 적절한 길이
+                if ':' in clean_line and 15 <= len(clean_line) <= 70:
                     # 추가 검증: 콜론 뒤에 콤마가 있어야 함 (승인용 제목 형식)
                     parts = clean_line.split(':', 1)
                     if len(parts) == 2 and ',' in parts[1]:
                         self.log(f"📌 제목 추출 성공: {clean_line}")
                         return clean_line
+
+            # 마지막 보조 추출: 상단 10줄 중 첫 유효 텍스트를 제목으로 사용
+            for line in lines[:10]:
+                candidate = re.sub(r'<[^>]+>', '', line).strip()
+                candidate = candidate.replace('"', '').replace("'", '').replace('`', '')
+                candidate = re.sub(r'^[\s\-_=]+', '', candidate)
+                candidate = re.sub(r'[\s\-_=]+$', '', candidate).strip()
+                if 5 <= len(candidate) <= 100:
+                    self.log(f"📌 보조 제목 추출 성공: {candidate}")
+                    return candidate
             
             # 제목을 찾지 못한 경우 키워드 기반 생성
             fallback_title = f"{keyword}: 활용법, 주요 특징, 실무 팁"
@@ -3448,7 +3575,7 @@ class ContentGenerator:
                     with open(single_approval_path, 'r', encoding='utf-8') as f:
                         prompt_template = f.read()
 
-                prompt = prompt_template.replace("{keyword}", keyword)
+                prompt = prompt_template.replace("{keyword}", keyword).replace("{keywords}", keyword)
                 self.log("📝 승인용 approval.txt 프롬프트 적용")
                 response_text = self.call_ai_api(prompt, "승인용 approval", max_tokens=2000, temperature=0.7)
                 if not response_text or not response_text.strip():
@@ -3491,7 +3618,7 @@ class ContentGenerator:
                             prompt_template = f.read()
 
                     # 키워드 대체
-                    prompt = prompt_template.replace("{keyword}", keyword)
+                    prompt = prompt_template.replace("{keyword}", keyword).replace("{keywords}", keyword)
                     
                     # 승인용 글 전용: 프롬프트 파일에 이미 규칙이 있으므로 추가하지 않음
 
@@ -4837,9 +4964,9 @@ class ContentGenerator:
                 # 메인 텍스트
                 draw.text((x, y), line_text, fill=text_color, font=line_font)
             
-            # 최종 이미지를 WebP 형식으로 저장
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filepath = os.path.join(get_base_path(), "setting", "thumbnails", f"thumbnail_{timestamp}.webp")
+            # 최종 이미지를 WebP 형식으로 저장 (파일명: 키워드.webp)
+            safe_keyword = self._sanitize_filename_part(keyword or title or "thumbnail")
+            filepath = os.path.join(get_base_path(), "setting", "thumbnails", f"{safe_keyword}.webp")
             background.save(filepath, 'WEBP', quality=85)
             return filepath
         except Exception as e:
@@ -4948,14 +5075,19 @@ class ContentGenerator:
                 return {'success': False, 'error': '콘텐츠가 너무 짧습니다'}
             
 
+            session = get_requests_session()
+            posting_keyword = str(getattr(self, "current_keyword", "") or "").strip() or keyword_from_title
+            tag_ids = self.get_or_create_tag_ids(site_url, headers, posting_keyword, session)
+
             post_data = {
                 'title': title,
                 'content': content,
                 'status': status,
                 'categories': [int(category)]
             }
+            if tag_ids:
+                post_data['tags'] = tag_ids
 
-            session = get_requests_session()
             response = session.post(api_url, headers=headers, json=post_data, timeout=45)
             if response.status_code == 201:
                 post_info = response.json()
@@ -4963,7 +5095,7 @@ class ContentGenerator:
 
                 # 썸네일 업로드
                 if thumbnail_path and os.path.exists(thumbnail_path):
-                    media_id = self.upload_featured_image(site_url, headers, thumbnail_path, post_id)
+                    media_id = self.upload_featured_image(site_url, headers, thumbnail_path, post_id, keyword_from_title)
                     if not media_id:
                         self.log(f"⚠️ {site_name}: 썸네일 업로드 실패 (포스트는 성공)")
                 
@@ -5252,14 +5384,66 @@ class ContentGenerator:
         
         return False
 
-    def upload_featured_image(self, site_url, headers, image_path, post_id):
+    def get_or_create_tag_ids(self, site_url, headers, keyword, session):
+        """키워드 기반 태그 1개를 조회/생성 후 태그 ID 목록 반환"""
+        try:
+            tag_name = str(keyword or "").strip()
+            if not tag_name:
+                return []
+
+            tags_url = f"{site_url.rstrip('/')}/wp-json/wp/v2/tags"
+            found_id = None
+
+            find_resp = session.get(
+                tags_url,
+                headers=headers,
+                params={"search": tag_name, "per_page": 100},
+                timeout=20,
+            )
+            if find_resp.status_code == 200:
+                for item in find_resp.json():
+                    item_name = str(item.get("name", "")).strip().lower()
+                    if item_name == tag_name.lower():
+                        found_id = item.get("id")
+                        break
+                if found_id is None:
+                    first_item = find_resp.json()[0] if find_resp.json() else None
+                    if isinstance(first_item, dict):
+                        found_id = first_item.get("id")
+
+            if found_id is None:
+                create_resp = session.post(
+                    tags_url,
+                    headers=headers,
+                    json={"name": tag_name},
+                    timeout=20,
+                )
+                if create_resp.status_code == 201:
+                    found_id = create_resp.json().get("id")
+                elif create_resp.status_code == 400:
+                    try:
+                        found_id = (create_resp.json().get("data") or {}).get("term_id")
+                    except Exception:
+                        found_id = None
+
+            return [int(found_id)] if found_id else []
+        except Exception as e:
+            self.log(f"⚠️ 태그 설정 오류: {e}")
+            return []
+
+    def upload_featured_image(self, site_url, headers, image_path, post_id, keyword=None):
         """특성 이미지(썸네일) 업로드"""
         try:
-            media_url = f"{site_url}/wp-json/wp/v2/media"
+            site_root = site_url.rstrip("/")
+            media_url = f"{site_root}/wp-json/wp/v2/media"
+            safe_name = self._sanitize_filename_part(keyword or os.path.splitext(os.path.basename(image_path))[0])
+            upload_filename = f"{safe_name}.webp"
+            alt_text = f"{(keyword or safe_name).strip()} 썸네일"
+            caption_text = f"{(keyword or safe_name).strip()} 관련 이미지"
             
             with open(image_path, 'rb') as f:
                 files = {
-                    'file': (os.path.basename(image_path), f, 'image/webp')
+                    'file': (upload_filename, f, 'image/webp')
                 }
                 headers_upload = {'Authorization': headers['Authorization']}
                 
@@ -5269,9 +5453,20 @@ class ContentGenerator:
                 if response.status_code == 201:
                     media_info = response.json()
                     media_id = media_info['id']
+
+                    # 업로드된 미디어에 alt/caption/title 반영
+                    media_update_url = f"{site_root}/wp-json/wp/v2/media/{media_id}"
+                    media_meta_data = {
+                        "alt_text": alt_text,
+                        "caption": caption_text,
+                        "title": alt_text,
+                    }
+                    meta_resp = session.post(media_update_url, headers=headers, json=media_meta_data, timeout=30)
+                    if meta_resp.status_code not in (200, 201):
+                        self.log(f"⚠️ 미디어 alt/caption 설정 실패: {meta_resp.status_code}")
                     
                     # 포스트에 특성 이미지 설정
-                    post_url = f"{site_url}/wp-json/wp/v2/posts/{post_id}"
+                    post_url = f"{site_root}/wp-json/wp/v2/posts/{post_id}"
                     update_data = {'featured_media': media_id}
                     
                     session.post(post_url, headers=headers, json=update_data, timeout=30)
@@ -5736,7 +5931,7 @@ class ContentGenerator:
 
     def replace_prompt_variables(self, prompt_content, keyword, urls, anchor_links, context):
         """프롬프트 변수들을 실제 값으로 치환 - 모든 변수 처리"""
-        prompt = prompt_content.replace("{keyword}", keyword)
+        prompt = prompt_content.replace("{keyword}", keyword).replace("{keywords}", keyword)
         prompt = prompt.replace("{context}", context)
         
         # 기본 URL 변수들 치환
@@ -5811,8 +6006,8 @@ class ContentGenerator:
             with open(prompt_file, 'r', encoding='utf-8') as f:
                 prompt_content = f.read()
             
-            # {keyword} 치환
-            prompt_content = prompt_content.replace('{keyword}', keyword)
+            # {keyword}/{keywords} 치환
+            prompt_content = prompt_content.replace('{keyword}', keyword).replace('{keywords}', keyword)
             
             # 프롬프트 파일에 이미 규칙이 있으므로 추가 규칙 없음 (API 토큰 절약)
             return prompt_content
@@ -5836,7 +6031,18 @@ class ConfigManager:
     """단일 JSON 구조 설정 관리 클래스 (setting.json)"""
 
     def __init__(self):
-        self.setting_file = os.path.join(get_base_path(), "setting", "setting.json")
+        base_path = get_base_path()
+        setting_root = os.path.join(base_path, "setting")
+        setting_etc = os.path.join(setting_root, "etc")
+        self.setting_file = os.path.join(setting_etc, "setting.json")
+        self.legacy_setting_file = os.path.join(setting_root, "setting.json")
+
+        os.makedirs(setting_etc, exist_ok=True)
+        if (not os.path.exists(self.setting_file)) and os.path.exists(self.legacy_setting_file):
+            try:
+                shutil.move(self.legacy_setting_file, self.setting_file)
+            except Exception:
+                pass
         self.data = self.load_setting()
 
     # property 완전 제거 - 직접 접근 방식
@@ -5896,6 +6102,7 @@ class ConfigManager:
     def save_setting(self):
         """단일 JSON 파일에 모든 설정 저장"""
         try:
+            os.makedirs(os.path.dirname(self.setting_file), exist_ok=True)
             with open(self.setting_file, 'w', encoding='utf-8') as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=2)
             return True
@@ -7034,8 +7241,8 @@ class SiteWidget(QWidget):
                 QMessageBox.warning(None, "파일 없음", f"키워드 파일을 찾을 수 없습니다:\n{keyword_path}")
                 return
                 
-            # Windows에서 기본 프로그램으로 파일 열기
-            subprocess.run(['start', keyword_path], shell=True, check=True)
+            # Windows에서 기본 프로그램으로 파일 열기 (콘솔창 없이)
+            os.startfile(keyword_path)  # type: ignore[attr-defined]
             
         except Exception as e:
             QMessageBox.critical(None, "오류", f"키워드 파일을 열 수 없습니다:\n{e}")
@@ -7058,8 +7265,8 @@ class SiteWidget(QWidget):
                 QMessageBox.warning(None, "파일 없음", f"썸네일 파일을 찾을 수 없습니다:\n{thumbnail_path}")
                 return
                 
-            # Windows에서 기본 프로그램으로 파일 열기
-            subprocess.run(['start', thumbnail_path], shell=True, check=True)
+            # Windows에서 기본 프로그램으로 파일 열기 (콘솔창 없이)
+            os.startfile(thumbnail_path)  # type: ignore[attr-defined]
             
         except Exception as e:
             QMessageBox.critical(None, "오류", f"썸네일 파일을 열 수 없습니다:\n{e}")
@@ -9626,36 +9833,61 @@ class MainWindow(QMainWindow):
             from datetime import datetime
             startup_time_short = datetime.now().strftime("%H:%M:%S")
             check_results = []
-            
-            # AI 설정 체크
-            ai_provider = self.config_manager.data["global_settings"].get("default_ai", "web-gemini")
-            ai_model = self.config_manager.data["global_settings"].get("ai_model", "")
-            gemini_key = self.config_manager.data.get('api_keys', {}).get('gemini', '')
-            
-            if ai_provider == "gemini" and not gemini_key.startswith('AIza'):
-                check_results.append(f"[{startup_time_short}] ⚠️ Gemini 선택되었으나 API 키가 없습니다")
-            
-            # 포스팅 간격 체크
-            interval = self.config_manager.data["global_settings"].get("posting_interval", 30)
-            if interval < 10:
-                check_results.append(f"[{startup_time_short}] ⚠️ 포스팅 간격이 너무 짧습니다 (10분 이상 권장)")
-            
-            # 사이트 설정 체크
+            missing_items = []
+            base_path = get_base_path()
+
             sites = self.config_manager.data.get('sites', [])
             active_sites = [site for site in sites if site.get('active', True)]
-            
+            global_settings = self.config_manager.data.get("global_settings", {})
+
+            keywords_dir = os.path.join(base_path, "setting", "keywords")
+            prompts_dir = os.path.join(base_path, "setting", "prompts")
+            keyword_file_count = 0
+            if os.path.exists(keywords_dir):
+                keyword_file_count = len([f for f in os.listdir(keywords_dir) if f.lower().endswith(".txt")])
+            prompt_file_count = 0
+            if os.path.exists(prompts_dir):
+                prompt_file_count = len([f for f in os.listdir(prompts_dir) if f.lower().endswith(".txt")])
+
+            wp_user = (global_settings.get("common_username", "") or "").strip()
+            wp_pass = (global_settings.get("common_password", "") or "").strip()
+            current_ai_provider = (global_settings.get("default_ai", "web-gemini") or "web-gemini").strip().lower()
+            is_api_mode = (current_ai_provider == "gemini")
+            is_web_gemini_mode = (current_ai_provider == "web-gemini")
+            gemini_key = (self.config_manager.data.get('api_keys', {}).get('gemini', '') or "").strip()
+            google_email = (global_settings.get("google_email", "") or "").strip()
+            google_password = (global_settings.get("google_password", "") or "").strip()
+
+            if len(active_sites) == 0:
+                missing_items.append("1) 사이트 추가/활성화")
+            if keyword_file_count == 0:
+                missing_items.append("2) Keywords txt 파일")
+            if prompt_file_count == 0:
+                missing_items.append("3) Prompt txt 파일")
+            if not (wp_user and wp_pass):
+                missing_items.append("4) 워드프레스 세팅")
+            if is_api_mode and not gemini_key:
+                missing_items.append("5) Gemini API 설정")
+            if is_web_gemini_mode and not (google_email and google_password):
+                missing_items.append("6) 웹사이트 로그인")
+
+            # 기존 상세 점검 로그는 유지
+            interval = global_settings.get("posting_interval", 30)
+            if interval < 10:
+                check_results.append(f"[{startup_time_short}] ⚠️ 포스팅 간격이 너무 짧습니다 (10분 이상 권장)")
             for i, site in enumerate(active_sites):
                 site_name = site.get('url', f'사이트{i+1}')
                 if not site.get('keyword_file'):
                     check_results.append(f"[{startup_time_short}] ⚠️ {site_name}: 키워드 파일이 설정되지 않았습니다")
                 if not site.get('thumbnail_image'):
                     check_results.append(f"[{startup_time_short}] ⚠️ {site_name}: 썸네일 이미지가 설정되지 않았습니다")
-            
-            # 결과 반환
+
+            if missing_items:
+                check_results.insert(0, f"[{startup_time_short}] ⚠️ 설정 필요: " + ", ".join(missing_items))
+
             if check_results:
                 return "\n" + "\n".join(check_results)
-            else:
-                return f"\n[{startup_time_short}] ✅ 모든 설정이 정상적으로 연동되어 있습니다"
+            return f"\n[{startup_time_short}] ✅ 7개 설정이 모두 연동되어 있습니다"
                 
         except Exception as e:
             return f"\n[{startup_time_short}] ❌ 설정 체크 중 오류 발생: {e}"
@@ -9689,12 +9921,19 @@ class MainWindow(QMainWindow):
             wp_pass = (global_settings.get("common_password", "") or "").strip()
             wp_status = "완료" if (wp_user and wp_pass) else "미완료"
 
+            current_ai_provider = (global_settings.get("default_ai", "web-gemini") or "web-gemini").strip().lower()
             gemini_key = (self.config_manager.data.get("api_keys", {}).get("gemini", "") or "").strip()
-            gemini_status = "설정됨" if gemini_key else "미설정"
+            if current_ai_provider == "gemini":
+                gemini_status = "설정됨" if gemini_key else "미설정"
+            else:
+                gemini_status = "비필수(웹모드)"
 
             google_email = (global_settings.get("google_email", "") or "").strip()
             google_password = (global_settings.get("google_password", "") or "").strip()
-            web_login_status = "완료" if (google_email and google_password) else "미완료"
+            if current_ai_provider == "web-gemini":
+                web_login_status = "완료" if (google_email and google_password) else "미완료"
+            else:
+                web_login_status = "비필수"
 
             lines = [
                 f"[{startup_time_short}] ⚙️ 설정 버튼 내역",
@@ -12094,7 +12333,7 @@ class MainWindow(QMainWindow):
             self.update_posting_status(f"❌ 웹사이트 로그인 창 실행 오류: {e}")
 
     def open_website_login(self):
-        """구글 계정 입력 후 Gemini 로그인 창 열기"""
+        """구글 계정 입력/저장"""
         dialog = QDialog(self)
         dialog.setWindowTitle("🌐 웹사이트 로그인 설정")
         dialog.setModal(True)
@@ -12122,23 +12361,23 @@ class MainWindow(QMainWindow):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        open_btn = QPushButton("저장 후 로그인 창 열기")
-        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_btn = QPushButton("저장")
+        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel_btn = QPushButton("취소")
         cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_row.addWidget(open_btn)
+        btn_row.addWidget(save_btn)
         btn_row.addWidget(cancel_btn)
         layout.addLayout(btn_row)
 
-        def do_open():
+        def do_save():
             global_settings = self.config_manager.data.setdefault("global_settings", {})
             global_settings["google_email"] = email_edit.text().strip()
             global_settings["google_password"] = password_edit.text().strip()
             self.config_manager.save_setting()
+            self.update_posting_status("✅ 웹사이트 로그인 정보 저장 완료")
             dialog.accept()
-            self._open_website_login_browser()
 
-        open_btn.clicked.connect(do_open)
+        save_btn.clicked.connect(do_save)
         cancel_btn.clicked.connect(dialog.reject)
         dialog.setLayout(layout)
         dialog.exec()
@@ -12197,14 +12436,14 @@ class MainWindow(QMainWindow):
                 return
             except Exception:
                 # startfile 실패 시 explorer 폴백 (종료코드 무시)
-                subprocess.Popen(["explorer", normalized])
+                subprocess.Popen(["explorer", normalized], **_get_windows_hidden_subprocess_kwargs())
                 return
 
         # 비-Windows 환경 폴백
         if platform.system() == "Darwin":
-            subprocess.Popen(["open", normalized])
+            subprocess.Popen(["open", normalized], **_get_windows_hidden_subprocess_kwargs())
         else:
-            subprocess.Popen(["xdg-open", normalized])
+            subprocess.Popen(["xdg-open", normalized], **_get_windows_hidden_subprocess_kwargs())
         
     def start_next_posting_countdown(self):
         """다음 포스팅까지 카운트다운 시작"""
@@ -12346,16 +12585,14 @@ def main():
     import sys
     import io
     
-    # EXE 실행 시 stdout 리다이렉트 설정 (--windowed 옵션 대응)
+    # EXE 실행 시 stdout/stderr를 파일이 아닌 NUL로 리다이렉트
     if getattr(sys, 'frozen', False):  # PyInstaller로 빌드된 EXE인 경우
         try:
-            # stdout과 stderr를 로그 파일로 리다이렉트
-            log_file_path = os.path.join(get_base_path(), "app.log")
-            log_file = open(log_file_path, "w", encoding="utf-8")
-            sys.stdout = log_file
-            sys.stderr = log_file
-        except Exception as e:
-            pass  # 리다이렉트 실패 시 무시
+            null_device = os.devnull
+            sys.stdout = open(null_device, "w", encoding="utf-8", buffering=1)
+            sys.stderr = open(null_device, "w", encoding="utf-8", buffering=1)
+        except Exception:
+            pass
     
     # sys, io 모듈 import
     
@@ -12379,6 +12616,22 @@ def main():
         # QApplication 생성
         app = QApplication(sys.argv)
         # QApplication 생성 완료
+        startup_splash = None
+        try:
+            splash_pix = QPixmap(860, 320)
+            splash_pix.fill(QColor("#0F1724"))
+            startup_splash = QSplashScreen(splash_pix)
+            startup_splash.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            startup_splash.setFont(QFont("맑은 고딕", 24, QFont.Weight.Bold))
+            startup_splash.showMessage(
+                "프로그램 실행 중입니다...\n잠시만 기다려주세요.",
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+                QColor("#EAF6FF")
+            )
+            startup_splash.show()
+            app.processEvents()
+        except Exception:
+            startup_splash = None
 
         def _set_windows_sleep_prevention(enable):
             """Windows 절전/화면 꺼짐 방지 설정"""
@@ -12402,6 +12655,11 @@ def main():
         is_valid, message = license_manager.verify_license()
         
         if not is_valid:
+            if startup_splash is not None:
+                try:
+                    startup_splash.close()
+                except Exception:
+                    pass
             # 미등록 안내창
             machine_id = license_manager.get_machine_id()
             is_expired = ("만료" in (message or "")) or ("expire" in (message or "").lower())
@@ -12600,8 +12858,22 @@ def main():
         # 애플리케이션에 팔레트 적용
         app.setPalette(palette)
         
-        # 폰트 설정
-        font = QFont("맑은 고딕", 10)
+        # 폰트 설정 (Windows에서 가독성 높은 계열 + 선명도 힌팅)
+        selected_family = "맑은 고딕"
+        try:
+            available_families = set(QFontDatabase.families())
+            for family in ["Segoe UI", "맑은 고딕", "Noto Sans KR"]:
+                if family in available_families:
+                    selected_family = family
+                    break
+        except Exception:
+            pass
+
+        font = QFont(selected_family, 10)
+        try:
+            font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
+        except Exception:
+            pass
         app.setFont(font)
 
         # 아이콘 설정 (PyInstaller 리소스 경로 사용)
@@ -12630,6 +12902,14 @@ def main():
         window.showMaximized()
         window.raise_()  # 창을 앞으로 가져오기
         window.activateWindow()  # 창을 활성화
+        if startup_splash is not None:
+            try:
+                startup_splash.finish(window)
+            except Exception:
+                try:
+                    startup_splash.close()
+                except Exception:
+                    pass
         # MainWindow 표시
         
         try:
