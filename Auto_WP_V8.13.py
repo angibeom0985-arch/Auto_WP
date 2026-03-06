@@ -2436,13 +2436,25 @@ class ContentGenerator:
                 if not self.setup_driver():
                     return None
 
-            content = ""
-            if "gemini" in provider:
-                content = self._generate_content_with_gemini_web(prompt)
-            elif "perplexity" in provider:
-                content = self._generate_content_with_perplexity_web(prompt)
-            
-            return content
+            max_attempts = 2
+            last_content = None
+            for attempt in range(1, max_attempts + 1):
+                content = ""
+                if "gemini" in provider:
+                    content = self._generate_content_with_gemini_web(prompt)
+                elif "perplexity" in provider:
+                    content = self._generate_content_with_perplexity_web(prompt)
+
+                if content and str(content).strip():
+                    return content
+
+                last_content = content
+                if attempt < max_attempts and "gemini" in provider:
+                    self.log(f"⚠️ Gemini Web 응답 비정상(시도 {attempt}/{max_attempts}), 탭 재정비 후 재시도합니다.")
+                    self._recover_gemini_stall_context()
+                    time.sleep(1.0)
+
+            return last_content
         except Exception as e:
             self.log(f"❌ Web AI 생성 오류: {str(e)}")
             return None
@@ -2528,6 +2540,12 @@ class ContentGenerator:
         # 응답 대기
         self.log("⏳ Gemini 응답 생성 대기 중...")
         response = self._wait_for_gemini_response()
+        if response == "__GEMINI_STALLED__":
+            self.log("⚠️ Gemini 응답 로딩 정체 감지: 탭 복구 후 1회 재시도합니다.")
+            self._recover_gemini_stall_context()
+            if self._submit_gemini_prompt(prompt):
+                response = self._wait_for_gemini_response(timeout=150)
+
         if response and str(response).strip():
             return response
 
@@ -3102,6 +3120,48 @@ class ContentGenerator:
         except Exception:
             return False
 
+    def _click_gemini_stop_button(self, timeout: float = 2.0) -> bool:
+        """Gemini 생성 중지 버튼 클릭"""
+        if not self.driver or By is None:
+            return False
+        selectors = [
+            "button[aria-label*='중지']",
+            "button[aria-label*='Stop']",
+            "button[aria-label*='stop']",
+        ]
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            for sel in selectors:
+                try:
+                    buttons = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                    for btn in buttons:
+                        if not btn.is_displayed():
+                            continue
+                        try:
+                            btn.click()
+                        except Exception:
+                            self.driver.execute_script("arguments[0].click();", btn)
+                        return True
+                except Exception:
+                    pass
+            time.sleep(0.15)
+        return False
+
+    def _recover_gemini_stall_context(self):
+        """Gemini 응답 정체 시 탭/세션 복구"""
+        try:
+            if not self.driver:
+                return
+            if self._is_gemini_generating():
+                self._click_gemini_stop_button(timeout=1.5)
+                time.sleep(0.4)
+            self.driver.get("https://gemini.google.com/app?hl=ko")
+            time.sleep(1.2)
+            self._handle_gemini_blocking_dialogs()
+            self._find_gemini_editor(timeout=8.0)
+        except Exception as e:
+            self.log(f"⚠️ Gemini 정체 복구 중 오류: {self._compact_error(e)}")
+
     def _click_gemini_send_button(self, timeout: float = 2.0) -> bool:
         """Gemini 전송 버튼(메시지 보내기) 클릭"""
         if not self.driver or By is None:
@@ -3161,6 +3221,8 @@ class ContentGenerator:
             turn_marker = getattr(self, "_gemini_turn_marker", None) or {}
             base_copy_count = int(turn_marker.get("copy_count", 0))
             base_resp_count = int(turn_marker.get("response_count", 0))
+            progress_anchor = time.time()
+            stall_notice_at = 0
             while time.time() < end_time:
                 try:
                     buttons = self.driver.find_elements(By.CSS_SELECTOR, copy_selector)
@@ -3194,13 +3256,27 @@ class ContentGenerator:
                             fallback_text = responses[-1].text.strip()
                             if fallback_text:
                                 return fallback_text
+                    if turn_ready:
+                        progress_anchor = time.time()
                 except Exception:
                     pass
+
+                now = time.time()
+                generating = self._is_gemini_generating()
+                stalled_seconds = int(now - progress_anchor)
+                # 생성 중 상태가 오래 유지되거나, 생성 중이 아닌데도 새 턴이 안 생기면 정체로 간주
+                if stalled_seconds >= 40 and ((generating and stalled_seconds >= 90) or (not generating)):
+                    self.log("⚠️ Gemini 응답 로딩이 정체되어 복구가 필요합니다.")
+                    return "__GEMINI_STALLED__"
+
                 now_sec = int(time.time())
                 if now_sec - last_notice >= 10:
                     remaining = int(max(0, end_time - time.time()))
                     self.log(f"⌛ Gemini 응답 대기 중... ({remaining}초 남음)")
                     last_notice = now_sec
+                if stalled_seconds >= 25 and now_sec - stall_notice_at >= 15:
+                    self.log(f"⌛ Gemini 응답 진행 감지 대기 중... ({stalled_seconds}초 무변화)")
+                    stall_notice_at = now_sec
                 time.sleep(1)
 
             # 마지막 폴백
@@ -4852,6 +4928,34 @@ class ContentGenerator:
             self.is_posting = False
             return None, None, None
 
+    def _build_revenue_step_fallback(self, step_num, keyword):
+        """수익용 단계 실패 시 최소 HTML fallback 생성"""
+        safe_keyword = str(keyword or "").strip() or "핵심 키워드"
+        if step_num == 1:
+            return (
+                f"<p>{safe_keyword} 관련 핵심 내용을 빠르게 정리했습니다.</p>\n"
+                f"<p>아래 항목을 순서대로 확인하면 실사용에 바로 도움이 됩니다.</p>"
+            )
+        if step_num == 2:
+            return (
+                f"<h2>{safe_keyword} 기본 점검 항목</h2>\n"
+                "<ul><li>필수 조건 확인</li><li>우선순위 정리</li><li>실행 순서 설정</li></ul>"
+            )
+        if step_num == 3:
+            return (
+                f"<h2>{safe_keyword} 실전 적용 방법</h2>\n"
+                "<p>준비-실행-점검 순서로 진행하면 오류 가능성을 줄일 수 있습니다.</p>"
+            )
+        if step_num == 4:
+            return (
+                f"<h2>{safe_keyword} 자주 발생하는 문제와 대응</h2>\n"
+                "<p>진행이 멈추면 브라우저 새로고침, 재로그인, 네트워크 상태를 먼저 확인하세요.</p>"
+            )
+        return (
+            f"<h2>{safe_keyword} 마무리 체크리스트</h2>\n"
+            "<p>핵심 포인트를 다시 점검하고, 필요한 경우 설정을 저장한 뒤 재실행하세요.</p>"
+        )
+
     def generate_revenue_content(self, keyword):
         """수익용 콘텐츠 생성 - 단순화된 버전"""
         self.log("🔄 수익용 콘텐츠 생성을 시작합니다")
@@ -4890,16 +4994,30 @@ class ContentGenerator:
                 
                 # AI 호출
                 self.log(f"🤖 {step_num}단계 AI 호출")
-                response_text = self.call_ai_api(
-                    user_prompt, f"수익용 {step_num}단계", 
-                    max_tokens=1500, 
-                    temperature=0.7, 
-                    system_content=system_content
-                )
-                
+                response_text = None
+                for attempt in range(1, 4):
+                    response_text = self.call_ai_api(
+                        user_prompt, f"수익용 {step_num}단계",
+                        max_tokens=1500,
+                        temperature=0.7,
+                        system_content=system_content
+                    )
+                    if response_text and str(response_text).strip():
+                        break
+                    self.log(f"⚠️ {step_num}단계 빈 응답 (재시도 {attempt}/3)")
+                    if (self.current_ai_provider or "").lower().startswith("web"):
+                        self._recover_gemini_stall_context()
+                    time.sleep(1.0)
+
                 if not response_text:
-                    self.log(f"❌ {step_num}단계 AI 응답 실패")
-                    return None, None, None
+                    if step_num == 1:
+                        title = self.generate_hook_title(keyword)
+                        self.log(f"⚠️ 1단계 AI 응답 실패: fallback 제목/서론으로 대체 ({title})")
+                    else:
+                        self.log(f"⚠️ {step_num}단계 AI 응답 실패: fallback HTML로 대체")
+                    step_content = self._build_revenue_step_fallback(step_num, keyword)
+                    all_content_parts.append(step_content)
+                    continue
                 
                 # AI 출력 검증 및 자동 수정 (프롬프트 '중요 주의사항' 규칙 적용)
                 response_text = self.validate_ai_output(response_text, keyword)
@@ -4978,7 +5096,7 @@ class ContentGenerator:
                     
                     # 제목이 추출되지 않으면 대체 제목 생성
                     if not title:
-                        title = f"{keyword} | 5가지 핵심 정보 완벽 정리"
+                        title = self.generate_hook_title(keyword)
                         self.log(f"⚠️ 제목 추출 실패, 대체 제목 사용: {title}")
                     
                     # 서론 부분만 step_content로 설정 (제목 제외)
@@ -5000,6 +5118,9 @@ class ContentGenerator:
             
             # 콘텐츠 최종 정리 (발행 전)
             full_content = self.clean_content_before_publish(full_content)
+
+            # 제목 형식 최종 보정
+            title = self.validate_and_fix_title(title or self.generate_hook_title(keyword), keyword)
             
             # 썸네일 생성
             thumbnail_path = self.create_thumbnail(title, keyword) if title else None
