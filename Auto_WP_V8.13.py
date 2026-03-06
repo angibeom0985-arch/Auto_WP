@@ -601,6 +601,7 @@ class PostingWorker(QThread):
                     
                     # 이번 라운드에서 포스팅된 사이트 카운터
                     posted_sites_count = 0
+                    available_sites_count = 0
                     
                     # 시작 사이트부터 순회 (라운드 1에서만 적용)
                     sites_to_process = self.sites_data[start_index:] + self.sites_data[:start_index] if round_count == 1 else self.sites_data
@@ -633,15 +634,19 @@ class PostingWorker(QThread):
                             if not available_keywords:
                                 self.safe_emit_status(f"⚠️ {site_name}: 사용 가능한 키워드 없음 - 스킵")
                                 continue
+                            available_sites_count += 1
                         except Exception as keyword_error:
                             self.safe_emit_status(f"❌ {site_name}: 키워드 조회 오류 - 다음 사이트로 계속")
                             continue
                         
                         # 실제 포스팅 작업 수행
                         try:
-                            self.process_site_posting(site)
-                            posted_sites_count += 1
-                            self.safe_emit_status(f"✅ {site_name} 포스팅 완료")
+                            site_success = bool(self.process_site_posting(site))
+                            if site_success:
+                                posted_sites_count += 1
+                                self.safe_emit_status(f"✅ {site_name} 포스팅 완료")
+                            else:
+                                self.safe_emit_status(f"❌ {site_name}: 포스팅 실패")
                             self.safe_emit_status("=====================================================================================")
                         except Exception as site_error:
                             error_msg = f"❌ {site_name}: 포스팅 오류 - {str(site_error)}"
@@ -656,10 +661,15 @@ class PostingWorker(QThread):
                                 return
                     
                     # 이번 라운드 완료 후 체크
-                    if posted_sites_count == 0:
-                        # 어떤 사이트도 포스팅하지 못했으면 모든 키워드가 소진됨
+                    if available_sites_count == 0:
+                        # 사용 가능한 키워드 자체가 없음
                         self.safe_emit_status("🎉 모든 사이트의 키워드가 소진되었습니다!")
                         self.safe_emit_status(f"📊 총 {round_count}라운드 완료! 포스팅 작업 종료")
+                        break
+                    elif posted_sites_count == 0:
+                        # 키워드는 있었지만 모두 실패한 경우 반복 루프 대신 즉시 중단
+                        self.safe_emit_status("❌ 사용 가능한 키워드는 있으나 모든 사이트 포스팅에 실패했습니다. 오류를 확인해주세요.")
+                        self.error_occurred.emit("모든 사이트 포스팅 실패: AI/브라우저/인증 상태를 확인해주세요.")
                         break
                     else:
                         self.safe_emit_status(f"🏁 라운드 {round_count} 완료 - {posted_sites_count}개 사이트 포스팅 성공")
@@ -724,7 +734,7 @@ class PostingWorker(QThread):
                 self.status_update.emit(f"⚠️ {site_name}: 키워드 없음")
                 # 포스팅 실패 상태 저장 (완료됨으로 표시하여 다음 사이트로 이동)
                 self.config_manager.save_posting_state(site_id, site_url, in_progress=False)
-                return
+                return False
                 
             keyword = keywords[0]  # 첫 번째 키워드 선택
             self.status_update.emit(f"🔑 선택된 키워드: '{keyword}'")
@@ -736,7 +746,8 @@ class PostingWorker(QThread):
             else:
                 print(f"⚠️ {site_name}: 키워드 파일 설정이 없습니다.")
                 self.status_update.emit(f"⚠️ {site_name}: 키워드 파일 미설정")
-                return
+                self.error_occurred.emit(f"{site_name}: 키워드 파일 미설정")
+                return False
             
             # AI 설정 가져오기
             ai_provider = self.config_manager.data["global_settings"].get("default_ai", "web-gemini")
@@ -810,25 +821,35 @@ class PostingWorker(QThread):
             
             if not self.is_running:
                 print(f"⏹️ {site_name}: 포스팅이 중지되었습니다. 키워드 '{keyword}' 보존됨")
-                return
+                return False
                 
             # 🔥 콘텐츠 생성 결과 검증 강화 (빈 문자열 체크 포함)
             if not title or not title.strip():
                 self.log(f"❌ {site_name}: 제목 생성 실패 (빈 값) - 키워드 '{keyword}' 보존")
-                return
+                detail = ""
+                if content_generator is not None:
+                    detail = str(getattr(content_generator, "last_generation_error", "") or "").strip()
+                self.error_occurred.emit(f"{site_name}: 제목 생성 실패(빈 값)\n키워드: {keyword}\n원인: {detail or 'AI 응답 누락 또는 파싱 실패'}")
+                return False
             
             if not content or not content.strip():
                 self.log(f"❌ {site_name}: 본문 생성 실패 (빈 값) - 키워드 '{keyword}' 보존")
-                return
+                detail = ""
+                if content_generator is not None:
+                    detail = str(getattr(content_generator, "last_generation_error", "") or "").strip()
+                self.error_occurred.emit(f"{site_name}: 본문 생성 실패(빈 값)\n키워드: {keyword}\n원인: {detail or 'AI 응답 누락 또는 파싱 실패'}")
+                return False
             
             # 최소 길이 검증
             if len(title.strip()) < 5:
                 self.log(f"❌ 콘텐츠 생성 실패 - 제목이 너무 짧음 ({len(title.strip())}자). 키워드 '{keyword}' 보존")
-                return
+                self.error_occurred.emit(f"{site_name}: 제목이 너무 짧음({len(title.strip())}자)\n키워드: {keyword}\n제목: {title.strip()}")
+                return False
             
             if len(content.strip()) < 100:
                 self.log(f"❌ 콘텐츠 생성 실패 - 본문이 너무 짧음 ({len(content.strip())}자). 키워드 '{keyword}' 보존")
-                return
+                self.error_occurred.emit(f"{site_name}: 본문이 너무 짧음({len(content.strip())}자)\n키워드: {keyword}")
+                return False
                 
             self.log(f"✅ 콘텐츠 생성 성공 (제목: {len(title)}자, 본문: {len(content)}자), 워드프레스 업로드 시작")
             
@@ -854,21 +875,29 @@ class PostingWorker(QThread):
                 
                 # 🔥 포스팅 완료 후 키워드 개수 체크 (300개 미만 경고)
                 self.check_low_keywords_after_posting(site)
+                return True
                     
             else:
                 self.status_update.emit(f"❌ {site_name}: 워드프레스 포스팅 실패 - 키워드 보존")
                 # 🔒 포스팅 실패 시 진행 중 상태 유지 (재시작 시 같은 사이트에서 재시작)
                 self.config_manager.save_posting_state(site_id, site_url, in_progress=True)
                 self.config_manager.save_posting_state(site_id, site_url, in_progress=True)
+                error_text = ""
+                if isinstance(result, dict):
+                    error_text = str(result.get("error", "") or "").strip()
+                self.error_occurred.emit(f"{site_name}: 워드프레스 포스팅 실패\n키워드: {keyword}\n상세: {error_text or '상세 오류 없음'}")
+                return False
             
         except Exception as e:
             self.log(f"❌ {site_name} 예외 발생: {str(e)}")
             import traceback
             self.log(f"🔍 상세 오류:\n{traceback.format_exc()}")
             self.status_update.emit(f"❌ {site_name} 예외 발생 - 키워드 보존됨")
+            self.error_occurred.emit(f"{site_name}: 예외 발생\n{str(e)}")
             # 🔒 예외 발생 시 진행 중 상태 유지 (재시작 시 같은 사이트에서 재시작)
             self.config_manager.save_posting_state(site_id, site_url, in_progress=True)
             # 예외가 발생해도 키워드를 보존하고 다음 사이트로 진행
+            return False
         finally:
             # 사이트 1회 처리(성공/실패) 직후 브라우저를 반드시 종료
             try:
@@ -1678,6 +1707,7 @@ class ContentGenerator:
         # 포스팅 상태 관리
         self.is_posting = False
         self.worker_thread: Optional["PostingWorker"] = None  # Worker Thread 참조
+        self.last_generation_error = ""
         
         # 인증 캐시 (성공한 인증 방법 저장)
         self.auth_cache = {}  # {site_url: (headers, method_name)}
@@ -4904,6 +4934,7 @@ class ContentGenerator:
             self.is_posting = True
             self.current_keyword = keyword
             self.current_content_type = content_type
+            self.last_generation_error = ""
 
             # 선택된 AI 모드별 사전 점검
             ai_provider = (self.current_ai_provider or "").lower()
@@ -4927,34 +4958,6 @@ class ContentGenerator:
             self.log(f"🔥 콘텐츠 생성 중 오류: {e}")
             self.is_posting = False
             return None, None, None
-
-    def _build_revenue_step_fallback(self, step_num, keyword):
-        """수익용 단계 실패 시 최소 HTML fallback 생성"""
-        safe_keyword = str(keyword or "").strip() or "핵심 키워드"
-        if step_num == 1:
-            return (
-                f"<p>{safe_keyword} 관련 핵심 내용을 빠르게 정리했습니다.</p>\n"
-                f"<p>아래 항목을 순서대로 확인하면 실사용에 바로 도움이 됩니다.</p>"
-            )
-        if step_num == 2:
-            return (
-                f"<h2>{safe_keyword} 기본 점검 항목</h2>\n"
-                "<ul><li>필수 조건 확인</li><li>우선순위 정리</li><li>실행 순서 설정</li></ul>"
-            )
-        if step_num == 3:
-            return (
-                f"<h2>{safe_keyword} 실전 적용 방법</h2>\n"
-                "<p>준비-실행-점검 순서로 진행하면 오류 가능성을 줄일 수 있습니다.</p>"
-            )
-        if step_num == 4:
-            return (
-                f"<h2>{safe_keyword} 자주 발생하는 문제와 대응</h2>\n"
-                "<p>진행이 멈추면 브라우저 새로고침, 재로그인, 네트워크 상태를 먼저 확인하세요.</p>"
-            )
-        return (
-            f"<h2>{safe_keyword} 마무리 체크리스트</h2>\n"
-            "<p>핵심 포인트를 다시 점검하고, 필요한 경우 설정을 저장한 뒤 재실행하세요.</p>"
-        )
 
     def generate_revenue_content(self, keyword):
         """수익용 콘텐츠 생성 - 단순화된 버전"""
@@ -5010,14 +5013,9 @@ class ContentGenerator:
                     time.sleep(1.0)
 
                 if not response_text:
-                    if step_num == 1:
-                        title = self.generate_hook_title(keyword)
-                        self.log(f"⚠️ 1단계 AI 응답 실패: fallback 제목/서론으로 대체 ({title})")
-                    else:
-                        self.log(f"⚠️ {step_num}단계 AI 응답 실패: fallback HTML로 대체")
-                    step_content = self._build_revenue_step_fallback(step_num, keyword)
-                    all_content_parts.append(step_content)
-                    continue
+                    self.last_generation_error = f"수익용 {step_num}단계 AI 응답 실패(3회 재시도 후 빈 응답)"
+                    self.log(f"❌ {self.last_generation_error}")
+                    return None, None, None
                 
                 # AI 출력 검증 및 자동 수정 (프롬프트 '중요 주의사항' 규칙 적용)
                 response_text = self.validate_ai_output(response_text, keyword)
@@ -5096,8 +5094,9 @@ class ContentGenerator:
                     
                     # 제목이 추출되지 않으면 대체 제목 생성
                     if not title:
-                        title = self.generate_hook_title(keyword)
-                        self.log(f"⚠️ 제목 추출 실패, 대체 제목 사용: {title}")
+                        self.last_generation_error = "1단계 응답에서 제목 추출 실패"
+                        self.log(f"❌ {self.last_generation_error}")
+                        return None, None, None
                     
                     # 서론 부분만 step_content로 설정 (제목 제외)
                     step_content = '\n'.join(content_lines)
@@ -5118,9 +5117,15 @@ class ContentGenerator:
             
             # 콘텐츠 최종 정리 (발행 전)
             full_content = self.clean_content_before_publish(full_content)
-
-            # 제목 형식 최종 보정
-            title = self.validate_and_fix_title(title or self.generate_hook_title(keyword), keyword)
+            if not title or not title.strip():
+                self.last_generation_error = "최종 제목이 비어있음"
+                self.log(f"❌ {self.last_generation_error}")
+                return None, None, None
+            title = self.validate_and_fix_title(title, keyword, allow_fallback=False)
+            if not title:
+                self.last_generation_error = "제목 형식 검증/보정 실패"
+                self.log(f"❌ {self.last_generation_error}")
+                return None, None, None
             
             # 썸네일 생성
             thumbnail_path = self.create_thumbnail(title, keyword) if title else None
@@ -6593,7 +6598,7 @@ class ContentGenerator:
             union = words1.union(words2)
             return len(intersection) / len(union) if union else 0.0
 
-    def validate_and_fix_title(self, title, keyword):
+    def validate_and_fix_title(self, title, keyword, allow_fallback=True):
         """제목이 '{keyword} | 숫자가 들어간 후킹문구' 형식인지 검증하고 수정"""
         try:
             # 제목이 '{keyword} |' 로 시작하는지 확인
@@ -6618,9 +6623,12 @@ class ContentGenerator:
                             return fixed_title
                 
                 # 기본 후킹문구 생성 (항상 숫자 포함)
-                fixed_title = self.generate_hook_title(keyword)
-                self.log(f"🔧 기본 제목 생성: {fixed_title}")
-                return fixed_title
+                if allow_fallback:
+                    fixed_title = self.generate_hook_title(keyword)
+                    self.log(f"🔧 기본 제목 생성: {fixed_title}")
+                    return fixed_title
+                self.log("❌ 제목 형식 수정 실패 (fallback 비허용)")
+                return None
             
             # 2차 검증: 올바른 형식이지만 숫자 포함 여부 확인
             if "|" in title:
@@ -6637,7 +6645,9 @@ class ContentGenerator:
         except Exception as e:
             self.log(f"제목 검증 중 오류: {e}")
             # 오류 발생 시 안전한 기본 제목 반환
-            return self.generate_hook_title(keyword)
+            if allow_fallback:
+                return self.generate_hook_title(keyword)
+            return None
     
     def generate_hook_title(self, keyword):
         """숫자가 포함된 기본 후킹 제목 생성"""
@@ -12685,6 +12695,48 @@ class MainWindow(QMainWindow):
         solution_text = " / ".join(solutions)
         return solution_text, payload
 
+    def _show_posting_error_dialog(self, error_message: str):
+        """포스팅 오류 전용 팝업 (복사 버튼 포함)"""
+        text = str(error_message or "").strip()
+        if not text:
+            return
+        try:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("포스팅 오류")
+            dialog.setMinimumWidth(760)
+            dialog.setMinimumHeight(440)
+
+            layout = QVBoxLayout(dialog)
+            title = QLabel("포스팅 중 오류가 발생했습니다.")
+            title.setStyleSheet("font-weight:700; font-size:14px;")
+            layout.addWidget(title)
+
+            msg_box = QTextEdit()
+            msg_box.setReadOnly(True)
+            msg_box.setPlainText(text)
+            layout.addWidget(msg_box, 1)
+
+            btn_row = QHBoxLayout()
+            btn_row.addStretch(1)
+
+            copy_btn = QPushButton("복사")
+            close_btn = QPushButton("닫기")
+            btn_row.addWidget(copy_btn)
+            btn_row.addWidget(close_btn)
+            layout.addLayout(btn_row)
+
+            def _copy_message():
+                cb = QApplication.clipboard()
+                if cb is not None:
+                    cb.setText(text)
+                    copy_btn.setText("복사 완료")
+
+            copy_btn.clicked.connect(_copy_message)
+            close_btn.clicked.connect(dialog.accept)
+            dialog.exec()
+        except Exception:
+            pass
+
     def _append_error_guide_once(self, error_message: str):
         text = str(error_message or "").strip()
         if not text:
@@ -12882,6 +12934,8 @@ class MainWindow(QMainWindow):
                 self.update_posting_status(f"⚠️ {site_name}: 키워드 {keyword_count}개 (300개 미만)")
                 self.load_sites()  # 설정 탭 목록의 키워드 색상을 즉시 반영
                 return  # 포스팅 중지하지 않고 계속 진행
+
+        self._show_posting_error_dialog(str(error_message))
         
         # 일반 오류인 경우 워커 정리
         if hasattr(self, 'posting_worker') and self.posting_worker:
