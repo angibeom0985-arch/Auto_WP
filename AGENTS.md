@@ -1,22 +1,48 @@
-# Agent Instructions / 에이전트 지침
+﻿# Codex 작업 규칙
 
-## 🛡️ Protected: Machine ID / License Logic
-## 🛡️ 보호됨: 머신 ID / 라이선스 로직
+## Git 자동 커밋
+- 완료된 모든 코딩 작업의 마지막에 `git add -A` 후 커밋을 만들고 `origin`에 푸시한다.
+- 사용자가 푸시하지 말라고 명시하지 않는 한 커밋/푸시를 생략하지 않는다.
+- 구현한 수정 내용을 요약하는 명확한 커밋 메시지를 사용한다.
 
-**English**
-- Do not modify any Machine ID or license enforcement logic without explicit user consent.
-- This includes file changes, refactors, data-path changes, or edits that affect how machine IDs are generated, stored, verified, or displayed.
-- If a task would touch this area, stop and ask for confirmation first, even if you have broad permissions.
+## 머신 ID 보호
+- `.exe`를 다시 빌드하거나 Python(`.py`) 기능을 업데이트하더라도, 실행 파일의 기존 머신 ID 동작은 변경하지 않는다.
+- 어떤 파일에서도 머신 ID 로직을 수정, 리팩터링, 교체, 재생성하지 않는다.
+- 머신 ID 관련 코드, 함수, 변수, 클래스, 모듈, 스크립트, 리소스, 설정을 새로 만들지 않는다.
+- 루트, 하위 폴더, 빌드 산출물, 임시 폴더, 패키징 결과물을 포함한 어떤 위치에도 머신 ID 관련 파일을 생성하지 않는다.
+- 이 프로젝트의 Python(`.py`), 실행 파일(`.exe`), 그 어떤 폴더에도 머신 ID 관련 코드/파일을 추가하거나 생성하지 않는다.
+- `machine_id.txt`는 절대 생성하지 않는다. 어떤 폴더에서든 발견되면 작업/배포 전에 삭제한다.
+- 구매자 배포 전, 소스/빌드 결과물/패키지에 `machine_id.txt`가 포함되지 않았는지 반드시 확인한다.
+- 이 보호 정책은 구매자 배포 시 `1인1PC` 제한과 사용 기간 검증을 유지하기 위한 필수 조건이다.
+- 요청이 이 정책과 충돌하면, 충돌되는 부분은 명시적으로 거부하고 허용된 변경만 진행한다.
 
-**Korean (한국어)**
-- 사용자의 명시적인 동의 없이 머신 ID(기기 고유값) 또는 라이선스 강제 로직을 절대 수정하지 마십시오.
-- 여기에는 파일 변경, 리팩토링, 데이터 경로 변경, 또는 머신 ID가 생성, 저장, 검증, 표시되는 방식에 영향을 주는 모든 편집이 포함됩니다.
-- 만약 작업이 이 영역을 건드려야 한다면, 광범위한 권한이 있더라도 작업을 멈추고 먼저 확인을 요청하십시오.
+## 머신 ID 표준 (앞으로 모든 `.py`에 적용)
+- 목표: 배포본에서 머신 ID 파일 잔여물을 막으면서 `1인1PC` 제한과 `사용 기간` 검증을 강제한다.
+- 머신 ID 형식은 `NAVER-` + 소문자 32자리 hex로 고정한다.
+- 머신 ID 결정 우선순위는 다음과 같이 유지한다.
+  1. 이미 발급된 라이선스 데이터의 유효한 `registered_machine_id`
+  2. Windows 레지스트리 값 `HKCU\\Software\\<복붙한_폴더명>\\MachineId` (레거시 `Auto_Naver` 경로도 읽기 호환)
+  3. 결정적 하드웨어 지문 해시(MachineGuid / SMBIOS UUID / 시스템 드라이브 시리얼 / 안정적 MAC)
+- 머신 ID를 텍스트 파일로 저장하지 않는다. 저장이 필요하면 레지스트리만 사용하며, `machine_id.txt`는 항상 금지한다.
+- 앱 실행 시마다(`.exe` 포함) 아래 경로를 조용히(무음) 재귀 검사해 머신 ID 텍스트 잔여물을 삭제한다.
+  - exe 기준 폴더 및 모든 하위 폴더
+  - 프로젝트 `setting` 트리
+  - 런타임 상태 저장 경로 및 하위 폴더
+  - Windows `APPDATA/LOCALAPPDATA/PROGRAMDATA`의 `<복붙한_폴더명>` 트리 (레거시 `Auto_Naver` 트리도 함께 검사)
+- 정리 동작은 무음이어야 한다. 팝업, 콘솔 로그, 사용자 메시지를 출력하지 않는다.
+- 라이선스 저장 구조에서는 기간 검증 필드와 구매자 매핑 데이터를 유지한다. 편의상 만료/유효성 검증을 제거하지 않는다.
+- 라이선스 코드 리팩터링 시 아래 동작 호환성을 우선 보장한다.
+  - 기존 유효 구매자는 계속 통과
+  - 만료 구매자는 계속 실패
+  - 미등록 머신은 계속 실패
+- 배포 전 exe 기준 폴더에서 재귀 검사하여 머신 ID 잔여 파일이 소스, dist, 패키지 산출물에 없는지 최종 확인한다.
 
-### 🚫 Protected paths (non-exhaustive) / 보호된 경로 (예시)
-- `Auto_WP/license_check.py`
-- `Auto_WP/register_license.py`
-- `Auto_WP/Auto_WP_V8.13.py` (any Machine ID related UI/logic / 머신 ID 관련 UI 또는 로직)
-- `Auto_WP/setting` (license or machine-id related data / 라이선스나 머신 ID 관련 데이터)
-- Any file containing "machine_id", "머신 ID", or "머신ID"
-- "machine_id", "머신 ID", "머신ID"가 포함된 모든 파일
+## 워드프레스 인증 테스트/주기 차단 정책
+- 사용자명/응용프로그램 비밀번호 `연결 테스트`는 단순 조회(`users/me`) 결과만으로 성공/권한을 판단하지 않는다.
+- 테스트 정확도를 위해 실제 REST 동작 기반 검증을 수행한다.
+  - 임시 초안 포스트 생성/삭제로 `포스트 작성` 권한 확인
+  - 임시 포스트 `publish` 전환으로 `포스트 발행` 권한 확인
+  - 임시 미디어 업로드/삭제로 `파일 업로드` 권한 확인
+- 실행 중에도 60분마다 라이선스를 재검증한다.
+- 주기 재검증 실패 시 현재 작업을 즉시 중지하고 사용자 실행을 강제 차단한다.
+- 기능 변경 후에는 exe를 반드시 새로 빌드해 배포본에 반영한다.

@@ -19,6 +19,366 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import shutil
 import platform
+import math
+
+# Windows GUI/EXE 환경에서 stdout/stderr 핸들이 불안정할 때
+# print()가 OSError([Errno 22])로 중단되는 문제를 방지한다.
+_builtin_print = print
+
+
+def safe_print(*args, **kwargs):
+    try:
+        _builtin_print(*args, **kwargs)
+    except (OSError, ValueError):
+        # stdout/stderr가 유효하지 않은 경우를 무시하고 계속 진행
+        try:
+            sep = kwargs.get("sep", " ")
+            end = kwargs.get("end", "\n")
+            text = sep.join(str(arg) for arg in args) + end
+            os.write(2, text.encode("utf-8", errors="replace"))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+print = safe_print
+_QT_KO_TRANSLATOR: Optional[Any] = None
+
+# 분 단위 설정 문자열(예: "1~3", "1-3분")을 초 단위 랜덤으로 변환
+def resolve_wait_setting_to_seconds(wait_time_setting, default_minutes: int = 3) -> int:
+    try:
+        raw = str(wait_time_setting or "").strip().lower()
+        raw = raw.replace("분", "")
+        raw = raw.replace("minutes", "").replace("minute", "")
+        raw = raw.replace("~", "-").replace("～", "-").replace("–", "-").replace("—", "-")
+        raw = re.sub(r"\s+", "", raw)
+
+        numbers = [int(n) for n in re.findall(r"\d+", raw)]
+        if not numbers:
+            return max(1, default_minutes) * 60
+
+        if "-" in raw and len(numbers) >= 2:
+            min_val, max_val = numbers[0], numbers[1]
+            min_val = max(1, min_val)
+            max_val = max(min_val, max_val)
+            return random.randint(min_val * 60, max_val * 60)
+
+        wait_minutes = max(1, numbers[0])
+        return wait_minutes * 60
+    except Exception:
+        return max(1, default_minutes) * 60
+
+
+def get_default_thumbnail_style():
+    return {
+        "sample_text": "썸네일 예시 문구",
+        "font_family": "auto",
+        "font_size": 28,
+        "bold": True,
+        "italic": False,
+        "underline": False,
+        "text_bg_mode": "auto",   # auto | custom | none
+        "text_bg_color": "#FFFFFF",
+        "text_color_mode": "auto",  # auto | custom
+        "text_color": "#FFFFFF",
+        "stroke_mode": "auto",    # auto | custom | none
+        "stroke_color": "#000000",
+        "stroke_width": 2,
+        "shadow_enabled": False,
+        "shadow_color_mode": "auto",  # auto | custom
+        "shadow_color": "#000000",
+        "shadow_angle": 315,
+        "shadow_opacity": 40,  # %
+        "shadow_distance": 10,
+        "shadow_blur": 0,
+    }
+
+
+def font_item_label(name: str, favorite: bool) -> str:
+    base = str(name or "").strip()
+    if not base:
+        return ""
+    return f"{base} {'★' if favorite else '☆'}"
+
+
+def display_font_name(name: str) -> str:
+    raw = str(name or "").strip().lower()
+    return "자동" if raw == "auto" else str(name or "").strip()
+
+
+def load_thumbnail_style(global_settings):
+    style = get_default_thumbnail_style()
+    try:
+        raw = {}
+        if isinstance(global_settings, dict):
+            raw = global_settings.get("thumbnail_style", {}) or {}
+        if isinstance(raw, dict):
+            style.update(raw)
+    except Exception:
+        pass
+
+    def _to_int(value, default, min_value, max_value):
+        try:
+            n = int(float(value))
+            return max(min_value, min(max_value, n))
+        except Exception:
+            return default
+
+    style["font_size"] = _to_int(style.get("font_size"), 28, 10, 120)
+    style["stroke_width"] = _to_int(style.get("stroke_width"), 2, 0, 20)
+    style["shadow_angle"] = _to_int(style.get("shadow_angle"), 315, 0, 360)
+    style["shadow_opacity"] = _to_int(style.get("shadow_opacity"), 40, 0, 100)
+    style["shadow_distance"] = _to_int(style.get("shadow_distance"), 10, 0, 100)
+    style["shadow_blur"] = _to_int(style.get("shadow_blur"), 0, 0, 40)
+    style["bold"] = bool(style.get("bold"))
+    style["italic"] = bool(style.get("italic"))
+    style["underline"] = bool(style.get("underline"))
+    style["shadow_enabled"] = bool(style.get("shadow_enabled"))
+    return style
+
+
+def _parse_color(value, fallback):
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    try:
+        return ImageColor.getrgb(text)
+    except Exception:
+        pass
+    try:
+        parts = [int(x.strip()) for x in text.split(",")]
+        if len(parts) == 3:
+            return (max(0, min(255, parts[0])), max(0, min(255, parts[1])), max(0, min(255, parts[2])))
+    except Exception:
+        pass
+    return fallback
+
+
+def _resolve_font_path(font_family: str):
+    family = str(font_family or "auto").strip()
+    base = get_base_path()
+    setting_fonts = os.path.join(base, "setting", "fonts")
+    setting_fonts_ttf = os.path.join(base, "setting", "fonts", "ttf")
+    images_ttf = os.path.join(base, "setting", "images", "ttf")
+    candidates = []
+
+    if family and family.lower() != "auto":
+        if os.path.isabs(family):
+            candidates.append(family)
+        else:
+            candidates.append(os.path.join(setting_fonts, family))
+            candidates.append(os.path.join(setting_fonts_ttf, family))
+            candidates.append(os.path.join(images_ttf, family))
+            candidates.append(os.path.join("C:/Windows/Fonts", family))
+            if "." not in family:
+                candidates.append(os.path.join(setting_fonts, f"{family}.ttf"))
+                candidates.append(os.path.join(setting_fonts_ttf, f"{family}.ttf"))
+                candidates.append(os.path.join(images_ttf, f"{family}.ttf"))
+                candidates.append(os.path.join("C:/Windows/Fonts", f"{family}.ttf"))
+                candidates.append(os.path.join("C:/Windows/Fonts", f"{family}.ttc"))
+
+    candidates.extend([
+        os.path.join(setting_fonts, "timon.ttf"),
+        os.path.join(setting_fonts_ttf, "timon.ttf"),
+        os.path.join(images_ttf, "timon.ttf"),
+        "C:/Windows/Fonts/malgun.ttf",
+        "C:/Windows/Fonts/gulim.ttc",
+        "C:/Windows/Fonts/NanumGothic.ttf",
+    ])
+
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return ""
+
+
+def _wrap_text_lines(draw, text, font, max_width):
+    lines = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        words = line.split()
+        if not words:
+            continue
+        current = words[0]
+        for word in words[1:]:
+            test = f"{current} {word}"
+            bbox = draw.textbbox((0, 0), test, font=font)
+            if (bbox[2] - bbox[0]) <= max_width:
+                current = test
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+    return lines or [str(text or "").strip() or "썸네일 예시 문구"]
+
+
+def render_thumbnail_image_with_style(background_path, text, style, image_size=(300, 300)):
+    width, height = image_size
+    if background_path and os.path.exists(background_path):
+        base = Image.open(background_path).convert("RGBA").resize((width, height), Image.Resampling.LANCZOS)
+    else:
+        base = Image.new("RGBA", (width, height), (41, 128, 185, 255))
+
+    draw_ref = ImageDraw.Draw(base)
+    font_path = _resolve_font_path(style.get("font_family", "auto"))
+    font_size = int(style.get("font_size", 28))
+    try:
+        font = ImageFont.truetype(font_path, font_size) if font_path else ImageFont.load_default()
+    except Exception:
+        font = ImageFont.load_default()
+
+    render_text = str(text or "").replace("|", "\n").strip() or "썸네일 예시 문구"
+    lines = _wrap_text_lines(draw_ref, render_text, font, int(width * 0.86))
+
+    avg = ImageStat.Stat(base.convert("L")).mean[0]
+    if avg > 128:
+        auto_text = (12, 12, 12)
+        auto_bg = (245, 245, 245)
+        auto_stroke = (255, 255, 255)
+        auto_shadow = (255, 255, 255)
+    else:
+        auto_text = (255, 255, 255)
+        auto_bg = (30, 30, 30)
+        auto_stroke = (0, 0, 0)
+        auto_shadow = (0, 0, 0)
+
+    text_color = auto_text if style.get("text_color_mode", "auto") == "auto" else _parse_color(style.get("text_color"), auto_text)
+    bg_mode = style.get("text_bg_mode", "auto")
+    if bg_mode == "none":
+        bg_color = None
+    elif bg_mode == "custom":
+        bg_color = _parse_color(style.get("text_bg_color"), auto_bg)
+    else:
+        bg_color = auto_bg
+
+    stroke_mode = style.get("stroke_mode", "auto")
+    if stroke_mode == "none":
+        stroke_color = None
+    elif stroke_mode == "custom":
+        stroke_color = _parse_color(style.get("stroke_color"), auto_stroke)
+    else:
+        stroke_color = auto_stroke
+
+    stroke_width = int(style.get("stroke_width", 2))
+    if stroke_color is None:
+        stroke_width = 0
+
+    shadow_enabled = bool(style.get("shadow_enabled", False))
+    shadow_color_mode = style.get("shadow_color_mode", "auto")
+    shadow_base = auto_shadow if shadow_color_mode == "auto" else _parse_color(style.get("shadow_color"), auto_shadow)
+    shadow_opacity = int(style.get("shadow_opacity", 40))
+    shadow_rgba = (shadow_base[0], shadow_base[1], shadow_base[2], int(255 * (max(0, min(100, shadow_opacity)) / 100.0)))
+    shadow_angle = math.radians(int(style.get("shadow_angle", 315)))
+    shadow_distance = int(style.get("shadow_distance", 10))
+    shadow_dx = int(round(math.cos(shadow_angle) * shadow_distance))
+    shadow_dy = int(round(math.sin(shadow_angle) * shadow_distance))
+    shadow_blur = int(style.get("shadow_blur", 0))
+
+    line_heights = []
+    line_widths = []
+    for line in lines:
+        bbox = draw_ref.textbbox((0, 0), line, font=font)
+        line_widths.append(bbox[2] - bbox[0])
+        line_heights.append(bbox[3] - bbox[1])
+    spacing = max(6, int(font_size * 0.20))
+    total_h = sum(line_heights) + spacing * (len(lines) - 1)
+    y = (height - total_h) // 2
+
+    box_pad_x = max(10, int(font_size * 0.45))
+    box_pad_y = max(6, int(font_size * 0.30))
+    block_w = max(line_widths) if line_widths else 0
+    block_x = (width - block_w) // 2
+    if bg_color is not None:
+        overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        od = ImageDraw.Draw(overlay)
+        od.rounded_rectangle(
+            [
+                block_x - box_pad_x,
+                y - box_pad_y,
+                block_x + block_w + box_pad_x,
+                y + total_h + box_pad_y,
+            ],
+            radius=max(8, int(font_size * 0.4)),
+            fill=(bg_color[0], bg_color[1], bg_color[2], 220),
+        )
+        base = Image.alpha_composite(base, overlay)
+
+    text_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    td = ImageDraw.Draw(text_layer)
+    shadow_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shadow_layer)
+
+    y_cursor = y
+    for idx, line in enumerate(lines):
+        lw = line_widths[idx]
+        lh = line_heights[idx]
+        x = (width - lw) // 2
+
+        if shadow_enabled:
+            sd.text(
+                (x + shadow_dx, y_cursor + shadow_dy),
+                line,
+                font=font,
+                fill=shadow_rgba,
+            )
+
+        text_kwargs = {
+            "xy": (x, y_cursor),
+            "text": line,
+            "font": font,
+            "fill": (text_color[0], text_color[1], text_color[2], 255),
+        }
+        if stroke_width > 0 and stroke_color is not None:
+            text_kwargs["stroke_width"] = stroke_width
+            text_kwargs["stroke_fill"] = (stroke_color[0], stroke_color[1], stroke_color[2], 255)
+
+        # 실제 기울기 효과: 텍스트/밑줄을 같은 레이어에서 전단 변환(shear) 적용
+        if style.get("italic"):
+            italic_overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+            iod = ImageDraw.Draw(italic_overlay)
+            iod.text(**text_kwargs)
+            if style.get("bold"):
+                iod.text(**{**text_kwargs, "xy": (x + 1, y_cursor)})
+            if style.get("underline"):
+                abs_bbox = iod.textbbox((x, y_cursor), line, font=font)
+                ul_y = abs_bbox[3] + max(2, stroke_width + 1)  # 글자 아래쪽에 밑줄
+                iod.line(
+                    [(abs_bbox[0], ul_y), (abs_bbox[2], ul_y)],
+                    fill=(text_color[0], text_color[1], text_color[2], 255),
+                    width=max(1, stroke_width or 1),
+                )
+            shear = -0.35
+            italic_overlay = italic_overlay.transform(
+                base.size,
+                Image.Transform.AFFINE,
+                (1, shear, -shear * y_cursor, 0, 1, 0),
+                resample=Image.Resampling.BICUBIC,
+            )
+            text_layer = Image.alpha_composite(text_layer, italic_overlay)
+        else:
+            td.text(**text_kwargs)
+            if style.get("bold"):
+                td.text(**{**text_kwargs, "xy": (x + 1, y_cursor)})
+            if style.get("underline"):
+                abs_bbox = td.textbbox((x, y_cursor), line, font=font)
+                ul_y = abs_bbox[3] + max(2, stroke_width + 1)  # 글자 아래쪽에 밑줄
+                td.line(
+                    [(abs_bbox[0], ul_y), (abs_bbox[2], ul_y)],
+                    fill=(text_color[0], text_color[1], text_color[2], 255),
+                    width=max(1, stroke_width or 1),
+                )
+
+        y_cursor += lh + spacing
+
+    if shadow_enabled and shadow_blur > 0:
+        shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=shadow_blur))
+
+    base = Image.alpha_composite(base, shadow_layer)
+    base = Image.alpha_composite(base, text_layer)
+    return base.convert("RGB")
 
 # Windows에서 Qt DPI 컨텍스트 재설정 경고(SetProcessDpiAwarenessContext) 방지
 if os.name == "nt":
@@ -66,10 +426,11 @@ from PyQt6.QtWidgets import (
     QGroupBox, QGridLayout, QSpinBox, QComboBox, QCheckBox, QListWidget,
     QFileDialog, QMessageBox, QProgressBar, QSplitter, QFrame,
     QListWidgetItem, QDialog, QDialogButtonBox, QFormLayout, QProgressDialog, QSplashScreen,
-    QSizePolicy, QStackedWidget, QStyledItemDelegate, QRadioButton, QButtonGroup
+    QSizePolicy, QStackedWidget, QStyledItemDelegate, QRadioButton, QButtonGroup, QColorDialog,
+    QStyle, QStyleOptionViewItem
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize, QUrl
-from PyQt6.QtGui import QFont, QPixmap, QIcon, QPalette, QColor, QTextCursor, QDesktopServices, QFontDatabase
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize, QUrl, QLocale, QTranslator, QLibraryInfo, QObject, QEvent
+from PyQt6.QtGui import QFont, QPixmap, QIcon, QPalette, QColor, QTextCursor, QDesktopServices, QFontDatabase, QCursor
 
 class CenteredComboDelegate(QStyledItemDelegate):
     """콤보박스 항목 텍스트 중앙 정렬"""
@@ -77,6 +438,55 @@ class CenteredComboDelegate(QStyledItemDelegate):
         super().initStyleOption(option, index)
         if option is not None:
             option.displayAlignment = Qt.AlignmentFlag.AlignCenter
+
+
+class FontFavoriteComboDelegate(QStyledItemDelegate):
+    """글꼴 콤보 팝업에서 즐겨찾기 별을 오른쪽 끝에 렌더링"""
+    STAR_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+    NAME_ROLE = int(Qt.ItemDataRole.UserRole) + 2
+    STAR_WIDTH = 30
+
+    def paint(self, painter, option, index):
+        if painter is None:
+            return
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        item_name = str(index.data(self.NAME_ROLE) or "")
+        is_auto = (item_name == "auto")
+        is_fav = bool(index.data(self.STAR_ROLE))
+
+        # 기본 배경/선택 상태 렌더링
+        base_opt = QStyleOptionViewItem(opt)
+        base_opt.text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        super().paint(painter, base_opt, index)
+
+        text_rect = opt.rect.adjusted(10, 0, -self.STAR_WIDTH, 0)
+        if bool(opt.state & QStyle.StateFlag.State_Selected):
+            text_color = opt.palette.color(QPalette.ColorRole.HighlightedText)
+        else:
+            text_color = opt.palette.color(QPalette.ColorRole.Text)
+        painter.save()
+        painter.setPen(text_color)
+        painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), str(index.data(Qt.ItemDataRole.DisplayRole) or ""))
+        if not is_auto:
+            star_rect = opt.rect.adjusted(0, 0, -8, 0)
+            painter.drawText(star_rect, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight), "★" if is_fav else "☆")
+        painter.restore()
+
+
+class ResizeEventFilter(QObject):
+    """지정 위젯의 Resize 이벤트를 감지해 콜백 실행"""
+    def __init__(self, on_resize, parent=None):
+        super().__init__(parent)
+        self._on_resize = on_resize
+
+    def eventFilter(self, watched, event):
+        try:
+            if event and event.type() == QEvent.Type.Resize and callable(self._on_resize):
+                self._on_resize()
+        except Exception:
+            pass
+        return super().eventFilter(watched, event)
 
 class PostingWorker(QThread):
     """포스팅 작업 스레드"""
@@ -124,17 +534,7 @@ class PostingWorker(QThread):
         """global_settings.default_wait_time(분 단위)를 초 단위로 변환"""
         try:
             wait_time = str(self.config_manager.data["global_settings"].get("default_wait_time", "3~5")).strip()
-            if "~" in wait_time or "-" in wait_time:
-                separator = "~" if "~" in wait_time else "-"
-                min_val, max_val = map(int, wait_time.split(separator))
-                min_val = max(1, min_val)
-                max_val = max(min_val, max_val)
-                min_seconds = min_val * 60
-                max_seconds = max_val * 60
-                return random.randint(min_seconds, max_seconds)
-            else:
-                wait_minutes = max(1, int(wait_time))
-            return wait_minutes * 60
+            return resolve_wait_setting_to_seconds(wait_time, default_minutes=default_minutes)
         except Exception:
             return max(1, default_minutes) * 60
 
@@ -600,7 +1000,7 @@ class PostingWorker(QThread):
 # 기존 라이브러리들
 import requests
 import urllib.parse
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter, ImageStat, ImageColor
 import re
 import subprocess
 
@@ -714,6 +1114,96 @@ def get_requests_session():
     })
     return session
 
+
+def _build_basic_auth_headers(username, password):
+    """WordPress Basic 인증 헤더 생성"""
+    import base64
+
+    credentials = f"{username}:{password}"
+    token = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
+    return {
+        "Authorization": f"Basic {token}",
+        "User-Agent": "Auto-WP/1.0",
+    }
+
+
+def _probe_wordpress_permissions(session, site_url, headers, category_id=1):
+    """실제 REST 동작(임시 생성/삭제) 기반 권한 검증"""
+    import base64
+
+    site_root = site_url.rstrip("/")
+    user_url = f"{site_root}/wp-json/wp/v2/users/me"
+    posts_url = f"{site_root}/wp-json/wp/v2/posts"
+    media_url = f"{site_root}/wp-json/wp/v2/media"
+
+    result = {
+        "user_info": {},
+        "can_create": False,
+        "can_publish": False,
+        "can_upload": False,
+        "category_name": f"ID {category_id}",
+    }
+
+    created_post_id = None
+    uploaded_media_id = None
+
+    try:
+        user_resp = session.get(user_url, headers=headers, timeout=15)
+        if user_resp.status_code == 200:
+            result["user_info"] = user_resp.json()
+
+        try:
+            category_url = f"{site_root}/wp-json/wp/v2/categories/{int(category_id)}"
+            cat_resp = session.get(category_url, headers=headers, timeout=10)
+            if cat_resp.status_code == 200:
+                result["category_name"] = cat_resp.json().get("name", f"ID {category_id}")
+        except Exception:
+            pass
+
+        draft_payload = {
+            "title": "Auto-WP 연결 테스트 임시 초안",
+            "content": "Auto-WP 연결 테스트용 임시 포스트입니다.",
+            "status": "draft",
+        }
+        create_resp = session.post(posts_url, headers=headers, json=draft_payload, timeout=20)
+        if create_resp.status_code == 201:
+            created_post_id = create_resp.json().get("id")
+            result["can_create"] = True
+
+            if created_post_id:
+                publish_url = f"{posts_url}/{created_post_id}"
+                publish_resp = session.post(publish_url, headers=headers, json={"status": "publish"}, timeout=20)
+                if publish_resp.status_code in (200, 201):
+                    result["can_publish"] = True
+
+        tiny_png_base64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO2+7bQAAAAASUVORK5CYII="
+        )
+        media_headers = {
+            "Authorization": headers.get("Authorization", ""),
+            "User-Agent": "Auto-WP/1.0",
+            "Content-Type": "image/png",
+            "Content-Disposition": "attachment; filename=auto-wp-conn-test.png",
+        }
+        upload_resp = session.post(media_url, headers=media_headers, data=base64.b64decode(tiny_png_base64), timeout=20)
+        if upload_resp.status_code == 201:
+            uploaded_media_id = upload_resp.json().get("id")
+            result["can_upload"] = True
+
+    finally:
+        try:
+            if created_post_id:
+                session.delete(f"{posts_url}/{created_post_id}", headers=headers, params={"force": "true"}, timeout=15)
+        except Exception:
+            pass
+        try:
+            if uploaded_media_id:
+                session.delete(f"{media_url}/{uploaded_media_id}", headers=headers, params={"force": "true"}, timeout=15)
+        except Exception:
+            pass
+
+    return result
+
 def _get_windows_hidden_subprocess_kwargs():
     """Windows에서 subprocess 실행 시 콘솔창 숨김 옵션 반환"""
     if os.name != "nt":
@@ -734,11 +1224,91 @@ def _get_windows_hidden_subprocess_kwargs():
 
 # 설정 파일 경로
 SETTING_FILE = os.path.join(get_base_path(), "setting", "etc", "setting.json")
+SETTING_IMAGES_DIR = os.path.join(get_base_path(), "setting", "images")
+SETTING_IMAGE_DIR = os.path.join(get_base_path(), "setting", "image")
+SETTING_FONTS_DIR = os.path.join(get_base_path(), "setting", "fonts")
+SETTING_FONTS_TTF_DIR = os.path.join(get_base_path(), "setting", "fonts", "ttf")
+SETTING_IMAGES_TTF_DIR = os.path.join(get_base_path(), "setting", "images", "ttf")
 
 # 기본 디렉토리 생성 (setting 폴더 내부로 변경)
 for directory in ['etc', 'keywords', 'thumbnails', 'fonts', 'prompts', 'output', 'images']:
     dir_path = os.path.join(get_base_path(), "setting", directory)
     os.makedirs(dir_path, exist_ok=True)
+
+def _iter_thumbnail_roots():
+    roots = [SETTING_IMAGES_DIR, SETTING_IMAGE_DIR]
+    seen = set()
+    for root in roots:
+        norm = os.path.normcase(os.path.abspath(root))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        yield root
+
+def _resolve_site_thumbnail_source(site_data):
+    """사이트별 연동 JPG 경로를 우선 탐색하고, 없으면 image 폴더 JPG로 fallback"""
+    if not isinstance(site_data, dict):
+        site_data = {}
+
+    def _is_valid_jpg(path):
+        low = str(path or "").lower()
+        return os.path.isfile(path) and low.endswith((".jpg", ".jpeg"))
+
+    source_path = str(site_data.get("thumbnail_source_path", "")).strip()
+    if _is_valid_jpg(source_path):
+        return source_path
+
+    filename = os.path.basename(str(site_data.get("thumbnail_image", "")).strip())
+    if filename:
+        for root in _iter_thumbnail_roots():
+            candidate = os.path.join(root, filename)
+            if _is_valid_jpg(candidate):
+                return candidate
+
+    for root in _iter_thumbnail_roots():
+        try:
+            if not os.path.isdir(root):
+                continue
+            candidates = [
+                os.path.join(root, n)
+                for n in os.listdir(root)
+                if n.lower().endswith((".jpg", ".jpeg"))
+            ]
+            if not candidates:
+                continue
+            candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+            return candidates[0]
+        except Exception:
+            continue
+
+    return ""
+
+def _list_available_thumbnail_names():
+    """image 폴더의 JPG 파일명을 우선순위 정렬해 반환"""
+    names = []
+    seen = set()
+    for root in _iter_thumbnail_roots():
+        try:
+            if not os.path.isdir(root):
+                continue
+            for file in os.listdir(root):
+                if not file.lower().endswith((".jpg", ".jpeg")):
+                    continue
+                if file in seen:
+                    continue
+                seen.add(file)
+                names.append(file)
+        except Exception:
+            continue
+
+    priority = [f"썸네일 ({i}).jpg" for i in range(1, 8)]
+    ordered = []
+    for item in priority:
+        if item in names:
+            ordered.append(item)
+            names.remove(item)
+    ordered.extend(sorted(names))
+    return ordered
 
 # 테마 팔레트
 DARK_COLORS = {
@@ -1161,7 +1731,7 @@ class ContentGenerator:
         self.current_site = None
 
     def setup_driver(self):
-        """크롬 드라이버 설정 (UC 우선 + Selenium 폴백)"""
+        """크롬 드라이버 설정 (Selenium 우선 + UC 폴백)"""
         try:
             if webdriver is None:
                 self.log("⚠️ selenium not found. Please install selenium and webdriver-manager.")
@@ -1192,9 +1762,61 @@ class ContentGenerator:
             self._cleanup_stale_driver_binaries(force_cleanup=True)
 
             self.log("🚀 브라우저 시작 중...")
-            # 1) UC 우선
+            # 1) Selenium 우선 (안정성 우선)
+            try:
+                service = self._resolve_chromedriver_service_with_app_cache(allow_download=False)
+                max_attempts = 3
+                for attempt in range(1, max_attempts + 1):
+                    chrome_profile_dir = self._select_chrome_profile_dir(chrome_profile_root, attempt)
+                    self._clear_chrome_profile_locks(chrome_profile_dir)
+                    force_cleanup = True
+                    self._cleanup_stale_driver_binaries(force_cleanup=force_cleanup)
+                    use_profile_directory = (attempt == 1)
+                    options = self._build_chrome_options(
+                        use_uc=False,
+                        chrome_profile_dir=chrome_profile_dir,
+                        use_profile_directory=use_profile_directory
+                    )
+
+                    if service is None and attempt >= 2:
+                        service = self._resolve_chromedriver_service_with_app_cache(allow_download=True)
+
+                    try:
+                        if service is not None:
+                            self.driver = webdriver.Chrome(service=service, options=options)
+                        else:
+                            # Selenium Manager 폴백 (드라이버 자동 탐색)
+                            self.driver = webdriver.Chrome(options=options)
+                        self._verify_driver_health()
+                        self._wait_for_manual_recovery_login(attempt)
+                        self.log("✅ 브라우저 실행 완료")
+                        return True
+                    except Exception as selenium_error:
+                        # webdriver-manager 드라이버 불일치 시 Selenium Manager 즉시 폴백
+                        if service is not None:
+                            try:
+                                self.log("🔁 ChromeDriver 폴백 시도 (Selenium Manager)")
+                                self.driver = webdriver.Chrome(options=options)
+                                self._verify_driver_health()
+                                self._wait_for_manual_recovery_login(attempt)
+                                self.log("✅ 브라우저 실행 완료")
+                                return True
+                            except Exception:
+                                pass
+                        self.log(f"⚠️ 브라우저 실행 {attempt}/{max_attempts} 실패: {self._compact_error(selenium_error)}")
+                        self._safe_quit_driver()
+                        wait_sec = self._get_browser_retry_wait_seconds(selenium_error, attempt)
+                        if attempt < max_attempts:
+                            self.log(f"⏳ 브라우저 재시도 대기 {wait_sec:.1f}초")
+                        time.sleep(wait_sec)
+                raise RuntimeError(f"브라우저 실행 {max_attempts}회 실패")
+            except Exception as selenium_error:
+                self.log(f"⚠️ Selenium 기동 실패, UC 폴백 시도: {self._compact_error(selenium_error)}")
+
+            # 2) UC 폴백
             if uc is not None:
-                for attempt in range(1, 3):
+                max_attempts = 3
+                for attempt in range(1, max_attempts + 1):
                     chrome_profile_dir = self._select_chrome_profile_dir(chrome_profile_root, attempt)
                     self._clear_chrome_profile_locks(chrome_profile_dir)
                     self._cleanup_stale_driver_binaries(force_cleanup=True)
@@ -1214,99 +1836,125 @@ class ContentGenerator:
                         self.log("✅ 브라우저 실행 완료")
                         return True
                     except Exception as uc_error:
-                        self.log(f"⚠️ 브라우저 실행 {attempt}/2 실패: {self._compact_error(uc_error)}")
+                        self.log(f"⚠️ UC 브라우저 실행 {attempt}/{max_attempts} 실패: {self._compact_error(uc_error)}")
                         self._safe_quit_driver()
-                        time.sleep(1.0)
+                        wait_sec = self._get_browser_retry_wait_seconds(uc_error, attempt)
+                        if attempt < max_attempts:
+                            self.log(f"⏳ UC 재시도 대기 {wait_sec:.1f}초")
+                        time.sleep(wait_sec)
 
-            # 2) Selenium 폴백
-            try:
-                for attempt in range(1, 3):
-                    chrome_profile_dir = self._select_chrome_profile_dir(chrome_profile_root, attempt)
-                    self._clear_chrome_profile_locks(chrome_profile_dir)
-                    force_cleanup = True
-                    self._cleanup_stale_driver_binaries(force_cleanup=force_cleanup)
-                    use_profile_directory = (attempt == 1)
-                    options = self._build_chrome_options(
-                        use_uc=False,
-                        chrome_profile_dir=chrome_profile_dir,
-                        use_profile_directory=use_profile_directory
-                    )
-
-                    service = None
-                    if ChromeDriverManager is not None and Service is not None:
-                        try:
-                            driver_path = ChromeDriverManager().install()
-                            service = Service(driver_path)
-                        except Exception:
-                            service = None
-                    elif Service is not None:
-                        service = None
-
-                    try:
-                        if service is not None:
-                            self.driver = webdriver.Chrome(service=service, options=options)
-                        else:
-                            # Selenium Manager 폴백 (드라이버 자동 탐색)
-                            self.driver = webdriver.Chrome(options=options)
-                        self._verify_driver_health()
-                        self._wait_for_manual_recovery_login(attempt)
-                        self.log("✅ 브라우저 실행 완료")
-                        return True
-                    except Exception as selenium_error:
-                        self.log(f"⚠️ 브라우저 실행 {attempt}/2 실패: {self._compact_error(selenium_error)}")
-                        self._safe_quit_driver()
-                        time.sleep(1.0)
-                raise RuntimeError("브라우저 실행 2회 실패")
-            except Exception as selenium_error:
-                self.log(f"❌ 브라우저 시작 오류: {self._compact_error(selenium_error)}")
-                raise
+            self.log("❌ 브라우저 시작 오류: Selenium/UC 모두 실패")
+            return False
             
         except Exception as e:
             self.log(f"❌ 브라우저 실행 실패: {self._compact_error(e)}")
             return False
 
+    def _resolve_chromedriver_service_with_app_cache(self, allow_download: bool = True):
+        """앱 전용 캐시 경로로 ChromeDriver 서비스 생성 (실패 시 None)"""
+        if ChromeDriverManager is None or Service is None:
+            return None
+        wdm_cache_dir = os.path.join(get_base_path(), "setting", "etc", "wdm")
+        os.makedirs(wdm_cache_dir, exist_ok=True)
+
+        # 1) 로컬 캐시 우선 사용 (네트워크 의존 최소화)
+        try:
+            cached_drivers = []
+            for root_dir, _, files in os.walk(wdm_cache_dir):
+                for name in files:
+                    if str(name).lower() == "chromedriver.exe":
+                        full = os.path.join(root_dir, name)
+                        try:
+                            mtime = os.path.getmtime(full)
+                        except Exception:
+                            mtime = 0.0
+                        cached_drivers.append((mtime, full))
+            if cached_drivers:
+                cached_drivers.sort(key=lambda x: x[0], reverse=True)
+                driver_path = cached_drivers[0][1]
+                self.log("✅ ChromeDriver 캐시 사용")
+                return Service(driver_path)
+        except Exception:
+            pass
+
+        if not allow_download:
+            return None
+
+        old_env = {
+            "WDM_LOCAL": os.environ.get("WDM_LOCAL"),
+            "WDM_CACHE_DIR": os.environ.get("WDM_CACHE_DIR"),
+            "WDM_HOME": os.environ.get("WDM_HOME"),
+            "HOME": os.environ.get("HOME"),
+            "USERPROFILE": os.environ.get("USERPROFILE"),
+        }
+
+        try:
+            os.environ["WDM_LOCAL"] = "1"
+            os.environ["WDM_CACHE_DIR"] = wdm_cache_dir
+            os.environ["WDM_HOME"] = wdm_cache_dir
+            os.environ["HOME"] = get_base_path()
+            os.environ["USERPROFILE"] = get_base_path()
+
+            driver_path = None
+            for download_attempt in range(1, 3):
+                try:
+                    from webdriver_manager.core.driver_cache import DriverCacheManager
+                    cache_manager = DriverCacheManager(root_dir=wdm_cache_dir)
+                    driver_path = ChromeDriverManager(cache_manager=cache_manager).install()
+                except Exception:
+                    driver_path = None
+                if not driver_path:
+                    try:
+                        driver_path = ChromeDriverManager().install()
+                    except Exception:
+                        driver_path = None
+                if driver_path:
+                    break
+                time.sleep(0.7 * download_attempt)
+
+            if driver_path:
+                self.log("✅ ChromeDriver 자동 설치 완료 (앱 전용 캐시)")
+                return Service(driver_path)
+        except Exception:
+            return None
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        return None
+
+    def _get_browser_retry_wait_seconds(self, err: Exception, attempt: int) -> float:
+        """브라우저 부팅 실패 시 재시도 대기 시간 계산"""
+        base = 0.8 + (attempt * 0.9)
+        text = str(err or "").lower()
+        transient_tokens = [
+            "connection aborted",
+            "connection reset",
+            "10054",
+            "timed out",
+            "timeout",
+            "disconnected",
+        ]
+        if any(token in text for token in transient_tokens):
+            return min(6.0, base + 1.6)
+        return min(4.0, base)
+
     def _select_chrome_profile_dir(self, profile_root: str, attempt: int) -> str:
         """브라우저 시작 시도별 프로필 경로 선택 (1회차 유지, 2회차 복구)"""
         # 1회차: 로그인 세션이 보존되는 메인 프로필 사용
-        # 2회차 이상: 프로필 손상/잠금 이슈를 우회하기 위해 복구용 격리 프로필 사용
+        # 2회차 이상: 복구용 프로필 사용 (프로필 파일 정리는 하지 않음)
         if attempt <= 1:
             profile_dir = os.path.join(profile_root, "runtime_main")
         else:
             profile_dir = os.path.join(profile_root, "runtime_recovery")
-            if os.path.isdir(profile_dir):
-                try:
-                    for name in os.listdir(profile_dir):
-                        path = os.path.join(profile_dir, name)
-                        if os.path.isdir(path):
-                            shutil.rmtree(path, ignore_errors=True)
-                        else:
-                            try:
-                                os.remove(path)
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
         os.makedirs(profile_dir, exist_ok=True)
         return profile_dir
 
     def _clear_chrome_profile_locks(self, profile_dir: str):
-        """Chrome 프로필 잠금/포트 파일 제거 (비정상 종료 잔재 복구)"""
-        try:
-            lock_files = [
-                "SingletonLock",
-                "SingletonCookie",
-                "SingletonSocket",
-                "DevToolsActivePort",
-            ]
-            for name in lock_files:
-                path = os.path.join(profile_dir, name)
-                if os.path.exists(path):
-                    try:
-                        os.remove(path)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+        """요청사항 반영: chrome_profile 파일 정리는 수행하지 않음"""
+        return
 
     def _compact_error(self, exc: Exception) -> str:
         """장문 stacktrace가 포함된 예외 메시지를 한 줄로 압축"""
@@ -1332,6 +1980,7 @@ class ContentGenerator:
         options.add_argument("--disable-gpu")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-sync")
         options.add_argument("--disable-popup-blocking")
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
@@ -1346,6 +1995,11 @@ class ContentGenerator:
             options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
             options.add_experimental_option("useAutomationExtension", False)
             options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_experimental_option("prefs", {
+                "profile.default_content_setting_values.notifications": 2,
+                "credentials_enable_service": True,
+                "profile.password_manager_enabled": True,
+            })
         return options
 
     def _cleanup_stale_driver_binaries(self, force_cleanup: bool = False):
@@ -1424,10 +2078,15 @@ class ContentGenerator:
             return
 
         recovery_url = self._get_recovery_login_url()
+        initial_url = ""
         if recovery_url:
             try:
                 self.driver.get(recovery_url)
                 self.log(f"🌍 2회차 복구 모드: 로그인 페이지로 이동했습니다. ({recovery_url})")
+                try:
+                    initial_url = (self.driver.current_url or "").strip().lower()
+                except Exception:
+                    initial_url = (recovery_url or "").strip().lower()
             except Exception as nav_error:
                 self.log(f"⚠️ 복구 로그인 페이지 이동 실패: {self._compact_error(nav_error)}")
 
@@ -1447,9 +2106,20 @@ class ContentGenerator:
             except Exception as wait_error:
                 raise RuntimeError(f"수동 로그인 대기 중 브라우저 연결이 끊겼습니다: {wait_error}")
 
-            if current_url and not current_url.startswith("about:blank"):
+            # 일반 케이스: 초기 진입 URL에서 벗어나면 사용자가 진행한 것으로 판단
+            if current_url and not current_url.startswith("about:blank") and initial_url and (current_url != initial_url):
                 self.log("✅ 수동 로그인 감지: 브라우저 페이지 전환 확인, 자동 진행합니다.")
                 return
+
+            # Gemini 복구 케이스: 로그인 버튼이 사라지면 로그인 완료로 판단
+            provider = (self.current_ai_provider or "").lower().strip()
+            if provider == "web-gemini":
+                try:
+                    if not self._has_gemini_login_button(timeout=0.3):
+                        self.log("✅ 수동 로그인 감지: Gemini 로그인 버튼 비노출 상태 확인, 자동 진행합니다.")
+                        return
+                except Exception:
+                    pass
 
             if remaining in checkpoints:
                 self.log(f"⏳ 수동 로그인 대기 중... 남은 시간 {remaining}초")
@@ -1604,13 +2274,10 @@ class ContentGenerator:
     def get_thumbnail_file(self):
         """현재 사이트의 썸네일 파일 또는 기본 썸네일 반환"""
         import random
-        
-        # 현재 사이트의 썸네일 이미지 사용
-        if self.current_site and self.current_site.get('thumbnail_image'):
-            thumbnail_filename = self.current_site.get('thumbnail_image')
-            thumbnail_path = os.path.join(get_base_path(), 'setting', 'images', thumbnail_filename)
-            if os.path.exists(thumbnail_path):
-                return thumbnail_filename
+
+        linked_path = _resolve_site_thumbnail_source(self.current_site or {})
+        if linked_path:
+            return os.path.basename(linked_path)
         
         # 기본 썸네일 목록에서 랜덤 선택 (정확한 파일명 사용)
         available_thumbnails = ['썸네일 (1).jpg', '썸네일 (2).jpg', '썸네일 (3).jpg',
@@ -1620,13 +2287,17 @@ class ContentGenerator:
         # 존재하는 파일 중에서만 선택
         existing_thumbnails = []
         for thumb in available_thumbnails:
-            thumb_path = os.path.join(get_base_path(), 'setting', 'images', thumb)
-            if os.path.exists(thumb_path):
-                existing_thumbnails.append(thumb)
-        
+            for root in _iter_thumbnail_roots():
+                thumb_path = os.path.join(root, thumb)
+                if os.path.exists(thumb_path):
+                    existing_thumbnails.append(thumb)
+                    break
         if existing_thumbnails:
             return random.choice(existing_thumbnails)
         else:
+            listed = _list_available_thumbnail_names()
+            if listed:
+                return listed[0]
             return '썸네일 (1).jpg'  # 최후 기본값
 
     def initialize_apis(self):
@@ -1797,16 +2468,23 @@ class ContentGenerator:
                     self.driver.get(gemini_url)
                 return True
             
-            # 새 탭 생성
-            self.log("🆕 Gemini 탭을 새로 엽니다...")
-            self.driver.execute_script(f"window.open('{gemini_url}', '_blank');")
-            self.driver.switch_to.window(self.driver.window_handles[-1])
-            self.gemini_tab_handle = self.driver.current_window_handle
-            time.sleep(2)
+            # 현재 탭이 비어있으면 재사용, 아니면 새 탭 생성
             try:
-                self.driver.get(gemini_url)
+                current_url = (self.driver.current_url or "").lower()
             except Exception:
-                pass
+                current_url = ""
+
+            if current_url.startswith("data:") or current_url.startswith("about:blank"):
+                self.gemini_tab_handle = self.driver.current_window_handle
+                self.driver.get(gemini_url)
+            else:
+                self.log("🆕 Gemini 탭을 새로 엽니다...")
+                self.driver.execute_script("window.open('about:blank', '_blank');")
+                self.driver.switch_to.window(self.driver.window_handles[-1])
+                self.gemini_tab_handle = self.driver.current_window_handle
+                self.driver.get(gemini_url)
+
+            time.sleep(2)
             self.log("✅ Gemini 탭 준비 완료")
             return True
         except Exception as e:
@@ -1956,7 +2634,7 @@ class ContentGenerator:
         if not self.driver or By is None:
             return
         targets = [
-            "동의", "I agree", "Accept all", "Agree", "확인", "계속", "Continue"
+            "동의", "I agree", "Accept all", "Agree", "확인", "계속", "Continue", "나중에", "Not now", "No thanks"
         ]
         xpath = " | ".join([f"//button[contains(normalize-space(.), '{t}')]" for t in targets] +
                            [f"//span[contains(normalize-space(.), '{t}')]/ancestor::button[1]" for t in targets])
@@ -1984,12 +2662,26 @@ class ContentGenerator:
             "a[aria-label='Sign in'][href*='accounts.google.com/ServiceLogin']",
             "a.gb_Va[href*='accounts.google.com/ServiceLogin']",
             "div.boqOnegoogleliteOgbOneGoogleBar a[href*='accounts.google.com/ServiceLogin']",
+            "a[href*='accounts.google.com/ServiceLogin']",
+            "button[aria-label='로그인']",
+        ]
+        xpaths = [
+            "//span[normalize-space()='로그인']/ancestor::a[1]",
+            "//a[contains(@href, 'ServiceLogin')]",
         ]
         end_time = time.time() + timeout
         while time.time() < end_time:
             for sel in selectors:
                 try:
                     elems = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                    for elem in elems:
+                        if elem.is_displayed():
+                            return True
+                except Exception:
+                    pass
+            for xp in xpaths:
+                try:
+                    elems = self.driver.find_elements(By.XPATH, xp)
                     for elem in elems:
                         if elem.is_displayed():
                             return True
@@ -2007,6 +2699,12 @@ class ContentGenerator:
             "a[aria-label='Sign in'][href*='accounts.google.com/ServiceLogin']",
             "a.gb_Va[href*='accounts.google.com/ServiceLogin']",
             "div.boqOnegoogleliteOgbOneGoogleBar a[href*='accounts.google.com/ServiceLogin']",
+            "a[href*='accounts.google.com/ServiceLogin']",
+            "button[aria-label='로그인']",
+        ]
+        xpaths = [
+            "//span[normalize-space()='로그인']/ancestor::a[1]",
+            "//a[contains(@href, 'ServiceLogin')]",
         ]
         end_time = time.time() + timeout
         while time.time() < end_time:
@@ -2015,6 +2713,26 @@ class ContentGenerator:
                     elems = self.driver.find_elements(By.CSS_SELECTOR, sel)
                     for elem in elems:
                         if elem.is_displayed():
+                            try:
+                                self.driver.execute_script("arguments[0].scrollIntoView(true);", elem)
+                            except Exception:
+                                pass
+                            try:
+                                elem.click()
+                            except Exception:
+                                self.driver.execute_script("arguments[0].click();", elem)
+                            return True
+                except Exception:
+                    pass
+            for xp in xpaths:
+                try:
+                    elems = self.driver.find_elements(By.XPATH, xp)
+                    for elem in elems:
+                        if elem.is_displayed():
+                            try:
+                                self.driver.execute_script("arguments[0].scrollIntoView(true);", elem)
+                            except Exception:
+                                pass
                             try:
                                 elem.click()
                             except Exception:
@@ -2031,7 +2749,12 @@ class ContentGenerator:
         password = os.environ.get("AUTO_WP_GOOGLE_PASSWORD", "").strip()
 
         if (not email or not password) and self.config_manager:
-            global_settings = self.config_manager.data.get("global_settings", {})
+            config_data = getattr(self.config_manager, "data", None)
+            if not isinstance(config_data, dict):
+                config_data = {}
+            global_settings = config_data.get("global_settings", {})
+            if not isinstance(global_settings, dict):
+                global_settings = {}
             if not email:
                 email = str(global_settings.get("google_email", "")).strip()
             if not password:
@@ -2169,6 +2892,13 @@ class ContentGenerator:
 
     def _ensure_gemini_logged_in(self, wait_seconds=180):
         """로그인 버튼 기준으로 Gemini 로그인 상태 확인/대기 (2차 인증 대기 포함)"""
+        if self.driver:
+            try:
+                self.driver.get("https://gemini.google.com/app?hl=ko")
+                time.sleep(1.2)
+            except Exception:
+                pass
+
         if self._has_gemini_login_button(timeout=3):
             self.gemini_logged_in = False
             self.log("🔐 Gemini 로그인이 필요합니다.")
@@ -2207,7 +2937,24 @@ class ContentGenerator:
                     return True
                 # 로그인 버튼이 사라져도 페이지 전환 중일 수 있으므로 계속 대기
                 _ = self._has_gemini_login_button(timeout=0.2)
+                self._handle_gemini_blocking_dialogs()
                 time.sleep(0.5)
+
+            # 1회 새로고침 후 재확인 (네이버 로직 차용)
+            try:
+                driver = self.driver
+                if driver is None:
+                    return False
+                self.log("🔄 로그인 후 에디터 재확인을 위해 Gemini 페이지를 다시 불러옵니다.")
+                driver.get("https://gemini.google.com/app?hl=ko")
+                time.sleep(3)
+                self._handle_gemini_blocking_dialogs()
+                if self._find_gemini_editor(timeout=10):
+                    self.gemini_logged_in = True
+                    self.log("✅ Gemini 로그인 확인 완료 (재진입 후 입력창 감지)")
+                    return True
+            except Exception:
+                pass
             self.log("❌ Gemini 로그인/2차 인증 대기 시간이 초과되었습니다.")
             return False
 
@@ -4821,153 +5568,28 @@ class ContentGenerator:
     def create_thumbnail(self, title, keyword):
         """썸네일 이미지를 생성합니다."""
         try:
-            # images 폴더에서 사이트별 또는 무작위 배경 이미지 선택 (setting 폴더 내부로 변경)
-            images_dir = os.path.join(get_base_path(), "setting", "images")
-            background_path = None
-            
-            if os.path.exists(images_dir):
-                available_images = [os.path.join(images_dir, f) for f in os.listdir(images_dir) 
-                                 if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-                
-                # 현재 사이트의 썸네일 이미지 설정 확인
-                if self.current_site and self.current_site.get('thumbnail_image'):
-                    thumbnail_filename = self.current_site.get('thumbnail_image')
-                    specific_path = os.path.join(images_dir, thumbnail_filename)
-                    if os.path.exists(specific_path):
-                        background_path = specific_path
-                        self.log(f"🎯 사이트별 썸네일 이미지 사용: {thumbnail_filename}")
-                    else:
-                        self.log(f"⚠️ 사이트별 썸네일 이미지 파일이 없습니다: {thumbnail_filename}")
-                
-                # 사이트별 설정이 없거나 파일이 없으면 랜덤 선택
-                if not background_path and available_images:
-                    background_path = random.choice(available_images)
-                    self.log(f"🖼️ 기본 배경 이미지 사용: {os.path.basename(background_path)}")
-                
-                if background_path:
-                    background = Image.open(background_path)
-                    # 이미지를 300x300 정사각형으로 크롭 및 리사이즈
-                    background = background.resize((300, 300), Image.Resampling.LANCZOS)
-                else:
-                    background = Image.new('RGB', (300, 300), color=(41, 128, 185)) # 기본 배경
-            else:
-                background = Image.new('RGB', (300, 300), color=(41, 128, 185)) # 기본 배경
+            background_path = _resolve_site_thumbnail_source(self.current_site or {})
+            if background_path:
+                self.log(f"🎯 사이트별 썸네일 이미지 사용: {os.path.basename(background_path)}")
 
-            draw = ImageDraw.Draw(background)
-            
-            # 폰트 설정 - 본문과 동일한 timon.ttf 사용
-            try:
-                # fonts 폴더의 timon.ttf 폰트 사용 (본문과 동일) (setting 폴더 내부로 변경)
-                font_path = os.path.join(get_base_path(), "setting", "fonts", "timon.ttf")
-                large_font = ImageFont.truetype(font_path, 24)  # | 앞 제목용 (32→24로 축소)
-                small_font = ImageFont.truetype(font_path, 18)  # | 뒤 제목용 (22→18로 축소)
-            except Exception as font_error:
-                print(f"timon.ttf 폰트 로드 실패: {font_error}")
-                try:
-                    # 대체 폰트들
-                    large_font = ImageFont.truetype("C:/Windows/Fonts/gulim.ttc", 22)
-                    small_font = ImageFont.truetype("C:/Windows/Fonts/gulim.ttc", 16)
-                except:
-                    try:
-                        large_font = ImageFont.truetype("C:/Windows/Fonts/malgun.ttf", 22)
-                        small_font = ImageFont.truetype("C:/Windows/Fonts/malgun.ttf", 16)
-                    except:
-                        large_font = ImageFont.load_default()
-                        small_font = ImageFont.load_default()
+            global_settings = {}
+            if self.config_manager and isinstance(getattr(self.config_manager, "data", None), dict):
+                global_settings = self.config_manager.data.get("global_settings", {})
+            elif isinstance(self.config_data, dict):
+                global_settings = self.config_data.get("global_settings", {})
 
-            # 제목을 | 기준으로 분리
-            if '|' in title:
-                parts = title.split('|', 1)  # 최대 1번만 분리
-                main_title = parts[0].strip()    # | 앞부분 (첫 줄, 크게)
-                sub_title = parts[1].strip()     # | 뒷부분 (둘째 줄, 작게)
-            else:
-                main_title = title
-                sub_title = ""
-            
-            # 텍스트를 중앙에 배치하기 위한 계산
-            lines = []
-            
-            # 첫 번째 줄: main_title (큰 폰트)
-            if main_title:
-                # main_title이 너무 길면 자동 줄바꿈
-                words = main_title.split()
-                current_line = []
-                for word in words:
-                    test_line = ' '.join(current_line + [word])
-                    bbox = draw.textbbox((0, 0), test_line, font=large_font)
-                    if bbox[2] - bbox[0] > 250:  # 250px 이상이면 줄바꿈
-                        if current_line:
-                            lines.append((' '.join(current_line), large_font))
-                            current_line = [word]
-                        else:
-                            lines.append((word, large_font))
-                            current_line = []
-                    else:
-                        current_line.append(word)
-                
-                if current_line:
-                    lines.append((' '.join(current_line), large_font))
-            
-            # 두 번째 줄: sub_title (작은 폰트)
-            if sub_title:
-                # sub_title이 너무 길면 자동 줄바꿈
-                words = sub_title.split()
-                current_line = []
-                for word in words:
-                    test_line = ' '.join(current_line + [word])
-                    bbox = draw.textbbox((0, 0), test_line, font=small_font)
-                    if bbox[2] - bbox[0] > 260:  # 작은 폰트는 좀 더 길게 허용
-                        if current_line:
-                            lines.append((' '.join(current_line), small_font))
-                            current_line = [word]
-                        else:
-                            lines.append((word, small_font))
-                            current_line = []
-                    else:
-                        current_line.append(word)
-                
-                if current_line:
-                    lines.append((' '.join(current_line), small_font))
-                
-            # 텍스트 중앙 정렬
-            line_spacing = 35  # 줄 간격
-            total_height = len(lines) * line_spacing
-            y_start = (300 - total_height) // 2 + 10  # 중앙에서 약간 위로
-            
-            # [추가] 배경 밝기 계산
-            try:
-                from PIL import ImageStat
-                stat = ImageStat.Stat(background.convert('L'))
-                avg_brightness = stat.mean[0]
-                
-                if avg_brightness > 128:
-                    # 배경이 밝으면 검정 텍스트 (그림자 흰색)
-                    text_color = (0, 0, 0)
-                    shadow_color = (255, 255, 255, 180)
-                else:
-                    # 배경이 어두우면 흰색 텍스트 (그림자 검정)
-                    text_color = (255, 255, 255)
-                    shadow_color = (0, 0, 0, 180)
-            except:
-                # 계산 실패 시 기본값 (흰색 텍스트)
-                text_color = (255, 255, 255)
-                shadow_color = (0, 0, 0, 180)
-            
-            for i, (line_text, line_font) in enumerate(lines):
-                bbox = draw.textbbox((0, 0), line_text, font=line_font)
-                text_width = bbox[2] - bbox[0]
-                x = (300 - text_width) // 2
-                y = y_start + (i * line_spacing)
-                
-                # 그림자 효과 (가독성 향상)
-                draw.text((x + 2, y + 2), line_text, fill=shadow_color, font=line_font)
-                # 메인 텍스트
-                draw.text((x, y), line_text, fill=text_color, font=line_font)
+            style = load_thumbnail_style(global_settings if isinstance(global_settings, dict) else {})
+            thumbnail_image = render_thumbnail_image_with_style(
+                background_path=background_path,
+                text=title,
+                style=style,
+                image_size=(300, 300),
+            )
             
             # 최종 이미지를 WebP 형식으로 저장 (파일명: 키워드.webp)
             safe_keyword = self._sanitize_filename_part(keyword or title or "thumbnail")
             filepath = os.path.join(get_base_path(), "setting", "thumbnails", f"{safe_keyword}.webp")
-            background.save(filepath, 'WEBP', quality=85)
+            thumbnail_image.save(filepath, 'WEBP', quality=85)
             return filepath
         except Exception as e:
             self.log(f"썸네일 생성 오류: {e}")
@@ -6061,6 +6683,7 @@ class ConfigManager:
                 "ui_theme": "다크",
                 "common_username": "",
                 "common_password": "",
+                "thumbnail_style": get_default_thumbnail_style(),
                 "font_path": "fonts/timon.ttf",
                 "max_sites": 20,
                 "auto_save": True
@@ -6399,12 +7022,8 @@ class ConfigManager:
 
     def get_site_thumbnail_path(self, site_data):
         """사이트별 썸네일 이미지 경로 반환"""
-        thumbnail_image = site_data.get("thumbnail_image", "")
-        if thumbnail_image:
-            thumbnail_path = os.path.join(get_base_path(), "setting", "images", thumbnail_image)
-            if os.path.exists(thumbnail_path):
-                return thumbnail_path
-        return None
+        linked = _resolve_site_thumbnail_source(site_data or {})
+        return linked if linked else None
 
 class SiteEditDialog(QDialog):
     """사이트 추가/편집 다이얼로그"""
@@ -6421,7 +7040,9 @@ class SiteEditDialog(QDialog):
     def setup_ui(self):
         """UI 설정"""
         self.setWindowTitle("사이트 편집" if self.is_edit else "새 사이트 추가")
-        self.setFixedSize(600, 500)  # 크기 증가
+        # 입력 필드/썸네일 영역이 겹치지 않도록 다이얼로그 크기를 확장
+        self.setMinimumSize(760, 760)
+        self.resize(820, 820)
 
         layout = QVBoxLayout()
 
@@ -6439,6 +7060,27 @@ class SiteEditDialog(QDialog):
         self.category_edit.setRange(1, 9999)
         self.category_edit.setValue(1)
         form_layout.addRow("카테고리 ID:", self.category_edit)
+
+        # 사이트별 워드프레스 사용자명
+        self.username_edit = QLineEdit()
+        self.username_edit.setPlaceholderText("워드프레스 사용자명")
+        form_layout.addRow("사용자명:", self.username_edit)
+
+        # 사이트별 응용프로그램 비밀번호
+        password_widget = QWidget()
+        password_layout = QHBoxLayout(password_widget)
+        password_layout.setContentsMargins(0, 0, 0, 0)
+        password_layout.setSpacing(8)
+        self.password_edit = QLineEdit()
+        self.password_edit.setPlaceholderText("응용프로그램 비밀번호")
+        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        password_layout.addWidget(self.password_edit, 1)
+        self.password_toggle_btn = QPushButton("👁️")
+        self.password_toggle_btn.setFixedWidth(40)
+        self.password_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.password_toggle_btn.clicked.connect(self.toggle_password_visibility)
+        password_layout.addWidget(self.password_toggle_btn)
+        form_layout.addRow("응용프로그램 비밀번호:", password_widget)
 
         layout.addLayout(form_layout)
 
@@ -6511,26 +7153,8 @@ class SiteEditDialog(QDialog):
     def populate_thumbnail_combo(self):
         """썸네일 콤보박스에 사용 가능한 이미지 목록 추가"""
         try:
-            images_dir = os.path.join(get_base_path(), "setting", "images")
-            if os.path.exists(images_dir):
-                available_thumbnails = []
-                for file in os.listdir(images_dir):
-                    if file.lower().endswith(('.jpg', '.jpeg', '.png')):
-                        available_thumbnails.append(file)
-                
-                # 기본 썸네일들을 우선적으로 정렬
-                priority_thumbnails = [f'썸네일 ({i}).jpg' for i in range(1, 8)]
-                sorted_thumbnails = []
-                
-                # 우선순위 썸네일 먼저 추가
-                for thumb in priority_thumbnails:
-                    if thumb in available_thumbnails:
-                        sorted_thumbnails.append(thumb)
-                        available_thumbnails.remove(thumb)
-                
-                # 나머지 썸네일 추가
-                sorted_thumbnails.extend(sorted(available_thumbnails))
-                
+            sorted_thumbnails = _list_available_thumbnail_names()
+            if sorted_thumbnails:
                 self.thumbnail_combo.addItems(sorted_thumbnails)
                 
                 # 편집 모드에서 기존 썸네일 선택
@@ -6551,8 +7175,11 @@ class SiteEditDialog(QDialog):
         try:
             selected_thumbnail = self.thumbnail_combo.currentText()
             if selected_thumbnail and selected_thumbnail not in ["이미지 폴더 없음", "로드 실패"]:
-                thumbnail_path = os.path.join(get_base_path(), "setting", "images", selected_thumbnail)
-                if os.path.exists(thumbnail_path):
+                thumbnail_path = _resolve_site_thumbnail_source({
+                    "thumbnail_image": selected_thumbnail,
+                    "thumbnail_source_path": "",
+                })
+                if thumbnail_path:
                     from PyQt6.QtGui import QPixmap
                     pixmap = QPixmap(thumbnail_path)
                     scaled_pixmap = pixmap.scaled(150, 150, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
@@ -6589,8 +7216,7 @@ class SiteEditDialog(QDialog):
                                       '썸네일 (4).jpg', '썸네일 (5).jpg', '썸네일 (6).jpg', 
                                       '썸네일 (7).jpg']
                 for thumb in available_thumbnails:
-                    thumb_path = os.path.join(get_base_path(), "setting", "images", thumb)
-                    if os.path.exists(thumb_path):
+                    if _resolve_site_thumbnail_source({"thumbnail_image": thumb}):
                         thumbnail_image = thumb
                         break
                 if not thumbnail_image:
@@ -6598,7 +7224,7 @@ class SiteEditDialog(QDialog):
 
             # 파일 경로
             keyword_path = os.path.join(get_base_path(), "setting", "keywords", keyword_file)
-            thumbnail_path = os.path.join(get_base_path(), "setting", "images", thumbnail_image)
+            thumbnail_path = _resolve_site_thumbnail_source({"thumbnail_image": thumbnail_image})
 
             # 키워드 파일 상태
             if os.path.exists(keyword_path):
@@ -6609,7 +7235,7 @@ class SiteEditDialog(QDialog):
                 self.keyword_file_label.setStyleSheet("color: #EBCB8B; font-weight: bold;")
 
             # 썸네일 이미지 상태
-            if os.path.exists(thumbnail_path):
+            if thumbnail_path:
                 self.thumbnail_file_label.setText(f"✅ {thumbnail_image} (존재함)")
                 self.thumbnail_file_label.setStyleSheet("color: #A3BE8C; font-weight: bold;")
             else:
@@ -6626,22 +7252,33 @@ class SiteEditDialog(QDialog):
         if self.site_data:
             self.url_edit.setText(self.site_data.get("url", ""))
             self.category_edit.setValue(self.site_data.get("category_id", 1))
+            parent = self.parent()
+            config_manager = getattr(parent, "config_manager", None)
+            fallback_user = ""
+            fallback_pass = ""
+            if config_manager is not None:
+                fallback_user = config_manager.data.get("global_settings", {}).get("common_username", "")
+                fallback_pass = config_manager.data.get("global_settings", {}).get("common_password", "")
+            self.username_edit.setText(self.site_data.get("username", "") or fallback_user)
+            self.password_edit.setText(self.site_data.get("password", "") or fallback_pass)
+
+    def toggle_password_visibility(self):
+        """비밀번호 표시/숨김"""
+        if self.password_edit.echoMode() == QLineEdit.EchoMode.Password:
+            self.password_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.password_toggle_btn.setText("🙈")
+        else:
+            self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.password_toggle_btn.setText("👁️")
 
     def test_connection(self):
         """WordPress 연결 테스트 - 다중 인증 방법 지원"""
         url = self.url_edit.text().strip()
-
-        # 전역 설정에서 사용자명/비밀번호 가져오기
-        parent = self.parent()
-        config_manager = getattr(parent, "config_manager", None)
-        if config_manager is None:
-            QMessageBox.warning(self, "경고", "전역 설정을 찾을 수 없습니다.")
-            return
-        username = config_manager.data["global_settings"].get("common_username", "")
-        password = config_manager.data["global_settings"].get("common_password", "")
+        username = self.username_edit.text().strip()
+        password = self.password_edit.text().strip()
 
         if not all([url, username, password]):
-            QMessageBox.warning(self, "경고", "URL과 전역 설정의 사용자명/비밀번호를 확인해주세요.")
+            QMessageBox.warning(self, "경고", "URL, 사용자명, 응용프로그램 비밀번호를 모두 입력해주세요.")
             return
 
         # 진행 상황 다이얼로그
@@ -6701,7 +7338,6 @@ class SiteEditDialog(QDialog):
             successful_method = ""
             
             # 여러 인증 방법 시도
-            import base64
             auth_methods = [
                 ("Application Password (공백 포함)", username, password),
                 ("Application Password (공백 제거)", username, password.replace(" ", "")),
@@ -6713,12 +7349,7 @@ class SiteEditDialog(QDialog):
                     return
                 
                 try:
-                    credentials = f"{user}:{pwd}"
-                    token = base64.b64encode(credentials.encode('utf-8')).decode('ascii')
-                    headers = {
-                        'Authorization': f'Basic {token}',
-                        'User-Agent': 'Auto-WP/1.0'
-                    }
+                    headers = _build_basic_auth_headers(user, pwd)
                     
                     auth_response = session.get(user_url, headers=headers, timeout=15)
                     
@@ -6731,23 +7362,13 @@ class SiteEditDialog(QDialog):
                 except Exception:
                     continue
             
-            # 4. 카테고리 확인
+            # 4. 실제 권한 점검 (임시 생성/삭제 기반)
             if auth_success:
                 progress_dialog.setValue(80)
-                progress_dialog.setLabelText("카테고리 확인 중")
+                progress_dialog.setLabelText("실제 권한 검증 중")
                 QApplication.processEvents()
-                
                 category_id = self.category_edit.value()
-                categories_url = f"{url.rstrip('/')}/wp-json/wp/v2/categories/{category_id}"
-                
-                category_name = "알 수 없음"
-                try:
-                    cat_response = session.get(categories_url, headers=headers, timeout=10)
-                    if cat_response.status_code == 200:
-                        cat_info = cat_response.json()
-                        category_name = cat_info.get('name', f'ID {category_id}')
-                except Exception:
-                    pass
+                permission_probe = _probe_wordpress_permissions(session, url, headers, category_id)
             
             # 5. 결과 표시
             progress_dialog.setValue(100)
@@ -6756,12 +7377,10 @@ class SiteEditDialog(QDialog):
             if auth_success and user_info:
                 user_name = user_info.get('name', 'Unknown')
                 user_roles = user_info.get('roles', [])
-                capabilities = user_info.get('capabilities', {})
-                
-                # 핵심 권한 확인
-                can_publish = capabilities.get('publish_posts', False)
-                can_edit = capabilities.get('edit_posts', False)
-                can_upload = capabilities.get('upload_files', False)
+                can_create = bool(permission_probe.get('can_create', False))
+                can_publish = bool(permission_probe.get('can_publish', False))
+                can_upload = bool(permission_probe.get('can_upload', False))
+                category_name = permission_probe.get('category_name', f'ID {category_id}')
                 
                 message = f"✅ 연결 성공!\n\n"
                 message += f"WordPress: {wp_description}\n"
@@ -6769,13 +7388,13 @@ class SiteEditDialog(QDialog):
                 message += f"사용자 정보:\n"
                 message += f"  이름: {user_name}\n"
                 message += f"  역할: {', '.join(user_roles)}\n\n"
-                message += f"권한 확인:\n"
-                message += f"  포스트 작성: {'✅' if can_edit else '❌'}\n"
+                message += f"실동작 권한 확인:\n"
+                message += f"  포스트 작성: {'✅' if can_create else '❌'}\n"
                 message += f"  포스트 발행: {'✅' if can_publish else '❌'}\n"
                 message += f"  파일 업로드: {'✅' if can_upload else '❌'}\n\n"
                 message += f"포스팅 카테고리: {category_name} (ID: {category_id})"
                 
-                if not (can_edit and can_publish):
+                if not (can_create and can_publish and can_upload):
                     message += f"\n\n⚠️ 경고: 포스트 작성/발행 권한이 부족합니다.\n사용자를 '편집자' 이상 권한으로 설정해주세요."
                 
                 QMessageBox.information(self, "연결 테스트 결과", message)
@@ -6789,7 +7408,7 @@ class SiteEditDialog(QDialog):
                 error_msg += "4. 앱 이름 입력 (예: Auto-WP)\n"
                 error_msg += "5. '새 Application Password 추가' 클릭\n"
                 error_msg += "6. 생성된 패스워드를 복사\n"
-                error_msg += "7. 전역 설정의 패스워드 필드에 붙여넣기\n\n"
+                error_msg += "7. 이 사이트의 비밀번호 필드에 붙여넣기\n\n"
                 error_msg += "⚠️ 주의사항:\n"
                 error_msg += "• Application Password는 일반 로그인 패스워드와 다릅니다\n"
                 error_msg += "• 생성된 패스워드는 한 번만 표시됩니다\n"
@@ -6812,15 +7431,19 @@ class SiteEditDialog(QDialog):
 
     def get_site_data(self):
         """사이트 데이터 반환"""
-        # 전역 설정에서 공통 설정 가져오기
         parent = self.parent()
         config_manager = getattr(parent, "config_manager", None)
         if config_manager is None:
-            QMessageBox.warning(self, "오류", "전역 설정을 찾을 수 없습니다.")
+            QMessageBox.warning(self, "오류", "설정 관리자를 찾을 수 없습니다.")
             return None
 
         # URL에서 사이트 이름 자동 생성
         url = self.url_edit.text().strip()
+        username = self.username_edit.text().strip()
+        password = self.password_edit.text().strip()
+        if not all([url, username, password]):
+            QMessageBox.warning(self, "경고", "URL, 사용자명, 응용프로그램 비밀번호를 모두 입력해주세요.")
+            return None
         site_name = url.replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0]
 
         # 도메인에서 키워드 파일명 생성 (예: ai.ddgaz0813.com -> ai)
@@ -6831,6 +7454,7 @@ class SiteEditDialog(QDialog):
         thumbnail_image = self.thumbnail_combo.currentText()
         if not thumbnail_image or thumbnail_image in ["이미지 폴더 없음", "로드 실패"]:
             thumbnail_image = '썸네일 (1).jpg'  # 기본값
+        thumbnail_source_path = _resolve_site_thumbnail_source({"thumbnail_image": thumbnail_image})
 
         # 키워드 파일 경로 생성
         keyword_file = f"{keyword_prefix}_keywords.txt"
@@ -6838,12 +7462,13 @@ class SiteEditDialog(QDialog):
         return {
             "name": site_name,
             "url": url,
-            "username": config_manager.data["global_settings"].get("common_username", ""),
-            "password": config_manager.data["global_settings"].get("common_password", ""),
+            "username": username,
+            "password": password,
             "category_id": self.category_edit.value(),
             "ai_provider": config_manager.data["global_settings"].get("default_ai", "web-gemini"),
             "wait_time": config_manager.data["global_settings"].get("default_wait_time", "47~50"),
             "thumbnail_image": thumbnail_image,  # 썸네일 이미지 파일명
+            "thumbnail_source_path": thumbnail_source_path,
             "keyword_file": keyword_file,        # 키워드 파일명
             "keywords": []  # 키워드는 파일에서 동적으로 로드
         }
@@ -6953,10 +7578,7 @@ class SiteWidget(QWidget):
         self.keyword_info = ClickableLabel(f"키워드 {keywords_count}개")  # self로 변경하여 나중에 업데이트 가능
         self.keyword_info.setFont(QFont("맑은 고딕", 10))
         self.keyword_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.keyword_info.setStyleSheet(f"""
-            color: {COLORS['info']};
-            text-decoration: underline;
-        """)
+        self._apply_keyword_status_style(keywords_count)
         self.keyword_info.setCursor(Qt.CursorShape.PointingHandCursor)
         self.keyword_info.clicked.connect(self.open_keyword_file)
         keyword_row.addWidget(self.keyword_info, 1)
@@ -7141,6 +7763,19 @@ class SiteWidget(QWidget):
             print(f"키워드 개수 조회 오류: {e}")
             return 0
 
+    def _apply_keyword_status_style(self, keyword_count: int):
+        """키워드 잔여량에 따라 표시 색상 적용 (300개 미만은 빨간색)"""
+        try:
+            count = int(keyword_count)
+        except Exception:
+            count = 0
+        color = "#FF4D4F" if count < 300 else COLORS['info']
+        self.keyword_info.setStyleSheet(f"""
+            color: {color};
+            text-decoration: underline;
+            font-weight: 700;
+        """)
+
     def get_thumbnails_count(self):
         """썸네일 개수 조회 (자동 생성되므로 항상 충분)"""
         return "자동생성"
@@ -7149,14 +7784,12 @@ class SiteWidget(QWidget):
         """썸네일 정보 조회 - 사용자가 선택한 썸네일 파일만 사용"""
         try:
             thumbnail_image = self.site_data.get("thumbnail_image", "")
+            linked_path = _resolve_site_thumbnail_source(self.site_data or {})
+            if linked_path:
+                return os.path.basename(linked_path)
             if thumbnail_image:
-                thumbnail_path = os.path.join(get_base_path(), "setting", "images", thumbnail_image)
-                if os.path.exists(thumbnail_path):
-                    return thumbnail_image
-                else:
-                    return f"파일 없음 {thumbnail_image}"
-            else:
-                return "선택 안됨"
+                return f"파일 없음 {thumbnail_image}"
+            return "선택 안됨"
 
         except Exception as e:
             print(f"썸네일 정보 조회 오류: {e}")
@@ -7252,19 +7885,12 @@ class SiteWidget(QWidget):
         try:
             import subprocess
             import os
-            
-            thumbnail_file = self.site_data.get("thumbnail_file", "")
-            if not thumbnail_file:
+
+            thumbnail_path = _resolve_site_thumbnail_source(self.site_data or {})
+            if not thumbnail_path:
                 QMessageBox.information(None, "알림", "썸네일 파일이 설정되지 않았습니다.")
                 return
-                
-            # images 폴더에서 파일 찾기
-            thumbnail_path = os.path.join(get_base_path(), "setting", "images", thumbnail_file)
-            
-            if not os.path.exists(thumbnail_path):
-                QMessageBox.warning(None, "파일 없음", f"썸네일 파일을 찾을 수 없습니다:\n{thumbnail_path}")
-                return
-                
+
             # Windows에서 기본 프로그램으로 파일 열기 (콘솔창 없이)
             os.startfile(thumbnail_path)  # type: ignore[attr-defined]
             
@@ -7282,15 +7908,19 @@ class SiteWidget(QWidget):
                     try:
                         with open(keyword_path, 'r', encoding='utf-8') as f:
                             lines = f.readlines()
-                            remaining_keywords = [line.strip() for line in lines if line.strip()]
+                            remaining_keywords = [line.strip() for line in lines if line.strip() and not line.strip().startswith('#')]
                             count = len(remaining_keywords)
-                            self.keyword_info.setText(f"{count}개")
+                            self.keyword_info.setText(f"키워드 {count}개")
+                            self._apply_keyword_status_style(count)
                     except Exception:
-                        self.keyword_info.setText("0개")
+                        self.keyword_info.setText("키워드 0개")
+                        self._apply_keyword_status_style(0)
                 else:
-                    self.keyword_info.setText("0개")
+                    self.keyword_info.setText("키워드 0개")
+                    self._apply_keyword_status_style(0)
             else:
-                self.keyword_info.setText("0개")
+                self.keyword_info.setText("키워드 0개")
+                self._apply_keyword_status_style(0)
         except Exception:
             pass
             
@@ -7335,14 +7965,22 @@ class MainWindow(QMainWindow):
         self.countdown_timer.timeout.connect(self.update_next_posting_countdown)
         self.next_posting_label = None
         self._last_countdown_logged_second: Optional[int] = None
+        self._license_blocking_triggered = False
+        self.license_revalidate_timer = QTimer(self)
+        self.license_revalidate_timer.timeout.connect(self.enforce_periodic_license_revalidation)
+        self.license_revalidate_timer.start(60 * 60 * 1000)  # 60분 주기 재검증
         
         # 현재 포스팅 중인 사이트 추적
         self.current_posting_site = None
         self._last_applied_wait_time: Optional[str] = None
+        self._latest_error_message = ""
+        self._latest_error_payload = ""
+        self._last_error_signature = ""
+        self._last_creator_copy_payload = ""
 
         # 모니터링/설정 UI 참조 초기화
-        self.ai_model_combo: Optional[QComboBox] = None
-        self.posting_mode_combo: Optional[QComboBox] = None
+        self.ai_model_combo: Optional[QWidget] = None
+        self.posting_mode_combo: Optional[QWidget] = None
         self.wait_time_edit_monitoring: Optional[QWidget] = None
         self.wait_time_min_edit_monitoring: Optional[QWidget] = None
         self.wait_time_max_edit_monitoring: Optional[QWidget] = None
@@ -7365,6 +8003,67 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(650, self.update_monitoring_settings)
 
         # 시그널 연결
+
+    def enforce_periodic_license_revalidation(self):
+        """실행 중 60분 주기로 라이선스 재검증하고 실패 시 즉시 차단"""
+        if self._license_blocking_triggered:
+            return
+        try:
+            license_manager = LicenseManager()
+            is_valid, message = license_manager.verify_license()
+            if is_valid:
+                return
+
+            self._license_blocking_triggered = True
+            try:
+                self.license_revalidate_timer.stop()
+            except Exception:
+                pass
+
+            if self.is_posting:
+                self.stop_posting()
+
+            block_message = str(message or "라이선스 재검증 실패")
+            machine_id = ""
+            try:
+                machine_id = license_manager.get_machine_id()
+            except Exception:
+                pass
+
+            if machine_id:
+                msg = (
+                    "라이선스 재검증에 실패하여 프로그램 사용이 차단되었습니다.\n\n"
+                    f"사유: {block_message}\n"
+                    f"머신 ID: {machine_id}\n\n"
+                    "판매자에게 문의 후 다시 실행해주세요."
+                )
+            else:
+                msg = (
+                    "라이선스 재검증에 실패하여 프로그램 사용이 차단되었습니다.\n\n"
+                    f"사유: {block_message}\n\n"
+                    "판매자에게 문의 후 다시 실행해주세요."
+                )
+
+            QMessageBox.critical(self, "사용 권한 차단", msg)
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+        except Exception as e:
+            self._license_blocking_triggered = True
+            try:
+                self.license_revalidate_timer.stop()
+            except Exception:
+                pass
+            if self.is_posting:
+                self.stop_posting()
+            QMessageBox.critical(
+                self,
+                "사용 권한 차단",
+                f"라이선스 재검증 중 오류가 발생하여 실행을 중지합니다.\n\n오류: {e}",
+            )
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
 
     def _strip_font_size_rules(self, css_text):
         """스타일시트 내 font-size 선언 제거 (전역 타이포그래피 통일용)"""
@@ -7785,6 +8484,134 @@ class MainWindow(QMainWindow):
         setattr(container, "value_widget", value_widget)  # 콤보박스용 별칭
         
         return container
+
+    def create_radio_choice_card(self, title, options, on_change_callback=None, title_callback=None):
+        """2개 선택지를 라디오 버튼으로 보여주는 카드 생성"""
+        container = QWidget()
+        container.setObjectName("monitorCard")
+        container_style = self.get_card_container_style()
+        container.setMaximumHeight(container_style['max_height'])
+        container.setMinimumHeight(container_style['min_height'])
+        container.setMinimumWidth(container_style['min_width'])
+        container.setSizePolicy(*container_style['size_policy'])
+        container.setStyleSheet(container_style['stylesheet'])
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(*container_style['contents_margins'])
+        layout.setSpacing(container_style['spacing'])
+        layout.addStretch(1)
+
+        title_label = QPushButton(title)
+        title_label.setFlat(True)
+        title_label.setStyleSheet(self.get_card_title_style())
+        if title_callback:
+            title_label.clicked.connect(title_callback)
+            title_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout.addWidget(title_label, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        value_panel = QFrame()
+        value_panel.setFixedHeight(66)
+        value_panel.setMinimumWidth(330)
+        value_panel.setMaximumWidth(420)
+        value_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        value_panel.setStyleSheet(f"""
+            QFrame {{
+                background-color: {COLORS['surface_light']};
+                border: 2px solid {COLORS['primary']};
+                border-radius: 10px;
+            }}
+            QRadioButton {{
+                color: {COLORS['text']};
+                background-color: {COLORS['surface']};
+                border: 2px solid {COLORS['primary']};
+                border-radius: 10px;
+                font-size: 10pt;
+                font-weight: 700;
+                padding: 8px 14px;
+                min-width: 130px;
+            }}
+            QRadioButton::indicator {{
+                width: 0px;
+                height: 0px;
+            }}
+            QRadioButton:hover {{
+                border-color: {COLORS['info']};
+            }}
+            QRadioButton:checked {{
+                background-color: {COLORS['primary']};
+                color: white;
+                border-color: {COLORS['info']};
+            }}
+        """)
+        row = QHBoxLayout(value_panel)
+        row.setContentsMargins(12, 10, 12, 10)
+        row.setSpacing(10)
+        row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        button_group = QButtonGroup(value_panel)
+        button_group.setExclusive(True)
+        buttons = {}
+        for idx, option_text in enumerate(options):
+            radio = QRadioButton(option_text)
+            radio.setCursor(Qt.CursorShape.PointingHandCursor)
+            row.addWidget(radio, 0, Qt.AlignmentFlag.AlignVCenter)
+            button_group.addButton(radio, idx)
+            buttons[option_text] = radio
+
+        if options:
+            first_button = buttons.get(options[0])
+            if first_button is not None:
+                first_button.setChecked(True)
+
+        if callable(on_change_callback):
+            for option_text, radio in buttons.items():
+                def _on_toggled(checked, text=option_text):
+                    if checked and not getattr(container, "_signals_blocked", False):
+                        on_change_callback(text)
+                radio.toggled.connect(_on_toggled)
+
+        layout.addWidget(value_panel, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addStretch(1)
+
+        setattr(container, "value_widget", value_panel)
+        setattr(container, "choice_buttons", buttons)
+        setattr(container, "_signals_blocked", False)
+        setattr(container, "_choice_options", list(options))
+        return container
+
+    def _set_choice_card_value(self, card_widget, text, emit_signal=False):
+        """라디오 카드 선택값 설정"""
+        if card_widget is None:
+            return
+        buttons = getattr(card_widget, "choice_buttons", None)
+        if not isinstance(buttons, dict):
+            return
+        button = buttons.get(text)
+        if button is None:
+            return
+        previous = getattr(card_widget, "_signals_blocked", False)
+        if not emit_signal:
+            setattr(card_widget, "_signals_blocked", True)
+        try:
+            button.setChecked(True)
+        finally:
+            if not emit_signal:
+                setattr(card_widget, "_signals_blocked", previous)
+
+    def _get_choice_card_value(self, card_widget):
+        """라디오 카드 현재 선택값 조회"""
+        if card_widget is None:
+            return ""
+        buttons = getattr(card_widget, "choice_buttons", None)
+        if not isinstance(buttons, dict):
+            return ""
+        for option_text, button in buttons.items():
+            try:
+                if button.isChecked():
+                    return option_text
+            except Exception:
+                continue
+        return ""
         self.update_buttons_signal.connect(self._safe_update_button_states)
 
         # 상태 정보 초기화(UI 생성 후 실행)
@@ -8019,6 +8846,8 @@ class MainWindow(QMainWindow):
                     self.keywords_folder_btn.setText("📂 키워드")
                 if hasattr(self, 'prompts_folder_btn'):
                     self.prompts_folder_btn.setText("📝 Prompt")
+                if hasattr(self, 'thumbnail_edit_btn'):
+                    self.thumbnail_edit_btn.setText("🖼️ 썸네일")
             else:
                 # 큰 화면에서는 전체 텍스트
                 if hasattr(self, 'add_site_btn'):
@@ -8027,6 +8856,8 @@ class MainWindow(QMainWindow):
                     self.keywords_folder_btn.setText("📂 Keywords 폴더 열기")
                 if hasattr(self, 'prompts_folder_btn'):
                     self.prompts_folder_btn.setText("📝 Prompt 폴더 열기")
+                if hasattr(self, 'thumbnail_edit_btn'):
+                    self.thumbnail_edit_btn.setText("🖼️ 썸네일 편집")
                     
         except Exception as e:
             print(f"사이트 버튼 레이아웃 조정 오류: {e}")
@@ -8562,8 +9393,8 @@ class MainWindow(QMainWindow):
         self.add_site_btn.setMinimumWidth(130)
         self.add_site_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_site_btn.setStyleSheet("""
-            QPushButton { background-color: #FF0033; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #C70028; font-size: 14px; }
-            QPushButton:hover { background-color: #FF335C; }
+            QPushButton { background-color: #FF1744; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #D5002F; font-size: 16px; }
+            QPushButton:hover { background-color: #FF4569; }
         """)
         self.add_site_btn.clicked.connect(self.toggle_add_site_form)
         button_layout.addWidget(self.add_site_btn)
@@ -8573,7 +9404,7 @@ class MainWindow(QMainWindow):
         self.keywords_folder_btn.setMinimumWidth(130)
         self.keywords_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.keywords_folder_btn.setStyleSheet("""
-            QPushButton { background-color: #FF7A00; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #CC6200; font-size: 14px; }
+            QPushButton { background-color: #FF7A00; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #CC6200; font-size: 16px; }
             QPushButton:hover { background-color: #FF9633; }
         """)
         self.keywords_folder_btn.clicked.connect(self.open_keywords_folder)
@@ -8584,30 +9415,19 @@ class MainWindow(QMainWindow):
         self.prompts_folder_btn.setMinimumWidth(130)
         self.prompts_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.prompts_folder_btn.setStyleSheet("""
-            QPushButton { background-color: #FFC400; color: white; font-weight: 900; padding: 10px 15px; border-radius: 8px; border: 1px solid #CC9D00; font-size: 14px; }
+            QPushButton { background-color: #FFC400; color: white; font-weight: 900; padding: 10px 15px; border-radius: 8px; border: 1px solid #CC9D00; font-size: 16px; }
             QPushButton:hover { background-color: #FFD54F; }
         """)
         self.prompts_folder_btn.clicked.connect(self.open_prompts_folder)
         button_layout.addWidget(self.prompts_folder_btn)
-
-        self.wp_settings_btn = QPushButton("🔐 워드프레스 세팅")
-        self.wp_settings_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.wp_settings_btn.setMinimumWidth(130)
-        self.wp_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.wp_settings_btn.setStyleSheet("""
-            QPushButton { background-color: #00C853; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #00A845; font-size: 14px; }
-            QPushButton:hover { background-color: #1DE977; }
-        """)
-        self.wp_settings_btn.clicked.connect(self.open_wp_settings_dialog)
-        button_layout.addWidget(self.wp_settings_btn)
 
         self.gemini_api_btn = QPushButton("🔑 Gemini API 설정")
         self.gemini_api_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.gemini_api_btn.setMinimumWidth(130)
         self.gemini_api_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.gemini_api_btn.setStyleSheet("""
-            QPushButton { background-color: #0091FF; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #0073CC; font-size: 14px; }
-            QPushButton:hover { background-color: #33A7FF; }
+            QPushButton { background-color: #00C853; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #00A845; font-size: 16px; }
+            QPushButton:hover { background-color: #1DE977; }
         """)
         self.gemini_api_btn.clicked.connect(self.open_gemini_api_dialog)
         button_layout.addWidget(self.gemini_api_btn)
@@ -8617,32 +9437,43 @@ class MainWindow(QMainWindow):
         self.website_login_btn.setMinimumWidth(130)
         self.website_login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.website_login_btn.setStyleSheet("""
-            QPushButton { background-color: #0B2A66; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #081F4D; font-size: 14px; }
-            QPushButton:hover { background-color: #143E8C; }
+            QPushButton { background-color: #0091FF; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #0073CC; font-size: 16px; }
+            QPushButton:hover { background-color: #33A7FF; }
         """)
         self.website_login_btn.clicked.connect(self.open_website_login)
         button_layout.addWidget(self.website_login_btn)
+
+        self.thumbnail_edit_btn = QPushButton("🖼️ 썸네일 편집")
+        self.thumbnail_edit_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.thumbnail_edit_btn.setMinimumWidth(130)
+        self.thumbnail_edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.thumbnail_edit_btn.setStyleSheet("""
+            QPushButton { background-color: #1E3A8A; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #172B6C; font-size: 16px; }
+            QPushButton:hover { background-color: #2B50BE; }
+        """)
+        self.thumbnail_edit_btn.clicked.connect(self.open_thumbnail_editor)
+        button_layout.addWidget(self.thumbnail_edit_btn)
 
         self.refresh_sites_btn = QPushButton("🔄 새로고침")
         self.refresh_sites_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.refresh_sites_btn.setMinimumWidth(110)
         self.refresh_sites_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_sites_btn.setStyleSheet("""
-            QPushButton { background-color: #AA00FF; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #8800CC; font-size: 14px; }
+            QPushButton { background-color: #AA00FF; color: white; font-weight: 800; padding: 10px 15px; border-radius: 8px; border: 1px solid #8800CC; font-size: 16px; }
             QPushButton:hover { background-color: #BC33FF; }
         """)
         self.refresh_sites_btn.clicked.connect(self.refresh_site_list)
         button_layout.addWidget(self.refresh_sites_btn)
 
-        # 상단 7개 무지개 버튼 폰트 볼드 강제
+        # 상단 무지개 버튼 폰트 볼드 강제
         rainbow_btn_font = QFont("맑은 고딕", 10, QFont.Weight.Bold)
         for btn in [
             self.add_site_btn,
             self.keywords_folder_btn,
             self.prompts_folder_btn,
-            self.wp_settings_btn,
             self.gemini_api_btn,
             self.website_login_btn,
+            self.thumbnail_edit_btn,
             self.refresh_sites_btn,
         ]:
             btn.setFont(rainbow_btn_font)
@@ -8716,6 +9547,28 @@ class MainWindow(QMainWindow):
         self.inline_category_edit.setRange(1, 9999)
         self.inline_category_edit.setValue(1)
         form_layout.addRow("카테고리 ID:", self.inline_category_edit)
+
+        # 사이트별 사용자명
+        self.inline_username_edit = QLineEdit()
+        self.inline_username_edit.setPlaceholderText("워드프레스 사용자명")
+        self.inline_username_edit.setText(self.config_manager.data.get("global_settings", {}).get("common_username", ""))
+        form_layout.addRow("사용자명:", self.inline_username_edit)
+
+        # 사이트별 응용프로그램 비밀번호
+        inline_password_layout = QHBoxLayout()
+        self.inline_password_edit = QLineEdit()
+        self.inline_password_edit.setPlaceholderText("응용프로그램 비밀번호")
+        self.inline_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.inline_password_edit.setText(self.config_manager.data.get("global_settings", {}).get("common_password", ""))
+        inline_password_layout.addWidget(self.inline_password_edit, 1)
+        self.inline_password_toggle_btn = QPushButton("👁️")
+        self.inline_password_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.inline_password_toggle_btn.setFixedWidth(40)
+        self.inline_password_toggle_btn.clicked.connect(self.toggle_inline_password_visibility)
+        inline_password_layout.addWidget(self.inline_password_toggle_btn)
+        inline_password_widget = QWidget()
+        inline_password_widget.setLayout(inline_password_layout)
+        form_layout.addRow("응용프로그램 비밀번호:", inline_password_widget)
 
         # 썸네일 이미지 선택
         thumbnail_layout = QHBoxLayout()
@@ -8805,6 +9658,15 @@ class MainWindow(QMainWindow):
         form_widget.setLayout(layout)
         return form_widget
 
+    def toggle_inline_password_visibility(self):
+        """인라인 비밀번호 표시/숨김"""
+        if self.inline_password_edit.echoMode() == QLineEdit.EchoMode.Password:
+            self.inline_password_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.inline_password_toggle_btn.setText("🙈")
+        else:
+            self.inline_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.inline_password_toggle_btn.setText("👁️")
+
     def create_monitoring_tab(self):
         """모니터링 탭 생성 - 좌측 상태/우측 로그 2단 구조"""
         scroll_area = QScrollArea()
@@ -8877,20 +9739,26 @@ class MainWindow(QMainWindow):
         self.settings_grid.setColumnStretch(0, 1)
         self.settings_grid.setColumnStretch(1, 1)
 
-        self.ai_model_label = self.create_unified_card("🤖 AI 설정", "", self.goto_settings_ai, "combobox")
-        self.ai_model_combo = self._get_card_value_widget(self.ai_model_label)
+        self.ai_model_label = self.create_radio_choice_card(
+            "🤖 AI 설정",
+            ["웹사이트 로그인", "API 사용"],
+            self.on_ai_model_changed,
+            self.goto_settings_ai
+        )
+        self.ai_model_combo = self.ai_model_label
         if self.ai_model_combo is None:
             raise RuntimeError("ai_model_combo not available")
-        self.ai_model_combo.addItems(["웹사이트 로그인", "API 사용"])
-        self.ai_model_combo.setCurrentIndex(0)
         self.settings_grid.addWidget(self.ai_model_label, 0, 0, 1, 1)
 
-        self.posting_mode_label = self.create_unified_card("📝 포스팅 모드", "", self.goto_settings_posting_mode, "combobox")
-        self.posting_mode_combo = self._get_card_value_widget(self.posting_mode_label)
+        self.posting_mode_label = self.create_radio_choice_card(
+            "📝 포스팅 모드",
+            ["승인용", "수익용"],
+            self.on_posting_mode_changed,
+            self.goto_settings_posting_mode
+        )
+        self.posting_mode_combo = self.posting_mode_label
         if self.posting_mode_combo is None:
             raise RuntimeError("posting_mode_combo not available")
-        self.posting_mode_combo.addItems(["승인용", "수익용"])
-        self.posting_mode_combo.setCurrentIndex(1)
         self.settings_grid.addWidget(self.posting_mode_label, 0, 1, 1, 1)
 
         self.site_label = self.create_site_selector_label()
@@ -9023,6 +9891,10 @@ class MainWindow(QMainWindow):
 
         self.progress_text = QTextEdit()
         self.progress_text.setReadOnly(True)
+        self.progress_text.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         self.progress_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.progress_text.setMinimumHeight(250)
         font = self.progress_text.font()
@@ -9093,7 +9965,7 @@ class MainWindow(QMainWindow):
         self.progress_text.setPlainText(startup_text)
         self.progress_text.repaint()
         # 오류 전달용 복사 버튼 (수동)
-        self.copy_error_btn = QPushButton("복사")
+        self.copy_error_btn = QPushButton("데이비 전달 메시지 복사")
         self.copy_error_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.copy_error_btn.setMinimumHeight(34)
         self.copy_error_btn.setStyleSheet(f"""
@@ -9168,59 +10040,34 @@ class MainWindow(QMainWindow):
         return scroll_area
 
     def initialize_monitoring_combos(self):
-        """모니터링 탭의 콤보박스들 초기화"""
+        """모니터링 탭 선택 카드들 초기화"""
         print("🔧 initialize_monitoring_combos 호출됨", flush=True)
         try:
-            # AI 설정 콤보박스 초기화
+            # AI 설정 선택 초기화
             if self.ai_model_combo:
-                self.ai_model_combo.clear()
-                
-                # API와 웹사이트 옵션 추가
-                ai_options = ["웹사이트 로그인", "API 사용"]
-                self.ai_model_combo.addItems(ai_options)
-                
-                # 현재 설정 확인 (안전하게)
                 try:
                     ai_provider = self._get_current_ai_provider()
-                except:
+                except Exception:
                     ai_provider = self.AI_PROVIDER_WEB_GEMINI
-                
-                # 현재 모드에 맞게 선택
+
                 if self._is_web_mode():
-                    self.ai_model_combo.setCurrentText("웹사이트 로그인")
+                    self._set_choice_card_value(self.ai_model_combo, "웹사이트 로그인", emit_signal=False)
                 else:
-                    self.ai_model_combo.setCurrentText("API 사용")
-                
-                # AI 설정 변경 시 업데이트 - 시그널 연결 확인
-                try:
-                    self.ai_model_combo.currentTextChanged.disconnect()
-                except:
-                    pass
-                self.ai_model_combo.currentTextChanged.connect(self.on_ai_model_changed)
-                print(f"✅ AI 설정 콤보박스 초기화 완료: {ai_provider}", flush=True)
+                    self._set_choice_card_value(self.ai_model_combo, "API 사용", emit_signal=False)
+                print(f"✅ AI 설정 카드 초기화 완료: {ai_provider}", flush=True)
             else:
                 print("⚠️ ai_model_combo 위젯을 찾을 수 없습니다.", flush=True)
             
-            # 포스팅 모드 콤보박스 초기화
+            # 포스팅 모드 선택 초기화
             if self.posting_mode_combo:
-                self.posting_mode_combo.clear()
-                self.posting_mode_combo.addItems(["승인용", "수익용"])
-                
                 try:
                     current_mode = self.config_manager.data.get("global_settings", {}).get("posting_mode", "수익용")
-                except:
+                except Exception:
                     current_mode = "수익용"
 
                 current_mode = self.normalize_posting_mode(current_mode)
-                self.posting_mode_combo.setCurrentText(current_mode)
-                
-                # 포스팅 모드 변경 시 설정 업데이트
-                try:
-                    self.posting_mode_combo.currentTextChanged.disconnect()
-                except:
-                    pass
-                self.posting_mode_combo.currentTextChanged.connect(self.on_posting_mode_changed)
-                print(f"✅ 포스팅 모드 콤보박스 초기화 완료: {current_mode}", flush=True)
+                self._set_choice_card_value(self.posting_mode_combo, current_mode, emit_signal=False)
+                print(f"✅ 포스팅 모드 카드 초기화 완료: {current_mode}", flush=True)
             else:
                 print("⚠️ posting_mode_combo 위젯을 찾을 수 없습니다.", flush=True)
             
@@ -9294,9 +10141,7 @@ class MainWindow(QMainWindow):
             
             # 모니터링 탭의 AI 설정 콤보박스도 업데이트
             if self.ai_model_combo:
-                self.ai_model_combo.blockSignals(True)  # 무한 루프 방지
-                self.ai_model_combo.setCurrentText(selection_text)
-                self.ai_model_combo.blockSignals(False)
+                self._set_choice_card_value(self.ai_model_combo, selection_text, emit_signal=False)
             
             print(f"설정 탭에서 AI 모드가 '{selection_text}'로 변경되었습니다.")
             
@@ -9531,9 +10376,7 @@ class MainWindow(QMainWindow):
             
             # 모니터링 탭의 포스팅 모드 콤보박스도 업데이트
             if self.posting_mode_combo:
-                self.posting_mode_combo.blockSignals(True)  # 무한 루프 방지
-                self.posting_mode_combo.setCurrentText(mode)
-                self.posting_mode_combo.blockSignals(False)
+                self._set_choice_card_value(self.posting_mode_combo, mode, emit_signal=False)
             
             print(f"설정 탭에서 포스팅 모드가 '{mode}'로 변경되었습니다.")
             
@@ -9543,34 +10386,21 @@ class MainWindow(QMainWindow):
     def update_monitoring_settings(self):
         """설정 저장 후 모니터링 탭의 '현재 설정 상태' 업데이트"""
         try:
-            # AI 설정 콤보박스 업데이트
+            # AI 설정 카드 업데이트
             if self.ai_model_combo:
                 ai_provider = self._get_current_ai_provider()
-                
-                # AI 제공자에 따라 선택 항목 업데이트
-                self.ai_model_combo.blockSignals(True)
-                self.ai_model_combo.clear()
-                
-                ai_options = ["웹사이트 로그인", "API 사용"]
-                self.ai_model_combo.addItems(ai_options)
-                
-                # 현재 설정에 맞게 선택
                 if ai_provider.startswith("web"):
-                    self.ai_model_combo.setCurrentText("웹사이트 로그인")
+                    self._set_choice_card_value(self.ai_model_combo, "웹사이트 로그인", emit_signal=False)
                 else:
-                    self.ai_model_combo.setCurrentText("API 사용")
-                
-                self.ai_model_combo.blockSignals(False)
-                print(f"✅ 모니터링 탭 AI 설정 업데이트: {self.ai_model_combo.currentText()}")
+                    self._set_choice_card_value(self.ai_model_combo, "API 사용", emit_signal=False)
+                print(f"✅ 모니터링 탭 AI 설정 업데이트: {self._get_choice_card_value(self.ai_model_combo)}")
             
-            # 포스팅 모드 콤보박스 업데이트
+            # 포스팅 모드 카드 업데이트
             if self.posting_mode_combo:
                 posting_mode = self.normalize_posting_mode(
                     self.config_manager.data["global_settings"].get("posting_mode", "수익용")
                 )
-                self.posting_mode_combo.blockSignals(True)
-                self.posting_mode_combo.setCurrentText(posting_mode)
-                self.posting_mode_combo.blockSignals(False)
+                self._set_choice_card_value(self.posting_mode_combo, posting_mode, emit_signal=False)
                 print(f"✅ 모니터링 탭 포스팅 모드 업데이트: {posting_mode}")
 
             if self.current_site_combo and self.current_site_combo.count() == 0:
@@ -9799,12 +10629,6 @@ class MainWindow(QMainWindow):
     def needs_progress_action_buttons(self):
         """진행 상태 하단 보조 버튼 노출 필요 여부"""
         try:
-            global_settings = self.config_manager.data.get("global_settings", {})
-            common_username = (global_settings.get("common_username", "") or "").strip()
-            common_password = (global_settings.get("common_password", "") or "").strip()
-            if not common_username or not common_password:
-                return True
-
             sites = self.config_manager.data.get("sites", [])
             active_sites = [s for s in sites if s.get("active", True)]
             if not active_sites:
@@ -9812,6 +10636,10 @@ class MainWindow(QMainWindow):
 
             for site in active_sites:
                 if not (site.get("url", "") or "").strip():
+                    return True
+                if not (site.get("username", "") or "").strip():
+                    return True
+                if not (site.get("password", "") or "").strip():
                     return True
                 if not (site.get("keyword_file", "") or "").strip():
                     return True
@@ -9849,8 +10677,6 @@ class MainWindow(QMainWindow):
             if os.path.exists(prompts_dir):
                 prompt_file_count = len([f for f in os.listdir(prompts_dir) if f.lower().endswith(".txt")])
 
-            wp_user = (global_settings.get("common_username", "") or "").strip()
-            wp_pass = (global_settings.get("common_password", "") or "").strip()
             current_ai_provider = (global_settings.get("default_ai", "web-gemini") or "web-gemini").strip().lower()
             is_api_mode = (current_ai_provider == "gemini")
             is_web_gemini_mode = (current_ai_provider == "web-gemini")
@@ -9864,8 +10690,15 @@ class MainWindow(QMainWindow):
                 missing_items.append("2) Keywords txt 파일")
             if prompt_file_count == 0:
                 missing_items.append("3) Prompt txt 파일")
-            if not (wp_user and wp_pass):
-                missing_items.append("4) 워드프레스 세팅")
+            missing_site_credentials = False
+            for site in active_sites:
+                site_user = (site.get("username", "") or "").strip()
+                site_pass = (site.get("password", "") or "").strip()
+                if not (site_user and site_pass):
+                    missing_site_credentials = True
+                    break
+            if missing_site_credentials:
+                missing_items.append("4) 사이트별 워드프레스 세팅")
             if is_api_mode and not gemini_key:
                 missing_items.append("5) Gemini API 설정")
             if is_web_gemini_mode and not (google_email and google_password):
@@ -9887,13 +10720,13 @@ class MainWindow(QMainWindow):
 
             if check_results:
                 return "\n" + "\n".join(check_results)
-            return f"\n[{startup_time_short}] ✅ 7개 설정이 모두 연동되어 있습니다"
+            return f"\n[{startup_time_short}] ✅ 8개 설정 버튼 기준 점검이 완료되었습니다"
                 
         except Exception as e:
             return f"\n[{startup_time_short}] ❌ 설정 체크 중 오류 발생: {e}"
 
     def get_settings_button_summary(self, startup_time_short):
-        """설정 탭 7개 상단 버튼의 현재 설정 요약"""
+        """설정 탭 8개 상단 버튼의 현재 설정 요약"""
         try:
             base_path = get_base_path()
             sites = self.config_manager.data.get('sites', [])
@@ -9902,6 +10735,7 @@ class MainWindow(QMainWindow):
 
             keywords_dir = os.path.join(base_path, "setting", "keywords")
             prompts_dir = os.path.join(base_path, "setting", "prompts")
+            images_dir = os.path.join(base_path, "setting", "images")
 
             keyword_file_count = 0
             if os.path.exists(keywords_dir):
@@ -9917,9 +10751,25 @@ class MainWindow(QMainWindow):
                     if f.lower().endswith(".txt")
                 ])
 
-            wp_user = (global_settings.get("common_username", "") or "").strip()
-            wp_pass = (global_settings.get("common_password", "") or "").strip()
-            wp_status = "완료" if (wp_user and wp_pass) else "미완료"
+            image_file_count = 0
+            if os.path.exists(images_dir):
+                image_file_count = len([
+                    f for f in os.listdir(images_dir)
+                    if os.path.isfile(os.path.join(images_dir, f))
+                    and f.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
+                ])
+
+            credential_ready = True
+            if not active_sites:
+                credential_ready = False
+            else:
+                for site in active_sites:
+                    site_user = (site.get("username", "") or "").strip()
+                    site_pass = (site.get("password", "") or "").strip()
+                    if not (site_user and site_pass):
+                        credential_ready = False
+                        break
+            wp_status = "완료" if credential_ready else "미완료"
 
             current_ai_provider = (global_settings.get("default_ai", "web-gemini") or "web-gemini").strip().lower()
             gemini_key = (self.config_manager.data.get("api_keys", {}).get("gemini", "") or "").strip()
@@ -9940,10 +10790,11 @@ class MainWindow(QMainWindow):
                 f"[{startup_time_short}]   1) ➕ 새 사이트 추가: 총 {len(sites)}개 (활성 {len(active_sites)}개)",
                 f"[{startup_time_short}]   2) 📂 Keywords 폴더 열기: txt 파일 {keyword_file_count}개",
                 f"[{startup_time_short}]   3) 📝 Prompt 폴더 열기: txt 파일 {prompt_file_count}개",
-                f"[{startup_time_short}]   4) 🔐 워드프레스 세팅: {wp_status}",
+                f"[{startup_time_short}]   4) 🔐 사이트별 워드프레스 세팅: {wp_status}",
                 f"[{startup_time_short}]   5) 🔑 Gemini API 설정: {gemini_status}",
                 f"[{startup_time_short}]   6) 🌐 웹사이트 로그인: {web_login_status}",
-                f"[{startup_time_short}]   7) 🔄 새로고침: 사용 가능 (F5)",
+                f"[{startup_time_short}]   7) 🖼️ 썸네일 편집: 이미지 파일 {image_file_count}개",
+                f"[{startup_time_short}]   8) 🔄 새로고침: 사용 가능 (F5)",
             ]
             return "\n" + "\n".join(lines)
         except Exception as e:
@@ -10129,20 +10980,20 @@ class MainWindow(QMainWindow):
         if self.add_site_form.isVisible():
             self.add_site_form.hide()
             self.add_site_btn.setText("➕ 새 사이트 추가")
-            # 보라색으로 다시 변경
-            self.add_site_btn.setObjectName("purpleButton")
+            # 기본 상태: 빨간 버튼 유지
+            self.add_site_btn.setObjectName("addSiteButton")
             self.add_site_btn.setStyleSheet(f"""
-                QPushButton#purpleButton {{
-                    background-color: #6E2B93;
+                QPushButton#addSiteButton {{
+                    background-color: #FF1744;
                     color: white;
                     font-weight: 800;
-                    padding: 12px 24px;
-                    border-radius: 6px;
-                    border: 1px solid #5A2278;
-                    font-size: 14px;
+                    padding: 10px 15px;
+                    border-radius: 8px;
+                    border: 1px solid #D5002F;
+                    font-size: 16px;
                 }}
-                QPushButton#purpleButton:hover {{
-                    background-color: #8333AF;
+                QPushButton#addSiteButton:hover {{
+                    background-color: #FF4569;
                 }}
             """)
         else:
@@ -10158,7 +11009,7 @@ class MainWindow(QMainWindow):
                     padding: 12px 24px;
                     border-radius: 6px;
                     border: 1px solid #B00000;
-                    font-size: 14px;
+                    font-size: 16px;
                 }}
                 QPushButton#closeButton:hover {{
                     background-color: #F00000;
@@ -10169,12 +11020,33 @@ class MainWindow(QMainWindow):
         """사이트용 썸네일 이미지 선택"""
         file_path, _ = QFileDialog.getOpenFileName(
             self, "썸네일 이미지 선택", 
-            os.path.join(get_base_path(), "setting", "images"),
-            "이미지 파일 (*.jpg *.jpeg *.png)"
+            SETTING_IMAGES_DIR,
+            "이미지 파일 (*.jpg *.jpeg)"
         )
         if file_path:
-            filename = os.path.basename(file_path)
-            self.inline_thumbnail_edit.setText(filename)
+            filename, _ = self._prepare_thumbnail_image_file(file_path)
+            if filename:
+                self.inline_thumbnail_edit.setText(filename)
+
+    def _prepare_thumbnail_image_file(self, file_path):
+        """선택된 JPG를 setting/images로 정규화하고 (파일명, 절대경로) 반환"""
+        try:
+            src = str(file_path or "").strip()
+            if not src or not os.path.isfile(src):
+                return "", ""
+            if not src.lower().endswith((".jpg", ".jpeg")):
+                QMessageBox.warning(self, "경고", "JPG/JPEG 파일만 선택할 수 있습니다.")
+                return "", ""
+
+            os.makedirs(SETTING_IMAGES_DIR, exist_ok=True)
+            filename = os.path.basename(src)
+            dst = os.path.join(SETTING_IMAGES_DIR, filename)
+            if os.path.normcase(os.path.abspath(src)) != os.path.normcase(os.path.abspath(dst)):
+                shutil.copy2(src, dst)
+            return filename, dst
+        except Exception as e:
+            QMessageBox.warning(self, "경고", f"썸네일 파일 준비 실패:\n{e}")
+            return "", ""
 
     def browse_keywords_for_site(self):
         """사이트용 키워드 파일 선택"""
@@ -10190,11 +11062,11 @@ class MainWindow(QMainWindow):
     def test_inline_connection(self):
         """인라인 폼의 연결 테스트 - 다중 인증 방법 지원"""
         url = self.inline_url_edit.text().strip()
-        username = self.config_manager.data["global_settings"].get("common_username", "")
-        password = self.config_manager.data["global_settings"].get("common_password", "")
+        username = self.inline_username_edit.text().strip()
+        password = self.inline_password_edit.text().strip()
 
         if not all([url, username, password]):
-            QMessageBox.warning(self, "경고", "URL과 전역 사용자명/비밀번호가 모두 설정되어야 합니다.")
+            QMessageBox.warning(self, "경고", "URL, 사용자명, 응용프로그램 비밀번호를 모두 입력해주세요.")
             return
 
         # 진행 상황 다이얼로그 생성
@@ -10270,13 +11142,7 @@ class MainWindow(QMainWindow):
                     return
                 
                 try:
-                    import base64
-                    credentials = f"{user}:{pwd}"
-                    token = base64.b64encode(credentials.encode('utf-8')).decode('ascii')
-                    headers = {
-                        'Authorization': f'Basic {token}',
-                        'User-Agent': 'Auto-WP/1.0'
-                    }
+                    headers = _build_basic_auth_headers(user, pwd)
                     
                     auth_response = session.get(user_url, headers=headers, timeout=10)
                     
@@ -10289,19 +11155,25 @@ class MainWindow(QMainWindow):
                 except Exception:
                     continue
             
-            # 4. 결과 표시 (100%)
+            # 4. 실제 권한 점검 (임시 생성/삭제 기반)
+            if auth_success:
+                progress_dialog.setValue(90)
+                progress_dialog.setLabelText("실제 권한 검증 중")
+                QApplication.processEvents()
+                category_id = self.inline_category_edit.value()
+                permission_probe = _probe_wordpress_permissions(session, url, headers, category_id)
+
+            # 5. 결과 표시 (100%)
             progress_dialog.setValue(100)
             progress_dialog.close()
             
             if auth_success and user_info:
                 user_name = user_info.get('name', 'Unknown')
                 user_roles = user_info.get('roles', [])
-                capabilities = user_info.get('capabilities', {})
-                
-                # 권한 확인
-                can_publish = capabilities.get('publish_posts', False)
-                can_edit = capabilities.get('edit_posts', False)
-                can_upload = capabilities.get('upload_files', False)
+                can_create = bool(permission_probe.get('can_create', False))
+                can_publish = bool(permission_probe.get('can_publish', False))
+                can_upload = bool(permission_probe.get('can_upload', False))
+                category_name = permission_probe.get('category_name', f"ID {category_id}")
                 
                 message = f"✅ 연결 성공!\n\n"
                 message += f"WordPress: {wp_description}\n"
@@ -10309,12 +11181,13 @@ class MainWindow(QMainWindow):
                 message += f"사용자 정보:\n"
                 message += f"  이름: {user_name}\n"
                 message += f"  역할: {', '.join(user_roles)}\n\n"
-                message += f"권한 확인:\n"
-                message += f"  포스트 작성: {'✅' if can_edit else '❌'}\n"
+                message += f"실동작 권한 확인:\n"
+                message += f"  포스트 작성: {'✅' if can_create else '❌'}\n"
                 message += f"  포스트 발행: {'✅' if can_publish else '❌'}\n"
-                message += f"  파일 업로드: {'✅' if can_upload else '❌'}"
+                message += f"  파일 업로드: {'✅' if can_upload else '❌'}\n\n"
+                message += f"포스팅 카테고리: {category_name} (ID: {category_id})"
                 
-                if not (can_edit and can_publish):
+                if not (can_create and can_publish and can_upload):
                     message += f"\n\n⚠️ 경고: 포스트 작성/발행 권한이 부족합니다.\n사용자를 '편집자' 이상 권한으로 설정해주세요."
                 
                 QMessageBox.information(self, "연결 테스트 결과", message)
@@ -10340,8 +11213,10 @@ class MainWindow(QMainWindow):
     def save_inline_site(self):
         """인라인 폼으로 사이트 저장"""
         url = self.inline_url_edit.text().strip()
-        if not url:
-            QMessageBox.warning(self, "경고", "URL을 입력해주세요.")
+        username = self.inline_username_edit.text().strip()
+        password = self.inline_password_edit.text().strip()
+        if not all([url, username, password]):
+            QMessageBox.warning(self, "경고", "URL, 사용자명, 응용프로그램 비밀번호를 모두 입력해주세요.")
             return
 
         # URL에서 사이트 이름 생성
@@ -10351,22 +11226,25 @@ class MainWindow(QMainWindow):
         domain_parts = site_name.split('.')
         keyword_prefix = domain_parts[0] if domain_parts else site_name
 
+        raw_thumb = self.inline_thumbnail_edit.text().strip() or f"{keyword_prefix}.jpg"
+        thumb_source = _resolve_site_thumbnail_source({"thumbnail_image": raw_thumb})
         site_data = {
             "name": site_name,
             "url": url,
-            "username": self.config_manager.data["global_settings"].get("common_username", ""),
-            "password": self.config_manager.data["global_settings"].get("common_password", ""),
+            "username": username,
+            "password": password,
             "category_id": self.inline_category_edit.value(),
             "ai_provider": self.config_manager.data["global_settings"].get("default_ai", "web-gemini"),
             "wait_time": self.config_manager.data["global_settings"].get("default_wait_time", "47~50"),
-            "thumbnail_image": self.inline_thumbnail_edit.text() or f"{keyword_prefix}.jpg",
+            "thumbnail_image": raw_thumb,
+            "thumbnail_source_path": thumb_source,
             "keyword_file": self.inline_keywords_edit.text() or f"{keyword_prefix}_keywords.txt",
             "keywords": []
         }
 
         try:
             site_id = self.config_manager.add_site(site_data)
-            QMessageBox.information(self, "성공", f"사이트가 추가되었습니다! (ID: {site_id})\n\n전역 설정에서 사용자명/비밀번호가 자동으로 적용되었습니다.")
+            QMessageBox.information(self, "성공", f"사이트가 추가되었습니다! (ID: {site_id})")
             self.cancel_inline_site()  # 폼 초기화 및 닫기
             self.load_sites()  # 사이트 목록 새로고침
         except Exception as e:
@@ -10376,24 +11254,28 @@ class MainWindow(QMainWindow):
         """인라인 폼 취소 및 초기화"""
         self.inline_url_edit.clear()
         self.inline_category_edit.setValue(1)
+        self.inline_username_edit.clear()
+        self.inline_password_edit.clear()
+        self.inline_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.inline_password_toggle_btn.setText("👁️")
         self.inline_thumbnail_edit.clear()
         self.inline_keywords_edit.clear()
         self.add_site_form.hide()
         self.add_site_btn.setText("➕ 새 사이트 추가")
-        # 보라색 스타일로 복원
-        self.add_site_btn.setObjectName("purpleButton")
+        # 기본 상태: 빨간 스타일로 복원
+        self.add_site_btn.setObjectName("addSiteButton")
         self.add_site_btn.setStyleSheet(f"""
-            QPushButton#purpleButton {{
-                background-color: #6E2B93;
+            QPushButton#addSiteButton {{
+                background-color: #FF1744;
                 color: white;
                 font-weight: 800;
-                padding: 12px 24px;
-                border-radius: 6px;
-                border: 1px solid #5A2278;
-                font-size: 14px;
+                padding: 10px 15px;
+                border-radius: 8px;
+                border: 1px solid #D5002F;
+                font-size: 16px;
             }}
-            QPushButton#purpleButton:hover {{
-                background-color: #8333AF;
+            QPushButton#addSiteButton:hover {{
+                background-color: #FF4569;
             }}
         """)
 
@@ -10430,9 +11312,6 @@ class MainWindow(QMainWindow):
                 
             print(f"사이트 데이터 타입: {type(sites_data)}, 개수: {len(sites_data)}")
             
-            # 키워드 300개 미만 사이트 체크
-            low_keyword_sites = []
-            
             for site in sites_data:
                 # 모든 사이트를 표시 (활성화된 사이트와 비활성화된 사이트 모두)
                 site_widget = SiteWidget(site)
@@ -10442,30 +11321,10 @@ class MainWindow(QMainWindow):
                 site_widget.delete_requested.connect(self.delete_site)
                 site_widget.toggle_requested.connect(self.toggle_site_active)
                 self.sites_layout.insertWidget(self.sites_layout.count() - 1, site_widget)
-                
-                # 키워드 개수 체크 (활성화된 사이트만)
-                if site.get("active", True):
-                    keyword_file = site.get("keyword_file", "")
-                    if keyword_file:
-                        keyword_path = os.path.join(get_base_path(), "setting", "keywords", keyword_file)
-                        if os.path.exists(keyword_path):
-                            try:
-                                with open(keyword_path, 'r', encoding='utf-8') as f:
-                                    lines = [line.strip() for line in f.readlines() if line.strip() and not line.strip().startswith('#')]
-                                    keyword_count = len(lines)
-                                    if keyword_count < 300:
-                                        site_name = site.get("name", "알 수 없음")
-                                        low_keyword_sites.append((site_name, keyword_count))
-                            except Exception as e:
-                                print(f"키워드 파일 읽기 오류 ({keyword_file}): {e}")
             
             # 시작 사이트 드롭다운 업데이트
             self.update_start_site_combo(sites_data)
             self.update_monitoring_settings()
-            
-            # 키워드 부족 경고창 표시 (비차단, 백그라운드에서 표시)
-            if low_keyword_sites:
-                QTimer.singleShot(500, lambda: self.show_detailed_low_keyword_warning(low_keyword_sites))
 
             # 동적으로 생성된 사이트 위젯까지 폰트 규칙 통일
             self.apply_typography_system()
@@ -10478,35 +11337,8 @@ class MainWindow(QMainWindow):
         pass
     
     def show_detailed_low_keyword_warning(self, low_keyword_sites):
-        """키워드 300개 미만 상세 경고 메시지 표시 (비차단)"""
-        try:
-            # 사이트별 상세 정보 생성
-            warning_msg = f"⚠️ 총 {len(low_keyword_sites)}개 사이트의 키워드가 300개 미만입니다:\n\n"
-            
-            for site_name, count in low_keyword_sites:
-                warning_msg += f"• {site_name}: 현재 {count}개\n"
-            
-            warning_msg += "\n⚠️ 키워드가 부족하면 포스팅이 조기에 중단될 수 있습니다."
-            warning_msg += "\n💡 Keywords 폴더에서 키워드를 추가해주세요."
-            
-            # 비차단 메시지 박스 (경고 아이콘 없이 소리 차단)
-            msg_box = QMessageBox(self)
-            msg_box.setIcon(QMessageBox.Icon.NoIcon)  # 경고음 방지
-            msg_box.setOption(QMessageBox.Option.DontUseNativeDialog, True)  # OS 기본 사운드 비활성화
-            msg_box.setWindowTitle("키워드 부족 경고")
-            msg_box.setText(warning_msg)
-            msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
-            msg_box.setModal(False)  # 비차단 모드
-            msg_box.setStyleSheet(self.get_message_box_stylesheet())
-            
-            # 🔥 메시지 박스에 프로그램 아이콘 적용
-            if self.windowIcon():
-                msg_box.setWindowIcon(self.windowIcon())
-            
-            msg_box.show()
-            
-        except Exception as e:
-            print(f"경고창 표시 오류: {e}")
+        """키워드 부족 팝업 사용 중지 (설정 탭의 빨간 표시로 대체)"""
+        return
 
     def update_start_site_combo(self, sites_data):
         """사이트 드롭다운 업데이트"""
@@ -10574,12 +11406,15 @@ class MainWindow(QMainWindow):
         if site_data:
             file_path, _ = QFileDialog.getOpenFileName(
                 self, f"{site_data['name']} 썸네일 이미지 선택",
-                os.path.join(get_base_path(), "setting", "images"),
-                "이미지 파일 (*.jpg *.jpeg *.png)"
+                SETTING_IMAGES_DIR,
+                "이미지 파일 (*.jpg *.jpeg)"
             )
             if file_path:
-                filename = os.path.basename(file_path)
+                filename, normalized_path = self._prepare_thumbnail_image_file(file_path)
+                if not filename:
+                    return
                 site_data["thumbnail_image"] = filename
+                site_data["thumbnail_source_path"] = normalized_path
                 if self.config_manager.update_site(site_id, site_data):
                     QMessageBox.information(self, "성공", f"썸네일 이미지가 '{filename}'로 변경되었습니다!")
                     self.load_sites()
@@ -11377,7 +12212,7 @@ class MainWindow(QMainWindow):
                 'gemini_key': self.gemini_key_edit.text().strip(),
                 'default_ai': gui_default_ai,
                 'ai_mode_text': self.ai_mode_combo.currentText() if hasattr(self, 'ai_mode_combo') else "",
-                'posting_mode': self.posting_mode_combo.currentText() if self.posting_mode_combo else "",
+                'posting_mode': self._get_choice_card_value(self.posting_mode_combo) if self.posting_mode_combo else "",
                 'wait_time': self.wait_time_edit.text().strip(),
                 'username': self.common_username_edit.text().strip(),
                 'password': self.common_password_edit.text().strip()
@@ -11474,14 +12309,10 @@ class MainWindow(QMainWindow):
         """모니터링 탭 AI 모드 옵션 동기화 (레거시 함수명 유지)"""
         if not self.ai_model_combo:
             return
-        self.ai_model_combo.blockSignals(True)
-        self.ai_model_combo.clear()
-        self.ai_model_combo.addItems(["웹사이트 로그인", "API 사용"])
         if self._is_web_mode():
-            self.ai_model_combo.setCurrentText("웹사이트 로그인")
+            self._set_choice_card_value(self.ai_model_combo, "웹사이트 로그인", emit_signal=False)
         else:
-            self.ai_model_combo.setCurrentText("API 사용")
-        self.ai_model_combo.blockSignals(False)
+            self._set_choice_card_value(self.ai_model_combo, "API 사용", emit_signal=False)
 
     def on_setting_changed(self):
         """설정 변경 시 호출되는 함수 - 모니터링 탭 실시간 업데이트"""
@@ -11526,6 +12357,8 @@ class MainWindow(QMainWindow):
 
             # 새 포스팅 시작 시 이전 오류 상태 초기화
             self._latest_error_message = ""
+            self._latest_error_payload = ""
+            self._last_error_signature = ""
             self.update_copy_error_button_visibility()
 
             # 활성 사이트 확인
@@ -11620,97 +12453,172 @@ class MainWindow(QMainWindow):
             self.is_posting = False
             self._safe_update_button_states()
 
+    def _is_error_message(self, message: str) -> bool:
+        msg = str(message or "").strip()
+        if not msg:
+            return False
+        # '키워드 부족'은 운영 알림으로 취급 (오류 아님)
+        if "키워드 부족" in msg:
+            return False
+        if msg.startswith("❌"):
+            return True
+        keywords = ["오류", "실패", "exception", "traceback", "error", "failed"]
+        msg_lower = msg.lower()
+        return any(k in msg_lower for k in keywords) or any(k in msg for k in ["오류", "실패"])
+
+    def _append_progress_line(self, message: str):
+        """진행 상태창에 로그 1줄을 안전하게 추가"""
+        if not hasattr(self, 'progress_text') or self.progress_text is None:
+            print("progress_text 없음 또는 None")
+            return
+
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        simple_message = f"[{timestamp}] {message}"
+        countdown_prefix = "⏳ 다음 포스팅까지 남은 시간:"
+
+        current_text = self.progress_text.toPlainText()
+        cursor = self.progress_text.textCursor()
+        user_has_selection = cursor.hasSelection()
+        scrollbar = self.progress_text.verticalScrollBar()
+        was_at_bottom = True
+        if scrollbar is not None:
+            was_at_bottom = scrollbar.value() >= (scrollbar.maximum() - 2)
+
+        # 카운트다운 메시지는 항상 "한 줄"만 유지
+        if countdown_prefix in message:
+            # 드래그 선택/복사 중에는 전체 텍스트 재구성을 잠시 건너뛴다.
+            if user_has_selection:
+                return
+            lines = current_text.splitlines() if current_text else []
+            if lines and countdown_prefix in lines[-1]:
+                lines[-1] = simple_message
+            else:
+                lines = [line for line in lines if countdown_prefix not in line]
+                lines.append(simple_message)
+            new_text = "\n".join(lines)
+            self.progress_text.setPlainText(new_text)
+        elif current_text.strip():
+            insert_cursor = self.progress_text.textCursor()
+            insert_cursor.movePosition(QTextCursor.MoveOperation.End)
+            insert_cursor.insertText("\n" + simple_message)
+        else:
+            self.progress_text.setPlainText(simple_message)
+
+        # 사용자가 선택/스크롤 중이 아닐 때만 자동으로 하단 고정
+        if (not user_has_selection) and was_at_bottom:
+            end_cursor = self.progress_text.textCursor()
+            end_cursor.movePosition(QTextCursor.MoveOperation.End)
+            self.progress_text.setTextCursor(end_cursor)
+            if scrollbar:
+                scrollbar.setValue(scrollbar.maximum())
+            self.progress_text.ensureCursorVisible()
+
+        self.progress_text.update()
+        self.progress_text.repaint()
+        QApplication.processEvents()
+
+    def _build_error_guide(self, error_message: str):
+        text = str(error_message or "").strip()
+        lower = text.lower()
+        solutions = [
+            "프로그램을 중지 후 다시 시작해 동일 오류가 재현되는지 확인",
+            "설정의 사이트 URL/계정/API 키를 다시 저장 후 재시도",
+            "같은 오류가 반복되면 아래 '데이비 전달 메시지'를 전달"
+        ]
+
+        if "api" in lower and ("invalid" in lower or "permission" in lower or "quota" in lower):
+            solutions = [
+                "Gemini API 키 유효성/권한/할당량(quota) 상태 확인",
+                "새 API 키 발급 후 'Gemini API 설정'에서 저장",
+                "무료 키 제한이면 잠시 후 재시도 또는 과금 키 사용"
+            ]
+        elif ("로그인" in text) or ("login" in lower) or ("gemini" in lower):
+            solutions = [
+                "웹사이트 로그인 버튼으로 브라우저를 연 뒤 Google 로그인 완료",
+                "2차 인증/보안 확인을 완료하고 Gemini 페이지가 열리는지 확인",
+                "로그인 세션 꼬임 시 브라우저를 모두 닫고 다시 시작"
+            ]
+        elif "키워드" in text:
+            solutions = [
+                "setting/keywords 파일에 키워드를 충분히 추가",
+                "비어있는 줄/잘못된 인코딩 줄을 정리 후 저장",
+                "사이트별 keyword 파일 경로 연결 상태 확인"
+            ]
+        elif ("timeout" in lower) or ("timed out" in lower) or ("연결" in text):
+            solutions = [
+                "네트워크 상태와 대상 사이트 접속 가능 여부 확인",
+                "잠시 후 다시 시도하거나 포스팅 간격을 늘려 재시도",
+                "보안 프로그램/방화벽이 브라우저 통신을 막는지 확인"
+            ]
+
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        payload = (
+            "데이비에게 전달할 메시지:\n"
+            f"[발생 시각] {ts}\n"
+            f"[오류 내용] {text}\n"
+            "[재현 여부] 재현됨/간헐적 (선택)\n"
+            "[추가 메모] 오류 직전 수행 작업 1줄"
+        )
+        solution_text = " / ".join(solutions)
+        return solution_text, payload
+
+    def _append_error_guide_once(self, error_message: str):
+        text = str(error_message or "").strip()
+        if not text:
+            return
+        signature = text
+        if signature == str(getattr(self, "_last_error_signature", "")):
+            return
+        self._last_error_signature = signature
+
+        solution_text, payload = self._build_error_guide(text)
+        self._latest_error_payload = payload
+        self._append_progress_line(f"🛠 해결 방법: {solution_text}")
+        self._append_progress_line(f"📨 {payload}")
+        self.update_copy_error_button_visibility()
+
     def update_posting_status(self, message):
         """포스팅 상태 업데이트"""
         try:
+            msg_text = str(message).strip() if isinstance(message, str) else str(message)
+
             if isinstance(message, str):
-                msg_text = message.strip()
-                if msg_text.startswith("❌") or ("오류" in msg_text):
+                if self._is_error_message(msg_text):
                     self._latest_error_message = msg_text
                     self.update_copy_error_button_visibility()
 
-            # 현재 포스팅 중인 사이트 정보 파싱 및 업데이트
             self.parse_and_update_current_site(message)
-            
-            # GUI 업데이트는 항상 메인 스레드에서 실행
-            if hasattr(self, 'progress_text') and self.progress_text is not None:
-                from datetime import datetime
-                timestamp = datetime.now().strftime("%H:%M:%S")
-                simple_message = f"[{timestamp}] {message}"
-                countdown_prefix = "⏳ 다음 포스팅까지 남은 시간:"
-                
-                try:
-                    current_text = self.progress_text.toPlainText()
-                    
-                    # 카운트다운 메시지는 항상 "한 줄"만 유지
-                    if countdown_prefix in message:
-                        lines = current_text.splitlines() if current_text else []
-                        if lines and countdown_prefix in lines[-1]:
-                            # 직전 줄이 카운트다운이면 마지막 줄만 교체
-                            lines[-1] = simple_message
-                        else:
-                            # 기존 카운트다운 줄이 중간에 남아있으면 제거 후 마지막에 추가
-                            lines = [line for line in lines if countdown_prefix not in line]
-                            lines.append(simple_message)
-                        new_text = "\n".join(lines)
-                    # 일반 메시지는 기존처럼 새 줄 추가
-                    elif current_text.strip():
-                        new_text = current_text + "\n" + simple_message
-                    else:
-                        new_text = simple_message
-                    
-                    # 텍스트 업데이트
-                    self.progress_text.setPlainText(new_text)
-                    
-                    # 🔥 항상 맨 아래로 스크롤 (최신 로그가 보이도록) - 강화된 스크롤 로직
-                    # 방법 1: 커서를 문서 끝으로 이동
-                    cursor = self.progress_text.textCursor()
-                    cursor.movePosition(cursor.MoveOperation.End)
-                    self.progress_text.setTextCursor(cursor)
-                    
-                    # 방법 2: 스크롤바를 최대값으로 설정
-                    scrollbar = self.progress_text.verticalScrollBar()
-                    if scrollbar:
-                        scrollbar.setValue(scrollbar.maximum())
-                    
-                    # 방법 3: ensureCursorVisible() 호출
-                    self.progress_text.ensureCursorVisible()
-                    
-                    # GUI 갱신
-                    self.progress_text.update()
-                    self.progress_text.repaint()
-                    QApplication.processEvents()
-                    
-                    # GUI 업데이트 로그 제거 (너무 많아서 번잡함)
-                    
-                except Exception as gui_error:
-                    print(f"[GUI ERROR] {gui_error}")
-                    import traceback
-                    traceback.print_exc()
-            else:
-                print(f"progress_text 없음 또는 None")
-                    
+
+            try:
+                self._append_progress_line(str(message))
+            except Exception as gui_error:
+                print(f"[GUI ERROR] {gui_error}")
+                import traceback
+                traceback.print_exc()
+                return
+
+            if isinstance(message, str) and self._is_error_message(msg_text):
+                self._append_error_guide_once(msg_text)
+
         except Exception as e:
             print(f"❌ update_posting_status 전체 오류: {e}")
             import traceback
             traceback.print_exc()
 
-    def copy_error_for_creator(self, error_message, source=""):
+    def copy_error_for_creator(self, error_message, source="", payload_override=""):
         """오류 메시지를 제작자 전달용 포맷으로 클립보드에 복사"""
         try:
+            payload = str(payload_override or "").strip()
             text = str(error_message or "").strip()
-            if not text:
-                return
 
-            from datetime import datetime
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            header = "제작자에게 전달:"
-            source_line = f"\n출처: {source}" if source else ""
-            payload = f"{header}\n[{ts}]{source_line}\n오류 내용: {text}"
-
-            # 동일한 에러 문구 연속 복사는 방지
-            if getattr(self, "_last_creator_copy_payload", "") == payload:
-                return
+            if not payload:
+                if not text:
+                    return
+                _, payload = self._build_error_guide(text)
+                if source:
+                    payload = f"{payload}\n[출처] {source}"
 
             cb = QApplication.clipboard()
             if cb is not None:
@@ -11721,10 +12629,11 @@ class MainWindow(QMainWindow):
 
     def copy_latest_error_for_creator(self):
         """최근 오류를 제작자 전달 포맷으로 복사"""
-        latest = getattr(self, "_latest_error_message", "").strip()
-        if latest:
-            self.copy_error_for_creator(latest, source="진행 상태 로그")
-            self.update_posting_status("📋 오류 내용이 '제작자에게 전달' 형식으로 복사되었습니다.")
+        latest = str(getattr(self, "_latest_error_message", "") or "").strip()
+        latest_payload = str(getattr(self, "_latest_error_payload", "") or "").strip()
+        if latest or latest_payload:
+            self.copy_error_for_creator(latest, source="진행 상태 로그", payload_override=latest_payload)
+            self.update_posting_status("📋 데이비 전달 메시지를 클립보드에 복사했습니다.")
 
     def update_copy_error_button_visibility(self):
         """최근 오류 존재 여부에 따라 복사 버튼 표시/숨김"""
@@ -11733,7 +12642,8 @@ class MainWindow(QMainWindow):
             if btn is None:
                 return
             latest = str(getattr(self, "_latest_error_message", "") or "").strip()
-            btn.setVisible(bool(latest))
+            payload = str(getattr(self, "_latest_error_payload", "") or "").strip()
+            btn.setVisible(bool(latest or payload))
         except Exception:
             pass
 
@@ -11813,6 +12723,8 @@ class MainWindow(QMainWindow):
         self.is_paused = False
         self.stop_next_posting_timer()
         self._latest_error_message = ""
+        self._latest_error_payload = ""
+        self._last_error_signature = ""
         self.update_copy_error_button_visibility()
         
         # 워커 정리
@@ -11838,6 +12750,7 @@ class MainWindow(QMainWindow):
         """포스팅 오류 처리 및 키워드 부족 알림"""
         print(f"❌ 포스팅 중 오류 발생: {error_message}")
         self._latest_error_message = str(error_message)
+        self._append_error_guide_once(str(error_message))
         self.update_copy_error_button_visibility()
         
         # 키워드 부족 메시지인지 확인
@@ -11845,28 +12758,8 @@ class MainWindow(QMainWindow):
             parts = error_message.split("|")
             if len(parts) == 3:
                 _, site_name, keyword_count = parts
-                
-                # 비차단 알림창 표시
-                warning_msg = f"⚠️ {site_name}의 키워드가 부족합니다!\n\n"
-                warning_msg += f"현재 남은 키워드: {keyword_count}개\n"
-                warning_msg += f"권장 키워드 수: 300개 이상\n\n"
-                warning_msg += "💡 Keywords 폴더에서 키워드를 추가해주세요.\n"
-                warning_msg += "⚠️ 키워드가 부족하면 포스팅이 조기에 중단될 수 있습니다."
-                
-                msg_box = QMessageBox(self)
-                msg_box.setIcon(QMessageBox.Icon.NoIcon)  # 경고음 방지
-                msg_box.setOption(QMessageBox.Option.DontUseNativeDialog, True)  # OS 기본 사운드 비활성화
-                msg_box.setWindowTitle("키워드 부족 경고")
-                msg_box.setText(warning_msg)
-                msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
-                msg_box.setModal(False)  # 비차단 모드
-                
-                # 🔥 메시지 박스에 프로그램 아이콘 적용
-                if self.windowIcon():
-                    msg_box.setWindowIcon(self.windowIcon())
-                
-                msg_box.show()
-                
+                self.update_posting_status(f"⚠️ {site_name}: 키워드 {keyword_count}개 (300개 미만)")
+                self.load_sites()  # 설정 탭 목록의 키워드 색상을 즉시 반영
                 return  # 포스팅 중지하지 않고 계속 진행
         
         # 일반 오류인 경우 워커 정리
@@ -11885,17 +12778,7 @@ class MainWindow(QMainWindow):
             wait_time_setting = str(
                 self.config_manager.data.get("global_settings", {}).get("default_wait_time", "3~5")
             ).strip()
-            if "~" in wait_time_setting or "-" in wait_time_setting:
-                separator = "~" if "~" in wait_time_setting else "-"
-                min_wait, max_wait = map(int, wait_time_setting.split(separator))
-                min_wait = max(1, min_wait)
-                max_wait = max(min_wait, max_wait)
-                min_seconds = min_wait * 60
-                max_seconds = max_wait * 60
-                return random.randint(min_seconds, max_seconds)
-            else:
-                wait_minutes = max(1, int(wait_time_setting))
-            return wait_minutes * 60
+            return resolve_wait_setting_to_seconds(wait_time_setting, default_minutes=default_minutes)
         except Exception:
             return max(1, default_minutes) * 60
 
@@ -12421,6 +13304,471 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "오류", f"images 폴더를 열 수 없습니다:\n{e}")
 
+    def open_thumbnail_editor(self):
+        """썸네일 전용 편집 다이얼로그 (기능 중심)"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("썸네일 관리")
+        dialog.setModal(True)
+        dialog.setSizeGripEnabled(True)
+        dialog.setWindowFlag(Qt.WindowType.WindowMinMaxButtonsHint, True)
+        dialog.setMinimumSize(980, 700)
+        dialog.resize(1100, 760)
+
+        root = QVBoxLayout(dialog)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(10)
+
+        top_guide = QLabel("썸네일 배경 JPG와 예시 문구를 사용해 텍스트 스타일을 조정할 수 있습니다.")
+        root.addWidget(top_guide)
+
+        container = QHBoxLayout()
+        container.setSpacing(12)
+        root.addLayout(container, 1)
+
+        left_widget = QWidget()
+        left_layout = QFormLayout(left_widget)
+        left_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        left_layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        left_layout.setSpacing(8)
+        container.addWidget(left_widget, 1)
+
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setSpacing(8)
+        container.addWidget(right_widget, 1)
+
+        # 사이트/배경 이미지 선택
+        site_combo = QComboBox()
+        sites = self.config_manager.data.get("sites", [])
+        for idx, site in enumerate(sites):
+            site_id = site.get("id", idx)
+            site_name = site.get("name") or site.get("url") or f"사이트 {idx + 1}"
+            site_combo.addItem(site_name, site_id)
+        left_layout.addRow("적용 사이트", site_combo)
+
+        image_row = QHBoxLayout()
+        image_combo = QComboBox()
+        image_combo.addItems(_list_available_thumbnail_names())
+        image_row.addWidget(image_combo, 1)
+        add_image_btn = QPushButton("파일 추가")
+        image_row.addWidget(add_image_btn)
+        left_layout.addRow("배경 이미지", image_row)
+
+        # 스타일 로드
+        global_settings = self.config_manager.data.setdefault("global_settings", {})
+        style = load_thumbnail_style(global_settings)
+        favorite_fonts = list(global_settings.get("thumbnail_favorite_fonts", []) or [])
+        favorite_only_mode = False
+
+        sample_edit = QLineEdit(style.get("sample_text", "썸네일 예시 문구"))
+        left_layout.addRow("예시 문구", sample_edit)
+
+        font_row = QHBoxLayout()
+        font_combo = QComboBox()
+        font_view = font_combo.view()
+        if font_view is not None:
+            font_combo_delegate = FontFavoriteComboDelegate(font_view)
+            font_view.setItemDelegate(font_combo_delegate)
+        font_row.addWidget(font_combo, 1)
+        favorite_only_btn = QPushButton("즐겨찾기만")
+        favorite_only_btn.setCheckable(True)
+        favorite_only_btn.setChecked(favorite_only_mode)
+        font_row.addWidget(favorite_only_btn)
+        left_layout.addRow("글꼴", font_row)
+
+        def normalize_font_name(value: str) -> str:
+            raw = str(value or "").replace(" ★", "").replace(" ☆", "").strip()
+            return "auto" if raw == "자동" else raw
+
+        def current_font_key() -> str:
+            idx = font_combo.currentIndex()
+            if idx >= 0:
+                item_name = str(font_combo.itemData(idx, FontFavoriteComboDelegate.NAME_ROLE) or "").strip()
+                if item_name:
+                    return item_name
+            return normalize_font_name(font_combo.currentText())
+
+        def scan_font_names():
+            entries = []
+            seen = set()
+            for path in [SETTING_FONTS_DIR, SETTING_FONTS_TTF_DIR, SETTING_IMAGES_TTF_DIR]:
+                if not os.path.isdir(path):
+                    continue
+                for root_dir, _, files in os.walk(path):
+                    for name in files:
+                        low = name.lower()
+                        if not low.endswith((".ttf", ".ttc", ".otf")):
+                            continue
+                        key = low
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        entries.append(name)
+            for base_name in ["timon.ttf", "malgun.ttf", "gulim.ttc", "NanumGothic.ttf"]:
+                key = base_name.lower()
+                if key not in seen:
+                    seen.add(key)
+                    entries.append(base_name)
+            return sorted(entries, key=lambda x: x.lower())
+
+        def populate_font_combo(selected_name=None):
+            nonlocal favorite_fonts, favorite_only_mode
+            available = scan_font_names()
+            selected = normalize_font_name(selected_name or style.get("font_family", "auto"))
+            ordered = ["auto"]
+            for fav in favorite_fonts:
+                fav_name = normalize_font_name(fav)
+                if fav_name in available and fav_name not in ordered:
+                    ordered.append(fav_name)
+            if not favorite_only_mode:
+                for name in available:
+                    if name not in ordered:
+                        ordered.append(name)
+
+            font_combo.blockSignals(True)
+            font_combo.clear()
+            for name in ordered:
+                if name == "auto":
+                    font_combo.addItem("자동")
+                else:
+                    font_combo.addItem(display_font_name(name))
+                idx = font_combo.count() - 1
+                font_combo.setItemData(idx, name in favorite_fonts, FontFavoriteComboDelegate.STAR_ROLE)
+                font_combo.setItemData(idx, name, FontFavoriteComboDelegate.NAME_ROLE)
+
+            if selected:
+                for i in range(font_combo.count()):
+                    if normalize_font_name(font_combo.itemText(i)) == selected:
+                        font_combo.setCurrentIndex(i)
+                        break
+                else:
+                    font_combo.setCurrentIndex(0)
+            font_combo.blockSignals(False)
+
+        def toggle_font_favorite():
+            nonlocal favorite_fonts
+            current = current_font_key()
+            if not current or current == "auto":
+                return
+            if current in favorite_fonts:
+                favorite_fonts = [f for f in favorite_fonts if normalize_font_name(f) != current]
+            else:
+                favorite_fonts.append(current)
+            global_settings["thumbnail_favorite_fonts"] = favorite_fonts
+            self.config_manager.save_setting()
+            current_font = current
+            populate_font_combo(current_font)
+            update_preview()
+
+        def on_font_view_pressed(index):
+            nonlocal favorite_fonts
+            if not index.isValid():
+                return
+            item_name = str(index.data(FontFavoriteComboDelegate.NAME_ROLE) or "").strip()
+            if not item_name or item_name == "auto":
+                return
+            view = font_combo.view()
+            if view is None:
+                return
+            rect = view.visualRect(index)
+            vp = view.viewport()
+            if vp is None:
+                return
+            pos = vp.mapFromGlobal(QCursor.pos())
+            if pos.x() >= rect.right() - FontFavoriteComboDelegate.STAR_WIDTH:
+                if item_name in favorite_fonts:
+                    favorite_fonts = [f for f in favorite_fonts if normalize_font_name(f) != item_name]
+                else:
+                    favorite_fonts.append(item_name)
+                global_settings["thumbnail_favorite_fonts"] = favorite_fonts
+                self.config_manager.save_setting()
+                current_font = current_font_key() or item_name
+                populate_font_combo(current_font)
+                update_preview()
+                QTimer.singleShot(0, font_combo.showPopup)
+
+        def toggle_favorite_only(checked):
+            nonlocal favorite_only_mode
+            favorite_only_mode = bool(checked)
+            populate_font_combo(normalize_font_name(font_combo.currentText()))
+            update_preview()
+
+        font_view_for_signal = font_combo.view()
+        if font_view_for_signal is not None:
+            font_view_for_signal.pressed.connect(on_font_view_pressed)
+        favorite_only_btn.toggled.connect(toggle_favorite_only)
+        populate_font_combo(style.get("font_family", "auto"))
+
+        size_row = QHBoxLayout()
+        minus_btn = QPushButton("-")
+        plus_btn = QPushButton("+")
+        font_size_spin = QSpinBox()
+        font_size_spin.setRange(10, 120)
+        font_size_spin.setValue(int(style.get("font_size", 28)))
+        size_row.addWidget(minus_btn)
+        size_row.addWidget(font_size_spin, 1)
+        size_row.addWidget(plus_btn)
+        left_layout.addRow("폰트 크기", size_row)
+
+        style_row = QHBoxLayout()
+        bold_chk = QCheckBox("B")
+        italic_chk = QCheckBox("I")
+        underline_chk = QCheckBox("U")
+        bold_chk.setChecked(bool(style.get("bold", True)))
+        italic_chk.setChecked(bool(style.get("italic", False)))
+        underline_chk.setChecked(bool(style.get("underline", False)))
+        style_row.addWidget(bold_chk)
+        style_row.addWidget(italic_chk)
+        style_row.addWidget(underline_chk)
+        style_row.addStretch()
+        left_layout.addRow("글자 스타일", style_row)
+
+        def create_color_control(label_text, mode_value, color_value, allow_none=False):
+            row = QHBoxLayout()
+            initial_mode = str(mode_value or "auto")
+            initial_color = str(color_value or "").strip() or "#000000"
+
+            color_edit = QLineEdit(initial_color)
+            row.addWidget(color_edit, 1)
+            mode_combo = QComboBox()
+            modes = ["자동"]
+            if allow_none:
+                modes.append("없음")
+            mode_combo.addItems(modes)
+            if allow_none and initial_mode == "none":
+                mode_combo.setCurrentText("없음")
+            else:
+                mode_combo.setCurrentText("자동")
+            row.addWidget(mode_combo)
+            pick_btn = QPushButton("색상")
+            row.addWidget(pick_btn)
+
+            def pick_color():
+                qcolor = QColorDialog.getColor(parent=dialog)
+                if qcolor.isValid():
+                    color_edit.setText(qcolor.name())
+                    mode_combo.setCurrentText("자동")
+                    update_preview()
+
+            pick_btn.clicked.connect(pick_color)
+            left_layout.addRow(label_text, row)
+            return color_edit, mode_combo
+
+        text_bg_edit, text_bg_mode = create_color_control("글자 배경색", style.get("text_bg_mode", "auto"), style.get("text_bg_color", "#FFFFFF"), allow_none=True)
+        text_color_edit, text_color_mode = create_color_control("글자색", style.get("text_color_mode", "auto"), style.get("text_color", "#FFFFFF"), allow_none=False)
+        stroke_color_edit, stroke_mode = create_color_control("테두리색", style.get("stroke_mode", "auto"), style.get("stroke_color", "#000000"), allow_none=True)
+
+        stroke_width_spin = QSpinBox()
+        stroke_width_spin.setRange(0, 20)
+        stroke_width_spin.setValue(int(style.get("stroke_width", 2)))
+        left_layout.addRow("테두리 두께(px)", stroke_width_spin)
+
+        shadow_use_chk = QCheckBox("그림자 사용")
+        shadow_use_chk.setChecked(bool(style.get("shadow_enabled", False)))
+        left_layout.addRow("", shadow_use_chk)
+
+        shadow_color_edit, shadow_mode = create_color_control("그림자색", style.get("shadow_color_mode", "auto"), style.get("shadow_color", "#000000"), allow_none=False)
+
+        shadow_angle_spin = QSpinBox()
+        shadow_angle_spin.setRange(0, 360)
+        shadow_angle_spin.setValue(int(style.get("shadow_angle", 315)))
+        left_layout.addRow("그림자 각도", shadow_angle_spin)
+
+        shadow_opacity_spin = QSpinBox()
+        shadow_opacity_spin.setRange(0, 100)
+        shadow_opacity_spin.setValue(int(style.get("shadow_opacity", 40)))
+        left_layout.addRow("그림자 불투명도(%)", shadow_opacity_spin)
+
+        shadow_distance_spin = QSpinBox()
+        shadow_distance_spin.setRange(0, 100)
+        shadow_distance_spin.setValue(int(style.get("shadow_distance", 10)))
+        left_layout.addRow("그림자 거리(px)", shadow_distance_spin)
+
+        shadow_blur_spin = QSpinBox()
+        shadow_blur_spin.setRange(0, 40)
+        shadow_blur_spin.setValue(int(style.get("shadow_blur", 0)))
+        left_layout.addRow("그림자 흐림(px)", shadow_blur_spin)
+
+        # 미리보기 블록을 우측 패널 정중앙에 배치
+        right_layout.addStretch(1)
+        preview_block = QWidget()
+        preview_block_layout = QVBoxLayout(preview_block)
+        preview_block_layout.setContentsMargins(0, 0, 0, 0)
+        preview_block_layout.setSpacing(8)
+        preview_title = QLabel("썸네일 미리보기")
+        preview_block_layout.addWidget(preview_title, 0, Qt.AlignmentFlag.AlignHCenter)
+        preview = QLabel("미리보기 없음")
+        preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        preview.setMinimumSize(360, 360)
+        preview.setMaximumSize(16777215, 16777215)
+        preview.setScaledContents(True)
+        preview.setStyleSheet("border: 1px dashed #B0BEC5;")
+        preview_block_layout.addWidget(preview, 0, Qt.AlignmentFlag.AlignHCenter)
+        right_layout.addWidget(preview_block, 0, Qt.AlignmentFlag.AlignCenter)
+        right_layout.addStretch(1)
+
+        def adjust_preview_square_size():
+            try:
+                # 우측 패널 가용 영역 안에서 정사각형 최대 크기 유지
+                avail_w = max(360, right_widget.width() - 24)
+                avail_h = max(360, right_widget.height() - 70)
+                side = max(360, min(avail_w, avail_h))
+                preview.setFixedSize(side, side)
+            except Exception:
+                pass
+
+        resize_filter = ResizeEventFilter(adjust_preview_square_size, dialog)
+        right_widget.installEventFilter(resize_filter)
+
+        def get_current_style():
+            def infer_color_mode(color_text: str, mode_text: str, allow_none: bool):
+                m = str(mode_text or "").strip()
+                t = str(color_text or "").strip()
+                if allow_none and m == "없음":
+                    return "none"
+                if t in ("", "자동", "auto"):
+                    return "auto"
+                if allow_none and t in ("없음", "none"):
+                    return "none"
+                return "custom"
+
+            text_bg_mode_value = infer_color_mode(text_bg_edit.text(), text_bg_mode.currentText(), allow_none=True)
+            text_color_mode_value = infer_color_mode(text_color_edit.text(), text_color_mode.currentText(), allow_none=False)
+            stroke_mode_value = infer_color_mode(stroke_color_edit.text(), stroke_mode.currentText(), allow_none=True)
+            shadow_mode_value = infer_color_mode(shadow_color_edit.text(), shadow_mode.currentText(), allow_none=False)
+
+            def normalize_color_value(mode_value: str, color_text: str):
+                if mode_value in ("auto", "none"):
+                    return "#000000"
+                return str(color_text or "").strip()
+
+            return {
+                "sample_text": sample_edit.text().strip() or "썸네일 예시 문구",
+                "font_family": current_font_key() or "auto",
+                "font_size": int(font_size_spin.value()),
+                "bold": bold_chk.isChecked(),
+                "italic": italic_chk.isChecked(),
+                "underline": underline_chk.isChecked(),
+                "text_bg_mode": text_bg_mode_value,
+                "text_bg_color": normalize_color_value(text_bg_mode_value, text_bg_edit.text()),
+                "text_color_mode": text_color_mode_value,
+                "text_color": normalize_color_value(text_color_mode_value, text_color_edit.text()),
+                "stroke_mode": stroke_mode_value,
+                "stroke_color": normalize_color_value(stroke_mode_value, stroke_color_edit.text()),
+                "stroke_width": int(stroke_width_spin.value()),
+                "shadow_enabled": shadow_use_chk.isChecked(),
+                "shadow_color_mode": shadow_mode_value,
+                "shadow_color": normalize_color_value(shadow_mode_value, shadow_color_edit.text()),
+                "shadow_angle": int(shadow_angle_spin.value()),
+                "shadow_opacity": int(shadow_opacity_spin.value()),
+                "shadow_distance": int(shadow_distance_spin.value()),
+                "shadow_blur": int(shadow_blur_spin.value()),
+            }
+
+        def current_background_path():
+            name = image_combo.currentText().strip()
+            return _resolve_site_thumbnail_source({"thumbnail_image": name, "thumbnail_source_path": ""})
+
+        def update_preview():
+            bg_path = current_background_path()
+            preview_style = load_thumbnail_style({"thumbnail_style": get_current_style()})
+            preview_text = preview_style.get("sample_text", "썸네일 예시 문구")
+            side = max(600, min(1600, int(preview.width() or 600)))
+            image = render_thumbnail_image_with_style(bg_path, preview_text, preview_style, image_size=(side, side))
+            preview_path = os.path.join(get_base_path(), "setting", "thumbnails", "__preview_thumbnail.webp")
+            os.makedirs(os.path.dirname(preview_path), exist_ok=True)
+            image.save(preview_path, "WEBP", quality=90)
+            preview.setPixmap(QPixmap(preview_path))
+
+        def add_image_file():
+            file_path, _ = QFileDialog.getOpenFileName(dialog, "썸네일 이미지 선택", SETTING_IMAGES_DIR, "이미지 파일 (*.jpg *.jpeg)")
+            if not file_path:
+                return
+            filename, _ = self._prepare_thumbnail_image_file(file_path)
+            if not filename:
+                return
+            if image_combo.findText(filename) < 0:
+                image_combo.addItem(filename)
+            image_combo.setCurrentText(filename)
+            update_preview()
+
+        def sync_site_image():
+            site_id = site_combo.currentData()
+            site_data = self.config_manager.get_site(site_id)
+            selected_name = ""
+            if site_data:
+                selected_name = str(site_data.get("thumbnail_image", "")).strip()
+            if selected_name:
+                if image_combo.findText(selected_name) < 0:
+                    image_combo.addItem(selected_name)
+                image_combo.setCurrentText(selected_name)
+            update_preview()
+
+        add_image_btn.clicked.connect(add_image_file)
+        minus_btn.clicked.connect(lambda: font_size_spin.setValue(max(10, font_size_spin.value() - 1)))
+        plus_btn.clicked.connect(lambda: font_size_spin.setValue(min(120, font_size_spin.value() + 1)))
+        site_combo.currentIndexChanged.connect(lambda _: sync_site_image())
+
+        for w in [
+            image_combo, sample_edit, font_combo, font_size_spin, bold_chk, italic_chk, underline_chk,
+            text_bg_edit, text_bg_mode, text_color_edit, text_color_mode, stroke_color_edit, stroke_mode,
+            stroke_width_spin, shadow_use_chk, shadow_color_edit, shadow_mode, shadow_angle_spin,
+            shadow_opacity_spin, shadow_distance_spin, shadow_blur_spin
+        ]:
+            if hasattr(w, "textChanged"):
+                w.textChanged.connect(update_preview)  # type: ignore[attr-defined]
+            if hasattr(w, "currentTextChanged"):
+                w.currentTextChanged.connect(update_preview)  # type: ignore[attr-defined]
+            if hasattr(w, "valueChanged"):
+                w.valueChanged.connect(update_preview)  # type: ignore[attr-defined]
+            if hasattr(w, "stateChanged"):
+                w.stateChanged.connect(lambda *_: update_preview())  # type: ignore[attr-defined]
+
+        buttons = QHBoxLayout()
+        save_btn = QPushButton("저장")
+        close_btn = QPushButton("닫기")
+        buttons.addWidget(save_btn)
+        buttons.addWidget(close_btn)
+        root.addLayout(buttons)
+
+        def save_thumbnail_settings():
+            if image_combo.count() == 0:
+                QMessageBox.warning(dialog, "오류", "적용할 썸네일 이미지가 없습니다.")
+                return
+            site_id = site_combo.currentData()
+            site_data = self.config_manager.get_site(site_id)
+            if not site_data:
+                QMessageBox.warning(dialog, "오류", "선택한 사이트 정보를 찾을 수 없습니다.")
+                return
+
+            image_name = image_combo.currentText().strip()
+            source_path = _resolve_site_thumbnail_source({"thumbnail_image": image_name, "thumbnail_source_path": ""})
+            site_data["thumbnail_image"] = image_name
+            site_data["thumbnail_source_path"] = source_path
+
+            gs = self.config_manager.data.setdefault("global_settings", {})
+            gs["thumbnail_style"] = get_current_style()
+            gs["thumbnail_favorite_fonts"] = favorite_fonts
+
+            if self.config_manager.update_site(site_id, site_data) and self.config_manager.save_setting():
+                self.load_sites()
+                self.update_all_ui_status()
+                self.update_posting_status(f"🖼️ 썸네일 저장 완료: {site_data.get('name', '사이트')} -> {image_name}")
+                QMessageBox.information(dialog, "완료", "썸네일 설정을 저장했습니다.")
+            else:
+                QMessageBox.warning(dialog, "오류", "썸네일 저장에 실패했습니다.")
+
+        save_btn.clicked.connect(save_thumbnail_settings)
+        close_btn.clicked.connect(dialog.reject)
+
+        if site_combo.count() > 0:
+            sync_site_image()
+        else:
+            update_preview()
+        dialog.setWindowState(dialog.windowState() | Qt.WindowState.WindowMaximized)
+        QTimer.singleShot(0, adjust_preview_square_size)
+        dialog.exec()
+
     def _open_folder_safely(self, folder_path):
         """폴더 열기 공통 함수 (Windows 우선)"""
         import subprocess
@@ -12615,6 +13963,18 @@ def main():
     try:
         # QApplication 생성
         app = QApplication(sys.argv)
+        # Qt 기본 다이얼로그(예: 색상 선택기) 한국어 번역 적용
+        try:
+            ko_locale = QLocale(QLocale.Language.Korean, QLocale.Country.SouthKorea)
+            QLocale.setDefault(ko_locale)
+            translator = QTranslator(app)
+            trans_dir = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+            if translator.load(ko_locale, "qtbase", "_", trans_dir):
+                app.installTranslator(translator)
+                global _QT_KO_TRANSLATOR
+                _QT_KO_TRANSLATOR = translator
+        except Exception:
+            pass
         # QApplication 생성 완료
         startup_splash = None
         try:

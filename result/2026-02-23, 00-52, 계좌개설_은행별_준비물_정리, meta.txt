@@ -1,0 +1,81 @@
+[STEP] 수익용 1단계
+[PROVIDER] web-gemini
+[SITE] barogagi.it-hotissue.com
+[KEYWORD] 계좌개설 은행별 준비물 정리
+
+[PROMPT]
+﻿너는 10년 경력의 SEO 콘텐츠 작가야. '~해요'체를 사용하여 한국어로 고품질의 글을 작성해.
+{keywords} 관련된 내용만 작성해. 다음 작업 추천 멘트 금지야.
+
+계좌개설 은행별 준비물 정리를 바탕으로, 구글 seo 친화적인 글의 '제목', '서론', '링크버튼'을 작성해.
+반드시 아래 HTML 구조를 지켜서 작성해.
+
+'제목 지침'
+-제목 형식: '계좌개설 은행별 준비물 정리 | 숫자가 들어간 후킹문구' 형식 (예: "인덕션 청소 | 5분만에 끝내는 완벽 청소법")
+-글자수: 50자 내외, 숫자 필수 포함 (N배, N가지, N초, N분, N년 중 한 가지 사용)
+-후킹 요소: 혜택 강조, 고통 해결, 행동 유도 멘트, 최신성, vs 형식, 노하우 등 독자의 눈에 띄고 시선을 사로잡을만한 문구
+
+'서론 지침'
+-문장은 '~해요'체로 작성하며, 전문 용어 쓸 때는 초등학생도 이해할 수 있도록 쉽게 풀어서 설명해.
+-서론의 핵심 역할은 독자로 하여금, 글 끝까지 읽게 만드는 거야. '안녕하세요'와 같은 형식적인 인사 금지.
+-독자가 해당 키워드로 검색한 의도를 파악해서, 서론에 반영해.
+-서론 첫 문장에 계좌개설 은행별 준비물 정리를 적절하게 포함해서 작성해.
+-독자의 흥미를 이끌 첫 문장과 내 글을 읽으면 문제를 해결할 수 있는 느낌을 담아서 작성해.
+-검색 엔진(구글 로봇, 네이버 로봇 등)이 주제를 쉽게 이해할 수 있도록 해.
+-중요한 내용은 <strong> 또는 <u>코드를 사용해.
+
+'링크버튼 작성 지침'
+-계좌개설 은행별 준비물 정리를 분석해서 '앱', '설치', '다운로드', '어플', '애플리케이션' 등 다운로드 관련 키워드가 포함되어 있는지 확인해!
+-다운로드 관련 키워드가 있으면 → 다운로드 버튼 4개 출력 (아래 형식2 사용)
+-다운로드 관련 키워드가 없으면 → 일반 링크 버튼 1개 출력 (아래 형식1 사용)
+  
+'출력 형식'
+반드시 아래 3가지만 출력해
+1. 제목 (순수 텍스트, 특수문자 없이)
+2. 서론 (<p> 태그로 감싼 내용)
+3. 링크 버튼 (형식1 또는 형식2 중 하나만 작성)
+
+'출력 예시'
+<p>서론 내용 (~해요체로 200자 이상)</p>
+
+【형식1】다운로드 관련 키워드가 아닌 경우:
+<p style="text-align:center;" data-ke-size="size16"><b>🎁 아래 <span style="color:#ee2323;">버튼</span>을 통해, 지금 바로 해보세요!</b></p>
+<div><center><a class="blink" href="실제 유용한 URL" target="_blank">구체적인 앵커 텍스트<br>바로가기</a></center></div>
+
+【형식2】'앱', '설치', '다운로드' 등 다운로드 관련 키워드인 경우:
+<p style="text-align:center;" data-ke-size="size16"><b>🎁 지금 바로 <span style="color:#ee2323;">다운로드</span>해서, 사용해보세요!</b></p>
+<div class="button-container">
+    <p>
+        <a href="https://www.apple.com/kr/search/계좌개설 은행별 준비물 정리?src=globalnav" class="custom-download-btn appstore-button" target="_self">
+            <img src="https://developer.apple.com/assets/elements/icons/app-store/app-store-128x128_2x.png" class="btn-logo" alt="App Store">
+            <span>App Store에서 바로 다운로드</span>
+        </a>
+    </p>
+    <p>
+        <a href="https://play.google.com/store/search?q=계좌개설 은행별 준비물 정리&amp;c=apps" class="custom-download-btn playstore-button" target="_self">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/7/78/Google_Play_Store_badge_EN.svg" class="btn-logo" alt="Google Play">
+            <span>Google Play에서 바로 다운로드</span>
+        </a>
+    </p>
+    <p>
+        <a href="https://apps.microsoft.com/search?query=계좌개설 은행별 준비물 정리&hl=ko-KR&gl=KR" class="custom-download-btn window-button" target="_self">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/4/44/Microsoft_logo.svg" class="btn-logo" alt="Microsoft Store">
+            <span>Windows에서 바로 다운로드</span>
+        </a>
+    </p>
+    <p>
+        <a href="https://www.apple.com/kr/search/계좌개설 은행별 준비물 정리?src=globalnav" class="custom-download-btn macbook-button" target="_self">
+            <img src="https://upload.wikimedia.org/wikipedia/commons/f/fa/Apple_logo_black.svg" class="btn-logo" alt="Mac App Store">
+            <span>MacBook에서 바로 다운로드</span>
+        </a>
+    </p>
+</div>
+
+다음 두 가지를 작성해주세요:
+
+1. 제목: '계좌개설 은행별 준비물 정리 | 숫자가 포함된 후킹문구' 형식 (50-60자)
+   예시: "건강검진 예약 | 3분만에 끝내는 간편 신청법"
+
+2. 위에서 제공한 HTML 템플릿에 계좌개설 은행별 준비물 정리에 맞는 내용을 채워서 완성
+
+첫 번째 줄에 제목만 단독으로 출력하고, 그 다음에 HTML 콘텐츠를 출력해주세요.

@@ -10,10 +10,15 @@ dist/
 # Local runtime artifacts
 qt.conf
 setting/debug.log
+setting/etc/debug.log
+setting/etc/debug_root.log
 setting/result/
 setting/output/
 setting/chrome_profile/
+setting/etc/chrome_profile/
 
 # Sensitive local settings
 setting/license.json
 setting/setting.json
+setting/etc/license.json
+setting/etc/setting.json

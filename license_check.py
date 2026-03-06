@@ -7,8 +7,35 @@ import os
 import platform
 import socket
 import subprocess
+import sys
 import uuid
 from datetime import datetime
+
+
+def get_base_path():
+    """실행 파일의 기본 경로 반환 (EXE/PY 모두 지원)"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _get_windows_hidden_subprocess_kwargs():
+    """Windows에서 subprocess 실행 시 콘솔창 숨김 옵션 반환"""
+    if os.name != "nt":
+        return {}
+    kwargs = {}
+    try:
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    except Exception:
+        pass
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        kwargs["startupinfo"] = startupinfo
+    except Exception:
+        pass
+    return kwargs
 
 
 class LicenseManager:
@@ -19,8 +46,20 @@ class LicenseManager:
     MACHINE_ID_PREFIX = "WP-"
 
     def __init__(self):
-        self.license_file = os.path.join("setting", "license.json")
-        self.license_data = self.load_license()
+        setting_root = os.path.join(get_base_path(), "setting")
+        self.legacy_license_file = os.path.join(setting_root, "license.json")
+        self.license_file = os.path.join(setting_root, "etc", "license.json")
+        self._purge_local_license_files()
+        self.license_data = {}
+
+    def _purge_local_license_files(self):
+        """로컬 라이선스 파일을 남기지 않도록 정리"""
+        for path in (self.legacy_license_file, self.license_file):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
 
     def _normalize_text(self, value):
         if value is None:
@@ -30,6 +69,11 @@ class LicenseManager:
     def _run_cmd(self, command):
         """쉘 명령 결과를 안전하게 1줄 문자열로 반환"""
         try:
+            if isinstance(command, list) and command:
+                exe = str(command[0]).lower()
+                if exe in ("powershell", "powershell.exe", "pwsh", "pwsh.exe"):
+                    # 사용자 프로필/대화형 프롬프트 영향 제거
+                    command = [command[0], "-NoProfile", "-NonInteractive"] + command[1:]
             result = subprocess.check_output(
                 command,
                 shell=isinstance(command, str),
@@ -37,9 +81,11 @@ class LicenseManager:
                 text=True,
                 encoding="utf-8",
                 errors="ignore",
+                timeout=8,
+                **_get_windows_hidden_subprocess_kwargs(),
             )
             return self._normalize_text(result)
-        except Exception:
+        except (subprocess.TimeoutExpired, Exception):
             return ""
 
     def _first_non_empty_line(self, text, excludes=None):
@@ -145,35 +191,12 @@ class LicenseManager:
         return self._format_machine_id(machine_id)
 
     def load_license(self):
-        """라이선스 파일 로드"""
-        try:
-            if os.path.exists(self.license_file):
-                with open(self.license_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            return {}
-        except Exception:
-            return {}
+        """로컬 라이선스 파일 미사용"""
+        return {}
 
     def save_license(self, license_key, machine_id):
-        """라이선스 정보 저장"""
-        try:
-            os.makedirs("setting", exist_ok=True)
-            license_data = {
-                "license_key": license_key,
-                "registered_machine_id": machine_id,
-                "mac_address": self.get_mac_address(),
-                "windows_id": self.get_windows_machine_id(),
-                "local_ip": self.get_local_ip(),
-                "registered_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "status": "active",
-            }
-            with open(self.license_file, "w", encoding="utf-8") as f:
-                json.dump(license_data, f, ensure_ascii=False, indent=4)
-            self.license_data = license_data
-            return True
-        except Exception as e:
-            print(f"라이선스 저장 오류: {e}")
-            return False
+        """로컬 라이선스 파일 미사용"""
+        return True
 
     def fetch_buyers_from_sheet(self):
         """Google Spreadsheet에서 구매자 정보 조회"""
@@ -247,9 +270,6 @@ class LicenseManager:
         is_valid, message = self.check_machine_in_spreadsheet(current_machine_id)
         if not is_valid:
             return False, message
-
-        if not self.license_data or self.license_data.get("registered_machine_id") != current_machine_id:
-            self.save_license("SPREADSHEET_VERIFIED", current_machine_id)
 
         return True, message
 
