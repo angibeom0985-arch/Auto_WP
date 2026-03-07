@@ -10067,6 +10067,11 @@ class MainWindow(QMainWindow):
         self.scroll_timer = QTimer()
         self.scroll_timer.timeout.connect(self.check_scroll_timeout)
         self.scroll_timer.start(1000)
+        progress_scrollbar = self.progress_text.verticalScrollBar()
+        if progress_scrollbar is not None:
+            progress_scrollbar.sliderPressed.connect(self._mark_user_scrolling)
+            progress_scrollbar.actionTriggered.connect(self._mark_user_scrolling)
+            progress_scrollbar.valueChanged.connect(self._on_progress_scrollbar_changed)
 
         from datetime import datetime
         startup_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -12613,7 +12618,11 @@ class MainWindow(QMainWindow):
         user_has_selection = cursor.hasSelection()
         scrollbar = self.progress_text.verticalScrollBar()
         was_at_bottom = True
+        previous_scroll_value = 0
+        previous_scroll_max = 0
         if scrollbar is not None:
+            previous_scroll_value = scrollbar.value()
+            previous_scroll_max = scrollbar.maximum()
             was_at_bottom = scrollbar.value() >= (scrollbar.maximum() - 2)
 
         # 카운트다운 메시지는 항상 "한 줄"만 유지
@@ -12637,17 +12646,42 @@ class MainWindow(QMainWindow):
             self.progress_text.setPlainText(simple_message)
 
         # 사용자가 선택/스크롤 중이 아닐 때만 자동으로 하단 고정
-        if (not user_has_selection) and was_at_bottom:
+        should_pin_to_bottom = (not user_has_selection) and (not self.user_scrolling) and was_at_bottom
+        if should_pin_to_bottom:
             end_cursor = self.progress_text.textCursor()
             end_cursor.movePosition(QTextCursor.MoveOperation.End)
             self.progress_text.setTextCursor(end_cursor)
             if scrollbar:
                 scrollbar.setValue(scrollbar.maximum())
             self.progress_text.ensureCursorVisible()
+        elif scrollbar is not None and previous_scroll_max > 0:
+            # setPlainText로 문서를 재구성할 때(카운트다운) 현재 위치가 튀지 않게 비율 복원
+            new_max = scrollbar.maximum()
+            restored_value = int((previous_scroll_value / previous_scroll_max) * new_max)
+            scrollbar.setValue(max(0, min(new_max, restored_value)))
 
         self.progress_text.update()
         self.progress_text.repaint()
         QApplication.processEvents()
+
+    def _mark_user_scrolling(self, *_):
+        try:
+            import time
+            self.user_scrolling = True
+            self.last_scroll_time = time.time()
+        except Exception:
+            pass
+
+    def _on_progress_scrollbar_changed(self, _value):
+        try:
+            scrollbar = self.progress_text.verticalScrollBar()
+            if scrollbar is None:
+                return
+            if not scrollbar.isSliderDown():
+                return
+            self._mark_user_scrolling()
+        except Exception:
+            pass
 
     def _build_error_guide(self, error_message: str):
         text = str(error_message or "").strip()
@@ -13094,11 +13128,7 @@ class MainWindow(QMainWindow):
         """프로그레스 텍스트 휠 이벤트 - Ctrl+휠로 창 크기 조절"""
         try:
             from PyQt6.QtCore import Qt
-            import time
-            
-            # 사용자가 스크롤 중임을 표시
-            self.user_scrolling = True
-            self.last_scroll_time = time.time()
+            self._mark_user_scrolling()
             
             # 🔥 Ctrl 키가 눌린 경우 창 크기 조절 (폰트 크기가 아님!)
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
